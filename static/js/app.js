@@ -105,7 +105,7 @@ class VigilOpsAgentApp {
     // 初始化打字机效果
     initTypewriter() {
         this.typewriterTexts = [
-            { element: 'welcomeTitle', text: '你好，我是智能 OnCall 小助手', speed: 80, delay: 500 },
+            { element: 'welcomeTitle', text: '你好，我是 Vigil 智能运维小助手', speed: 80, delay: 500 },
             { element: 'welcomeSubtitle', text: '有什么可以帮你的？', speed: 60, delay: 200 }
         ];
 
@@ -431,7 +431,7 @@ class VigilOpsAgentApp {
         // 更新输入框状态
         if (this.messageInput) {
             this.messageInput.disabled = this.isStreaming;
-            this.messageInput.placeholder = '问问智能OnCall助手';
+            this.messageInput.placeholder = '问问 Vigil 智能运维助手';
         }
     }
 
