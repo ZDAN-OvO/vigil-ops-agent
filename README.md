@@ -40,15 +40,21 @@ VigilOpsAgent 是一个基于 **LangGraph** 构建的企业级智能运维助手
 
 ### 登录页面
 
-![登录页面](assets/login-page.png)
+![登录页面 - 浅色](assets/login-page-light.png)
+
+![登录页面 - 深色](assets/login-page-dark.png)
 
 ### 对话主页
 
-![对话主页](assets/chat-page-empty.png)
+![对话主页 - 浅色](assets/chat-page-empty-light.png)
+
+![对话主页 - 深色](assets/chat-page-empty-dark.png)
 
 ### 智能对话
 
-![智能对话](assets/chat-page-conversation.png)
+![智能对话 - 浅色](assets/chat-page-conversation-light.png)
+
+![智能对话 - 深色](assets/chat-page-conversation-dark.png)
 
 ## 技术栈
 
