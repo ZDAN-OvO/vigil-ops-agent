@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="static/img/logo-icon.svg" alt="" align="center" height="196" />
+<img src="static/img/logo-icon.svg" alt="" align="center" width="144" />
 
 # VigilOpsAgent
 
