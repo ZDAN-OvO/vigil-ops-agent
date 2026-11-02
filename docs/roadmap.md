@@ -8,6 +8,29 @@
 
 验收：归档逐文件 SHA-256 一致；旧 .env 不被新项目加载/纳入 Git；`uv run --frozen aiops --help` 和 status JSON 可用；`make check-all` 包含实际测试；新包没有 app/deprecated 导入。零测试通过不算完成。
 
+## MVP：最小可验证闭环
+
+MVP 用于尽早验证核心价值，不替代完整范围。它要求“可演示、可验证”，不是“功能最少”。
+
+范围：
+
+- 3 个代表性故障：OOMKilled（资源）、坏镜像（发布）、redis 延迟（依赖）。
+- 每个场景至少两类独立信号，三个场景合计覆盖 metrics、logs、trace、Kubernetes events。
+- 2 个动作：`restart_pod`、`rollout_undo`。
+- 初步 eval：3 个场景，每个至少 3 次运行。
+
+验收：
+
+1. 三个场景可重复注入、判定和清理；注入真值与调查工具权限隔离。
+2. 调查输出根因、证据引用和置信度；证据不足时如实输出 inconclusive。
+3. 风险决策三态各至少出现一次：自动执行、等待审批、策略拒绝。
+4. `restart_pod` 与 `rollout_undo` 各成功执行一次，并有执行后健康验证。
+5. 至少一个场景输出 inconclusive 或被拒绝，不能把三场景全部报为成功。
+6. eval 报告 Top-1/Top-3、工具调用、token、耗时；失败、拒绝与信息不足单独统计。
+7. 一条命令可复现；报告记录版本、环境、模型与种子。
+
+MVP 不包含：定时巡检、常驻服务、12 故障全集、PDF 知识库、`scale_replicas`、自动补偿、生产级 RBAC。这些留在后续阶段，不因 MVP 演示而删减完整范围。
+
 ## M1：OOM 垂直切片
 
 先验证 k3d/五组件依赖/压测与采集，保存最小工作配置；接 PostgreSQL + 官方 LangGraph checkpoint、K8s/Prometheus 只读工具与最小假设循环。
