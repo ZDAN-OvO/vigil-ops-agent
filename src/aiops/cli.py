@@ -122,11 +122,14 @@ def _print_report(report: Report, output: OutputFormat) -> None:
                 "hypotheses": report.hypotheses,
                 "evidence_count": report.evidence_count,
                 "tool_call_count": report.tool_call_count,
+                "proposal_id": report.proposal_id,
             },
         }
         typer.echo(json.dumps(payload, ensure_ascii=False))
         return
     typer.echo(f"调查 {report.investigation_id}：{report.status.value}")
+    if report.proposal_id:
+        typer.echo(f"动作提案：{report.proposal_id}")
     if report.conclusion:
         typer.echo(f"根因候选：{report.conclusion}")
     if report.termination_reason:

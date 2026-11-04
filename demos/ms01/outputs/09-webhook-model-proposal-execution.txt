@@ -1,0 +1,11 @@
+执行 act-e6e1fcfd8a2a：verified
+结果：{"stage": "applied", "rolled_out": true}
+验证：{"ok": true, "raw_ref": "evidence/action-check-vigil-lab/09e59c74f3c7419ca6ea5ab55951d584.json", "samples": 7, "tail_failures": 0, "failed_samples": 0, "window_seconds": 90}
+image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef
+probe=1
+active_alerts=0
+        id        | origin | proposal  | attempt  | verified 
+------------------+--------+-----------+----------+----------
+ act-e6e1fcfd8a2a | model  | succeeded | verified | true
+(1 row)
+

@@ -3,6 +3,8 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from aiops.actions.executor import ActionExecutor
+from aiops.actions.rollout_undo import RolloutUndoAdapter
 from aiops.config import Settings
 from aiops.contracts import Incident, Investigation
 from aiops.db import Store
@@ -38,6 +40,19 @@ async def open_runtime(
                 max_items=settings.tool_max_items,
             ),
         )
+        executor = ActionExecutor(
+            store=store,
+            adapter=RolloutUndoAdapter(
+                kubeconfig=settings.kubeconfig, context_name=settings.kube_context
+            ),
+            prometheus=prometheus,
+            runtime_path=settings.runtime_path,
+            cluster=settings.cluster,
+            namespace=settings.namespace,
+            rollout_timeout_seconds=settings.action_rollout_timeout_seconds,
+            verify_seconds=settings.action_verify_seconds,
+            sample_seconds=settings.action_sample_seconds,
+        )
         async with ModelClient.connect(
             settings.model_base_url,
             model=settings.model_name,
@@ -54,6 +69,7 @@ async def open_runtime(
                 investigation=investigation,
                 observation_window=incident.time_range,
                 runtime_path=settings.runtime_path,
+                proposer=executor,
                 tool_timeout_seconds=settings.tool_timeout_seconds,
                 max_observation_chars=settings.investigation_max_observation_chars,
             )

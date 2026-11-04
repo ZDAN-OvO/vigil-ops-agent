@@ -13,7 +13,10 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
+from aiops.actions.rollout_undo import ActionError
 from aiops.contracts import (
+    ActionOrigin,
+    ActionProposal,
     AuditEvent,
     Budget,
     Evidence,
@@ -21,6 +24,7 @@ from aiops.contracts import (
     Incident,
     Investigation,
     InvestigationStatus,
+    RiskDecision,
     TimeRange,
     ToolCall,
     ToolResult,
@@ -31,6 +35,22 @@ from aiops.investigation.schemas import Assessment, PlanRequest, QueryRequest
 from aiops.investigation.toolbox import ToolboxProtocol, observation
 from aiops.model import ModelCall, ModelError
 from aiops.tools.base import ToolContext
+
+
+class ActionProposer(Protocol):
+    """把调查结论转成提案；只提案，不执行。"""
+
+    async def propose_rollback(
+        self,
+        *,
+        deployment: str,
+        reason: str,
+        actor: str,
+        namespace: str | None = None,
+        investigation_id: str | None = None,
+        origin: ActionOrigin = ActionOrigin.OPERATOR,
+        evidence_ids: list[str] | None = None,
+    ) -> tuple[ActionProposal, RiskDecision]: ...
 
 
 class ModelProtocol(Protocol):
@@ -55,6 +75,7 @@ class State(TypedDict, total=False):
     aborted: bool
     termination: str
     outcome: str
+    proposal_id: str
 
 
 @dataclass(frozen=True)
@@ -66,6 +87,7 @@ class Report:
     hypotheses: list[dict[str, Any]]
     evidence_count: int
     tool_call_count: int
+    proposal_id: str | None = None
 
 
 class InvestigationRuntime:
@@ -80,12 +102,14 @@ class InvestigationRuntime:
         investigation: Investigation,
         observation_window: TimeRange,
         runtime_path: Path,
+        proposer: ActionProposer | None = None,
         tool_timeout_seconds: float = 10.0,
         max_observation_chars: int = 4000,
     ) -> None:
         self._store = store
         self._toolbox = toolbox
         self._model = model
+        self._proposer = proposer
         self._dsn = dsn
         self._incident = incident
         self._investigation = investigation
@@ -122,6 +146,7 @@ class InvestigationRuntime:
             hypotheses=final.get("hypotheses") or [],
             evidence_count=len(final.get("evidence") or []),
             tool_call_count=self._used_tool_calls,
+            proposal_id=final.get("proposal_id") or None,
         )
 
     def _build(self):
@@ -356,13 +381,81 @@ class InvestigationRuntime:
                     evidence[verdict.evidence_index]["id"], verdict.relation
                 )
 
+        proposal_id = ""
+        if assessment.finish and assessment.action_kind == "rollout_undo":
+            supporting = []
+            for index in assessment.action_evidence:
+                if 0 <= index < len(evidence):
+                    evidence_id = evidence[index]["id"]
+                    if evidence_id not in supporting:
+                        supporting.append(evidence_id)
+            proposal_id = await self._propose_action(assessment, supporting) or ""
+
         return {
             "hypotheses": hypotheses,
             "evidence": evidence,
             "queries": [query.model_dump() for query in assessment.next_queries],
             "finished": assessment.finish,
             "conclusion": assessment.conclusion if assessment.root_cause else "",
+            "proposal_id": proposal_id,
         }
+
+    async def _propose_action(self, assessment: Assessment, supporting: list[str]) -> str | None:
+        """模型只能提案；规则仍会判定，执行仍要审批。提案失败不影响结论。"""
+        if not assessment.action_deployment:
+            await self._note_action("missing_deployment", None)
+            return None
+        if not supporting:
+            await self._note_action("no_supporting_evidence", assessment.action_deployment)
+            return None
+        if self._proposer is None:
+            await self._note_action("proposer_unavailable", assessment.action_deployment)
+            return None
+        try:
+            proposal, decision = await self._proposer.propose_rollback(
+                deployment=assessment.action_deployment,
+                reason=assessment.action_reason or assessment.conclusion,
+                actor="investigation-runtime",
+                namespace=self._incident.namespace,
+                investigation_id=self._investigation_id,
+                origin=ActionOrigin.MODEL,
+                evidence_ids=supporting,
+            )
+        except ActionError as exc:
+            await self._note_action(exc.code, assessment.action_deployment)
+            return None
+        await self._store.append_audit(
+            [
+                AuditEvent(
+                    id=f"audit-{uuid.uuid4().hex[:12]}",
+                    correlation_id=self._investigation_id,
+                    actor="investigation-runtime",
+                    event="action.proposed_by_model",
+                    occurred_at=datetime.now(UTC),
+                    payload={
+                        "proposal_id": proposal.id,
+                        "deployment": assessment.action_deployment,
+                        "disposition": decision.disposition.value,
+                        "evidence_ids": supporting,
+                    },
+                )
+            ]
+        )
+        return proposal.id
+
+    async def _note_action(self, reason: str, deployment: str | None) -> None:
+        await self._store.append_audit(
+            [
+                AuditEvent(
+                    id=f"audit-{uuid.uuid4().hex[:12]}",
+                    correlation_id=self._investigation_id,
+                    actor="investigation-runtime",
+                    event="action.skipped",
+                    occurred_at=datetime.now(UTC),
+                    payload={"reason": reason, "deployment": deployment},
+                )
+            ]
+        )
 
     async def _conclude(self, state: State) -> State:
         finished_at = datetime.now(UTC)
