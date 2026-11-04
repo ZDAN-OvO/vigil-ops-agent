@@ -1,0 +1,20 @@
+# MS01 补充：模型提案 → 人工审批 → 执行
+proposal_time=2026-11-04
+        id        | origin |     kind     |      target_name      |  status   |                   evidence_ids                    
+------------------+--------+--------------+-----------------------+-----------+---------------------------------------------------
+ act-cce0ce7032a6 | model  | rollout_undo | productcatalogservice | succeeded | {ev-b5cc986862ac,ev-3e0b49929744,ev-d7d9db7bd6cf}
+(1 row)
+
+          event           |                                                                                     payload                                                                                      
+--------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ action.proposed_by_model | {"deployment": "productcatalogservice", "disposition": "approval", "proposal_id": "act-cce0ce7032a6", "evidence_ids": ["ev-b5cc986862ac", "ev-3e0b49929744", "ev-d7d9db7bd6cf"]}
+(1 row)
+
+        id        | proposal  | attempt  | verified 
+------------------+-----------+----------+----------
+ act-cce0ce7032a6 | succeeded | verified | true
+(1 row)
+
+image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef
+probe=1
+active_alerts=0

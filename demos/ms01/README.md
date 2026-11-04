@@ -7,7 +7,7 @@
 - 真实告警触发、webhook 建事件、模型只读取证、人工审批、受控回退、业务恢复验证都在同一次运行中完成。
 - 回退由人工审批后执行，业务恢复由 `probe_success` 末段连续样本判定，不是"Pod Ready 即恢复"。
 - 调查结论指向前端下游的近期滚动，但模型自己标明因果链尚未证实，工具预算在 8 次时耗尽。
-- 动作提案仍由操作者发起；调查结论没有自动转成提案，这是本次最大的缺口。
+- 主运行的提案由操作者发起；同日的补充运行已经接通模型提案，并跑通"告警 → 模型提案 → 审批 → 执行"（第 7 节）。
 
 ## 2. 环境与版本
 
@@ -67,7 +67,7 @@
 
 本次运行中出现过、或仍然存在的缺口，全部列出：
 
-1. 调查结论没有变成提案。第 5 步由操作者手动发起，提案的 `origin=operator`、`evidence_ids` 为空。模型提案的接口（`origin=model` 强制绑定证据）已有，但"结论 → 提案"的接线没做。
+1. 主运行第 5 步由操作者手动发起，提案 `origin=operator`、`evidence_ids` 为空。"结论 → 提案"的接线在当天的补充运行中才补上（第 7 节），主运行记录保留原状。
 2. 调查结论自称因果链未证实，却以 `root_cause=true` 结束，运行状态记为 `completed`。判定口径需要校准，否则"完成"会被高估。
 3. 工具预算 8 次被耗尽，模型没有机会查询前端日志或下游错误率，最后一轮只能给建议。
 4. 越界命名空间的实机测试没有走到规则判定：`kube-system/coredns` 只有一个 revision，在计算回退目标时先失败。规则拒绝本身只有单元测试覆盖。
@@ -77,7 +77,19 @@
 8. 截图只有浏览器页面，CLI 输出以文本保存，不是终端截图。主运行第一次 500 截图抓到的还是滚动过渡态，应用层错误文本的截图来自一次补充注入。
 9. 没有重新采集 loadgenerator 的错误率与延迟，第 7 步的业务恢复只用了黑盒探测和首页状态码。
 
-## 7. 复现
+## 7. 补充运行：模型提案（同日 13:55–14:11）
+
+主运行的提案由操作者发起。当天随后补做两次运行，把"调查结论 → 提案"接上，并验证告警链路也能产出提案。
+
+- 13:55:34 注入，13:56:58 告警。webhook 在 13:57:07 建调查 `inv-6aa44159a31e`，13:59:52 完成。模型给出了 `rollout_undo` 建议，但当时代码要求"至少一条 supporting 证据"，本次三个假设分别是 refuted、supported、refuted，提案被跳过，审计记为 `action.skipped / no_supporting_evidence`。用证据关系反推"支撑根因"并不可靠，反驳竞争假设同样是证据。
+- 修正：评估 schema 增加 `action_evidence`，由模型显式给出支撑动作的证据下标；给出无效下标或空列表就不提案。
+- 14:00:52 对仍在故障中的集群发起 CLI 调查 `inv-e5072b516d10`，14:02:31 完成，生成提案 `act-cce0ce7032a6`，绑定 3 条证据；14:03:04 人工审批，14:05:07 执行 `verified`，集群恢复。
+- 14:06:21 再次注入走告警链路，14:07:45 告警，webhook 建调查 `inv-e81757d2e978`；完成后自动生成提案 `act-e6e1fcfd8a2a`，绑定 5 条证据，状态 `pending_approval`。审批后执行 `verified`，`probe_success=1`，活动告警 0。
+- 原始输出：[`08-model-proposal.txt`](outputs/08-model-proposal.txt)、[`08-model-proposal-execution.txt`](outputs/08-model-proposal-execution.txt)、[`09-webhook-model-proposal-execution.txt`](outputs/09-webhook-model-proposal-execution.txt)。
+
+模型提案只到"提案"为止：规则判定为 approval，执行仍要人工批准。
+
+## 8. 复现
 
 前置：集群健康，Prometheus、AlertManager、前端三个 port-forward 在位，`.env` 含数据库、kubeconfig、模型与 webhook token。
 
@@ -90,6 +102,6 @@ uv run --frozen aiops serve --host 172.20.0.1 --port 8081
 
 然后按第 3 节的顺序执行：注入镜像、等待告警与 webhook 记录、`aiops report`、`aiops act`、`aiops approve`、核对 `probe_success` 与首页。
 
-## 8. 复位
+## 9. 复位
 
 运行结束后 `productcatalogservice` 已回到健康 digest，12 个工作负载 1/1，`probe_success=1`，活动告警 0，坏 ReplicaSet 0 副本。webhook、port-forward 由操作者停止；没有执行集群删除。

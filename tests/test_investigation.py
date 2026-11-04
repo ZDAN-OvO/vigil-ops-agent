@@ -9,10 +9,16 @@ import pytest
 
 from aiops.config import Settings
 from aiops.contracts import (
+    ActionKind,
+    ActionOrigin,
+    ActionProposal,
+    ActionTarget,
     Budget,
     Incident,
     Investigation,
     InvestigationStatus,
+    RiskDecision,
+    RiskDisposition,
     TimeRange,
     ToolError,
     ToolResult,
@@ -152,8 +158,72 @@ def build(ids, *, budget_model_calls=4, budget_tool_calls=4):
     return incident, investigation
 
 
+class FakeProposer:
+    def __init__(self, proposal_id="act-model-1"):
+        self.proposal_id = proposal_id
+        self.calls = []
+
+    async def propose_rollback(
+        self,
+        *,
+        deployment,
+        reason,
+        actor,
+        namespace=None,
+        investigation_id=None,
+        origin=None,
+        evidence_ids=None,
+    ):
+        self.calls.append(
+            {
+                "deployment": deployment,
+                "reason": reason,
+                "actor": actor,
+                "namespace": namespace,
+                "investigation_id": investigation_id,
+                "origin": origin,
+                "evidence_ids": evidence_ids or [],
+            }
+        )
+        return (
+            ActionProposal(
+                id=self.proposal_id,
+                kind=ActionKind.ROLLOUT_UNDO,
+                target=ActionTarget(
+                    cluster="vigil-lab",
+                    namespace="vigil-shop",
+                    kind="Deployment",
+                    name=deployment,
+                    uid="uid-1",
+                    resource_version="1",
+                ),
+                parameters={},
+                idempotency_key="key-1",
+                reason=reason,
+                created_at=START,
+                origin=origin,
+                investigation_id=investigation_id,
+                evidence_ids=evidence_ids or [],
+            ),
+            RiskDecision(
+                proposal_id=self.proposal_id,
+                disposition=RiskDisposition.APPROVAL,
+                policy_version="test",
+                reasons=["需要审批"],
+                requires_compensation=False,
+            ),
+        )
+
+
 async def run_case(
-    ids, model, toolbox, *, budget_model_calls=4, budget_tool_calls=4, tmp_path=None
+    ids,
+    model,
+    toolbox,
+    *,
+    budget_model_calls=4,
+    budget_tool_calls=4,
+    tmp_path=None,
+    proposer=None,
 ):
     incident, investigation = build(
         ids, budget_model_calls=budget_model_calls, budget_tool_calls=budget_tool_calls
@@ -171,6 +241,7 @@ async def run_case(
             investigation=investigation,
             observation_window=WINDOW,
             runtime_path=tmp_path,
+            proposer=proposer,
         )
         report = await runtime.run()
         evidence = await store.list_evidence(investigation.id)
@@ -199,6 +270,10 @@ def test_supported_hypothesis_becomes_root_cause(ids, tmp_path):
                 finish=True,
                 root_cause=True,
                 conclusion="新版本导致 productcatalogservice 不可用，首页返回 500",
+                action_kind="rollout_undo",
+                action_deployment="productcatalogservice",
+                action_reason="回退到上一版本",
+                action_evidence=[0],
             ),
         ]
     )
@@ -234,6 +309,10 @@ def test_failed_query_is_not_turned_into_evidence(ids, tmp_path):
                 finish=True,
                 root_cause=False,
                 conclusion="取证失败，无法判断",
+                action_kind="none",
+                action_deployment="",
+                action_reason="",
+                action_evidence=[],
             ),
         ]
     )
@@ -298,6 +377,10 @@ def test_checkpoint_is_persisted_for_the_thread(ids, tmp_path):
                 finish=True,
                 root_cause=False,
                 conclusion="没有可用证据",
+                action_kind="none",
+                action_deployment="",
+                action_reason="",
+                action_evidence=[],
             ),
         ]
     )
@@ -308,3 +391,92 @@ def test_checkpoint_is_persisted_for_the_thread(ids, tmp_path):
             "SELECT count(*) FROM checkpoints WHERE thread_id = %s", (ids["investigation"],)
         ).fetchone()[0]
     assert count > 0
+
+
+def test_model_proposal_is_created_with_supporting_evidence(ids, tmp_path):
+    proposer = FakeProposer()
+    model = ScriptedModel(
+        [
+            PlanRequest(
+                hypotheses=[
+                    HypothesisDraft(
+                        statement="坏发布导致首页失败",
+                        expected_observations=["probe_success 为 0"],
+                        rationale="首页报错",
+                    )
+                ],
+                queries=[query()],
+            ),
+            Assessment(
+                hypotheses=[HypothesisUpdate(index=0, status="supported", rationale="探测为 0")],
+                verdicts=[Verdict(evidence_index=0, relation="supporting")],
+                next_queries=[],
+                finish=True,
+                root_cause=True,
+                conclusion="productcatalogservice 新版本导致首页 500",
+                action_kind="rollout_undo",
+                action_deployment="productcatalogservice",
+                action_reason="回退到上一版本",
+                action_evidence=[0],
+            ),
+        ]
+    )
+    report, evidence, _, _ = asyncio.run(
+        run_case(
+            ids,
+            model,
+            ScriptedToolbox([success_result()]),
+            tmp_path=tmp_path,
+            proposer=proposer,
+        )
+    )
+
+    assert report.proposal_id == "act-model-1"
+    assert len(proposer.calls) == 1
+    call = proposer.calls[0]
+    assert call["origin"] is ActionOrigin.MODEL
+    assert call["evidence_ids"] == [evidence[0].id]
+    assert call["investigation_id"] == ids["investigation"]
+    assert call["deployment"] == "productcatalogservice"
+
+
+def test_action_without_supporting_evidence_is_not_proposed(ids, tmp_path):
+    proposer = FakeProposer()
+    model = ScriptedModel(
+        [
+            PlanRequest(
+                hypotheses=[
+                    HypothesisDraft(
+                        statement="坏发布导致首页失败",
+                        expected_observations=["probe_success 为 0"],
+                        rationale="首页报错",
+                    )
+                ],
+                queries=[query()],
+            ),
+            Assessment(
+                hypotheses=[HypothesisUpdate(index=0, status="refuted", rationale="探测正常")],
+                verdicts=[Verdict(evidence_index=0, relation="refuting")],
+                next_queries=[],
+                finish=True,
+                root_cause=False,
+                conclusion="证据不支持",
+                action_kind="rollout_undo",
+                action_deployment="productcatalogservice",
+                action_reason="不该被执行",
+                action_evidence=[],
+            ),
+        ]
+    )
+    report, _, _, _ = asyncio.run(
+        run_case(
+            ids,
+            model,
+            ScriptedToolbox([success_result()]),
+            tmp_path=tmp_path,
+            proposer=proposer,
+        )
+    )
+
+    assert report.proposal_id is None
+    assert proposer.calls == []
