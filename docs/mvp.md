@@ -28,9 +28,9 @@
 - 复用 LangGraph、一个 PostgreSQL 实例及官方 checkpoint；pgvector 的完整知识方向保留。MVP 的少量结构化 runbook 不以实现语义向量检索为前置条件。
 - 独立实验容器、端口和存储，不改写现有项目的 PostgreSQL、Redis 或其他服务。不导入或自动加载 `deprecated/`。
 
-基线核查只证明 CLI status、配置和值对象骨架存在，本地测试可执行。环境目录、故障脚本、调查、数据库与动作模块均未实现。本机核查时 Docker 可用，未安装 k3d/kubectl；资源余量只是当时快照，整栈资源、镜像拉取和业务依赖均需实测。环境不可行时先记录阻塞，不以模拟替代真实验收。
+基线核查只证明 CLI status、配置和值对象骨架存在，本地测试可执行。2026-11-04 的 I01 实验已在当前开发机安装 k3d/kubectl，部署业务与监控栈并完成 F01，实测见 [env](../env/README.md)；该结果是一次本机快照，不保证其他机器可复现。环境不可行时先记录阻塞，不以模拟替代真实验收。
 
-上游研究参考固定版本 [Online Boutique v0.9.0 / d138db5](https://github.com/GoogleCloudPlatform/microservices-demo/tree/d138db567079e2ef982d46b2993f8349cb18e2b2)，它是研究依据，不代表已选定最终部署版本。实施时锁定镜像 digest、依赖版本及实际 manifest。
+上游研究参考固定版本 [Online Boutique v0.9.0 / d138db5](https://github.com/GoogleCloudPlatform/microservices-demo/tree/d138db567079e2ef982d46b2993f8349cb18e2b2)，它是研究依据。2026-11-04 的实验已按该版本部署并锁定镜像 digest，清单见 [env/manifests](../env/manifests/online-boutique-pinned.yaml)；这不代表其他环境或后续场景必须沿用同一版本。实施时锁定镜像 digest、依赖版本及实际 manifest。
 
 ## 3. 功能范围
 
@@ -166,4 +166,4 @@ MVP 基线只使用固定 runbook／规则。LLM judge 的辅助评审和人工�
 
 观察窗口、最低流量、错误率／延迟阈值、调查预算、审批有效期、并发上限先作为可配置实验参数，依据无故障与故障运行固化并版本化；不能在某次运行失败后移动该次评分标准。影响功能范围、故障机制、证据边界或里程碑承诺的变化重新确认；不改变这些约定的实现参数由实施者记录依据后调整。
 
-文档交付与实现交付分别验收。本轮只制定文档，不自动安装、创建集群、注入故障、提交、发布 Issues 或合并分支。
+文档交付与实现交付分别验收。I01 执行记录不替代 MS01 产品链路验收；安装、创建集群和故障注入已按当次授权执行，提交、发布 Issues 和合并仍按仓库规则单独授权。
