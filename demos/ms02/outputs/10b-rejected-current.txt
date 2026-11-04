@@ -1,0 +1,13 @@
+# 拒绝路径（当前构建，健康版本上拒绝一次危险提案） 2026-11-04T15:32:26Z
+proposal=act-7455515e0767
+提案 act-7455515e0767：rejected
+reject_exit=0
+act-7455515e0767 rollout_undo vigil-shop/productcatalogservice [rejected]
+目标版本 revision 31 → 30，uid a4c96990-fb28-40a5-bdf9-55cca7cc3062，resourceVersion 10628
+创建于 2026-11-04T15:32:30.177938+00:00，已等待 7s
+审批：rejected by ms02-reviewer at 2026-11-04T15:32:34.319590+00:00，有效期至 无
+执行：尚未开始
+  2026-11-04T15:32:30.181444+00:00 ms02-operator action.proposed
+  2026-11-04T15:32:34.321617+00:00 ms02-reviewer action.rejected
+revision: 31
+home: 200

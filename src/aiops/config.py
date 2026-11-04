@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     action_rollout_timeout_seconds: float = 180.0
     action_verify_seconds: int = 90
     action_sample_seconds: int = 15
+    # 审批有效期：跨进程等待超过该时长后批准仍不执行，需重新提案。
+    action_approval_ttl_seconds: int = 900
 
     @property
     def runtime_path(self) -> Path:

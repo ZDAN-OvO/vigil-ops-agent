@@ -1,0 +1,6 @@
+# MS02 基线 2026-11-04T15:23:34Z
+image: gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef
+revision: 27
+probe_success: 1
+home: 200
+alerts_firing: 0

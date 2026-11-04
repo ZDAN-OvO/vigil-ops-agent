@@ -1,0 +1,10 @@
+# 重启后查询 2026-11-04T15:24:41Z
+--- approvals
+act-83ecd5d53f68 rollout_undo vigil-shop/productcatalogservice [pending_approval] 已等待 12s MS02 跨进程审批：中性坏发布
+--- proposal
+act-83ecd5d53f68 rollout_undo vigil-shop/productcatalogservice [pending_approval]
+目标版本 revision 28 → 27，uid a4c96990-fb28-40a5-bdf9-55cca7cc3062，resourceVersion 10393
+创建于 2026-11-04T15:24:32.114709+00:00，已等待 16s
+审批：无
+执行：尚未开始
+  2026-11-04T15:24:32.119138+00:00 ms02-operator action.proposed

@@ -1,0 +1,23 @@
+# 最终恢复 2026-11-04T15:29:36Z
+执行 act-58394bfae960：verified
+结果：{"stage": "applied", "rolled_out": true}
+验证：{"ok": true, "raw_ref": "evidence/action-check-vigil-lab/1fcb38152ccd4cdc88888207e0eaad74.json", "samples": 7, "tail_failures": 0, "failed_samples": 1, "window_seconds": 90}
+exit=0
+--- 最终状态
+act-58394bfae960 rollout_undo vigil-shop/productcatalogservice [succeeded]
+目标版本 revision 30 → 29，uid a4c96990-fb28-40a5-bdf9-55cca7cc3062，resourceVersion 10554
+创建于 2026-11-04T15:29:21.079913+00:00，已等待 2m26s
+审批：approved by ms02-reviewer-b at 2026-11-04T15:29:24.859764+00:00，有效期至 2026-11-04T15:44:24.859764+00:00
+执行：att-50919114d60b verified
+验证：{"ok": true, "raw_ref": "evidence/action-check-vigil-lab/1fcb38152ccd4cdc88888207e0eaad74.json", "samples": 7, "tail_failures": 0, "failed_samples": 1, "window_seconds": 90}
+  2026-11-04T15:29:21.083843+00:00 ms02-operator action.proposed
+  2026-11-04T15:29:24.861847+00:00 ms02-reviewer-b action.approved
+  2026-11-04T15:29:40.150999+00:00 ms02-reviewer-b action.resumed
+  2026-11-04T15:31:44.411396+00:00 action-executor action.succeeded
+--- 集群
+image: gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef
+revision: 31
+probe_success: 1
+home: 200
+alerts_firing: 0
+bad_rs_replicas: 0

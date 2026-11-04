@@ -167,7 +167,7 @@ def cleanup():
             conn.execute("DELETE FROM action_proposals WHERE id = %s", (proposal_id,))
 
 
-def build_executor(store, adapter, prometheus, tmp_path):
+def build_executor(store, adapter, prometheus, tmp_path, *, approval_ttl_seconds=900):
     return ActionExecutor(
         store=store,
         adapter=adapter,
@@ -177,6 +177,7 @@ def build_executor(store, adapter, prometheus, tmp_path):
         namespace="vigil-shop",
         verify_seconds=60,
         sample_seconds=15,
+        approval_ttl_seconds=approval_ttl_seconds,
         verify_delay_seconds=0,
         verify_grace_seconds=0,
     )
@@ -307,3 +308,180 @@ def test_second_approval_is_refused(tmp_path, cleanup):
 
     error = asyncio.run(scenario())
     assert error.code == "not_pending"
+
+
+def test_approved_proposal_survives_restart_and_resumes(tmp_path, cleanup):
+    adapter = FakeAdapter(rollout_plan())
+
+    async def first_process():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            proposal, _ = await executor.propose_rollback(
+                deployment="productcatalogservice", reason="坏发布", actor="tester"
+            )
+            cleanup.append(proposal.id)
+            deferred = await executor.approve(proposal.id, actor="tester", defer=True)
+        return proposal.id, deferred
+
+    async def second_process(proposal_id):
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            waiting = await store.list_proposals(status=ProposalStatus.APPROVED)
+            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            attempt = await executor.resume(proposal_id, actor="restarted")
+            saved = await store.get_proposal(proposal_id)
+        return waiting, attempt, saved
+
+    proposal_id, deferred = asyncio.run(first_process())
+    waiting, attempt, saved = asyncio.run(second_process(proposal_id))
+
+    assert deferred is None
+    assert proposal_id in [item.id for item in waiting]
+    assert attempt.status.value == "verified"
+    assert saved.status is ProposalStatus.SUCCEEDED
+    assert adapter.calls == [True, False]
+
+
+def test_expired_approval_is_not_executed(tmp_path, cleanup):
+    adapter = FakeAdapter(rollout_plan())
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store, adapter, FakePrometheus([1.0, 1.0]), tmp_path, approval_ttl_seconds=0
+            )
+            proposal, _ = await executor.propose_rollback(
+                deployment="productcatalogservice", reason="坏发布", actor="tester"
+            )
+            cleanup.append(proposal.id)
+            await executor.approve(proposal.id, actor="tester", defer=True)
+        async with Store.open(DSN) as store:
+            executor = build_executor(
+                store, adapter, FakePrometheus([1.0, 1.0]), tmp_path, approval_ttl_seconds=0
+            )
+            with pytest.raises(ActionError) as caught:
+                await executor.resume(proposal.id, actor="restarted")
+            saved = await store.get_proposal(proposal.id)
+            attempt = await store.get_attempt(proposal.id)
+        return caught.value, saved, attempt
+
+    error, saved, attempt = asyncio.run(scenario())
+    assert error.code == "expired"
+    assert saved.status is ProposalStatus.EXPIRED
+    assert attempt is None
+    assert adapter.calls == []
+
+
+def test_changed_proposal_does_not_reuse_approval(tmp_path, cleanup):
+    adapter = FakeAdapter(rollout_plan())
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            proposal, _ = await executor.propose_rollback(
+                deployment="productcatalogservice", reason="坏发布", actor="tester"
+            )
+            cleanup.append(proposal.id)
+            await executor.approve(proposal.id, actor="tester", defer=True)
+        with psycopg.connect(DSN) as conn:
+            conn.execute(
+                """UPDATE action_proposals
+                      SET parameters = parameters || '{"to_revision": 0}'::jsonb
+                    WHERE id = %s""",
+                (proposal.id,),
+            )
+        async with Store.open(DSN) as store:
+            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            with pytest.raises(ActionError) as caught:
+                await executor.resume(proposal.id, actor="restarted")
+            saved = await store.get_proposal(proposal.id)
+        return caught.value, saved
+
+    error, saved = asyncio.run(scenario())
+    assert error.code == "hash_mismatch"
+    assert saved.status is ProposalStatus.FAILED
+    assert adapter.calls == []
+
+
+def test_repeated_resume_executes_once(tmp_path, cleanup):
+    adapter = FakeAdapter(rollout_plan())
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            proposal, _ = await executor.propose_rollback(
+                deployment="productcatalogservice", reason="坏发布", actor="tester"
+            )
+            cleanup.append(proposal.id)
+            await executor.approve(proposal.id, actor="tester", defer=True)
+            first = await executor.resume(proposal.id, actor="restarted")
+            with pytest.raises(ActionError) as caught:
+                await executor.resume(proposal.id, actor="restarted")
+        return first, caught.value
+
+    first, error = asyncio.run(scenario())
+    assert first.status.value == "verified"
+    assert error.code == "already_executed"
+    assert adapter.calls == [True, False]
+
+
+def test_rejection_after_restart_never_touches_cluster(tmp_path, cleanup):
+    adapter = FakeAdapter(rollout_plan())
+
+    async def first_process():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            proposal, _ = await executor.propose_rollback(
+                deployment="productcatalogservice", reason="坏发布", actor="tester"
+            )
+            cleanup.append(proposal.id)
+        return proposal.id
+
+    async def second_process(proposal_id):
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            proposal = await executor.reject(proposal_id, actor="restarted", reason="不需要")
+            attempt = await store.get_attempt(proposal_id)
+        return proposal, attempt
+
+    proposal_id = asyncio.run(first_process())
+    proposal, attempt = asyncio.run(second_process(proposal_id))
+
+    assert proposal.status is ProposalStatus.REJECTED
+    assert attempt is None
+    assert adapter.calls == []
+
+
+def test_concurrent_approvals_only_one_wins(tmp_path, cleanup):
+    adapter = FakeAdapter(rollout_plan())
+
+    async def scenario():
+        async with Store.open(DSN) as store_a, Store.open(DSN) as store_b:
+            await store_a.migrate()
+            executor_a = build_executor(store_a, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            proposal, _ = await executor_a.propose_rollback(
+                deployment="productcatalogservice", reason="坏发布", actor="tester"
+            )
+            cleanup.append(proposal.id)
+            executor_b = build_executor(store_b, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            results = await asyncio.gather(
+                executor_a.approve(proposal.id, actor="alice", defer=True),
+                executor_b.approve(proposal.id, actor="bob", defer=True),
+                return_exceptions=True,
+            )
+        with psycopg.connect(DSN) as conn:
+            count = conn.execute(
+                "SELECT count(*) FROM approvals WHERE proposal_id = %s", (proposal.id,)
+            ).fetchone()[0]
+        return results, count
+
+    results, count = asyncio.run(scenario())
+    errors = [item for item in results if isinstance(item, ActionError)]
+    assert len(errors) == 1 and errors[0].code == "not_pending"
+    assert count == 1

@@ -209,6 +209,7 @@ class ProposalStatus(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     UNKNOWN = "unknown"
+    EXPIRED = "expired"
 
 
 class AttemptStatus(StrEnum):
