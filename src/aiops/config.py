@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Literal
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +29,13 @@ class Settings(BaseSettings):
     tool_max_points: int = 2000
     tool_max_series: int = 200
     tool_max_items: int = 100
+
+    # 现有网关的 OpenAI 兼容端点，见决策 D25。模型 ID 必填，实际返回模型单独记录。
+    model_base_url: str = "http://127.0.0.1:3425"
+    model_name: str | None = None
+    model_api_key: SecretStr | None = None
+    model_timeout_seconds: float = 60.0
+    model_max_retries: int = 2
 
     @property
     def runtime_path(self) -> Path:
