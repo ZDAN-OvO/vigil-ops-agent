@@ -34,6 +34,69 @@ class Incident(Contract):
     context: list[str] = Field(default_factory=list)
 
 
+class InvestigationStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    INCONCLUSIVE = "inconclusive"
+    ABORTED = "aborted"
+
+    @property
+    def terminal(self) -> bool:
+        return self in {
+            InvestigationStatus.COMPLETED,
+            InvestigationStatus.INCONCLUSIVE,
+            InvestigationStatus.ABORTED,
+        }
+
+
+class Budget(Contract):
+    max_tool_calls: int = Field(gt=0)
+    max_model_calls: int = Field(gt=0)
+    max_wall_clock_seconds: int = Field(gt=0)
+
+
+class BudgetUsage(Contract):
+    tool_calls: int = Field(default=0, ge=0)
+    model_calls: int = Field(default=0, ge=0)
+    elapsed_seconds: float = Field(default=0, ge=0)
+
+    def exhausted(self, budget: Budget) -> str | None:
+        """返回最先耗尽的预算项；未耗尽返回 None。"""
+        if self.tool_calls >= budget.max_tool_calls:
+            return "tool_calls"
+        if self.model_calls >= budget.max_model_calls:
+            return "model_calls"
+        if self.elapsed_seconds >= budget.max_wall_clock_seconds:
+            return "wall_clock"
+        return None
+
+
+class Investigation(Contract):
+    id: str
+    incident_id: str
+    status: InvestigationStatus
+    model: str
+    policy_version: str
+    budget: Budget
+    usage: BudgetUsage = Field(default_factory=BudgetUsage)
+    parent_run_id: str | None = None
+    conclusion: str | None = None
+    termination_reason: str | None = None
+    started_at: AwareDatetime
+    finished_at: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def require_terminal_outcome(self) -> Self:
+        if self.finished_at is not None and self.finished_at < self.started_at:
+            raise ValueError("调查结束时间不能早于开始时间")
+        if self.status.terminal and self.finished_at is None:
+            raise ValueError("终止状态必须记录结束时间")
+        if self.status is InvestigationStatus.COMPLETED and not self.conclusion:
+            raise ValueError("completed 必须给出根因候选")
+        return self
+
+
 class HypothesisStatus(StrEnum):
     PENDING = "pending"
     SUPPORTED = "supported"
@@ -75,6 +138,26 @@ class ToolResult(Contract):
         return self
 
 
+class ToolCall(Contract):
+    id: str
+    investigation_id: str
+    tool: str
+    parameters: dict[str, Any]
+    time_range: TimeRange
+    started_at: AwareDatetime
+    finished_at: AwareDatetime | None = None
+    error_code: str | None = None
+    retry_count: int = Field(default=0, ge=0)
+    truncated: bool = False
+    raw_ref: str | None = None
+
+    @model_validator(mode="after")
+    def require_finish_after_start(self) -> Self:
+        if self.finished_at is not None and self.finished_at < self.started_at:
+            raise ValueError("调用结束时间不能早于开始时间")
+        return self
+
+
 class Evidence(Contract):
     id: str
     investigation_id: str
@@ -86,6 +169,15 @@ class Evidence(Contract):
     relation: Literal["supporting", "refuting", "neutral"]
     raw_ref: str
     time_range: TimeRange
+
+
+class AuditEvent(Contract):
+    id: str
+    correlation_id: str
+    actor: str
+    event: str
+    occurred_at: AwareDatetime
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class ActionKind(StrEnum):

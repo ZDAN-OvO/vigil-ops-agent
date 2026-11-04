@@ -151,10 +151,35 @@ kubectl port-forward -n vigil-monitoring svc/prometheus 9090:9090 --address 127.
 - 只记录了一次部署的资源快照，没有做容量规划或长时间稳定性测试。
 - 没有部署 Loki、Tempo、OTel Collector；F01 只使用 Prometheus、blackbox、kube-state-metrics 和 AlertManager。
 - 坏发布镜像由本地构建并通过 `k3d image import` 导入，没有推送镜像仓库。
-- 实验 PostgreSQL 16 与 pgvector 尚未部署，LangGraph checkpoint 的真实读写未验证。
+- 实验 PostgreSQL 16.15 已启动并完成业务表迁移；LangGraph checkpoint 的真实读写仍未验证。
 - 集群创建、清单部署和故障注入都是写操作。本文只记录已执行过的路径，不构成再次执行的授权。
 
-## 8. 复位与删除
+## 8. 实验 PostgreSQL
+
+2026-11-04 启动独立实例，承载业务表迁移。它不在 k3d 集群内，也不复用宿主已有的其他项目数据库。
+
+| 项目 | 实测值 |
+|---|---|
+| 容器 | `vigil-postgres` |
+| 镜像 | `pgvector/pgvector:pg16`（本机已有，未额外拉取） |
+| 版本 | PostgreSQL 16.15 |
+| 端口 | `127.0.0.1:55432`，只绑定回环；宿主 5432 已被其他项目占用 |
+| 卷 | `vigil-pgdata` |
+| 用户／库 | `vigil` / `vigil` |
+| 连接串 | `.env` 中的 `VIGIL_DATABASE_URL`，不写入仓库 |
+
+迁移与连接检查：
+
+```bash
+uv run --frozen aiops db migrate
+uv run --frozen aiops db status
+```
+
+业务表定义在 `src/aiops/migrations/0001_init.sql`，包含 `incidents`、`investigations`、`hypotheses`、`tool_calls`、`evidence`、`audit_events` 六张表和 `schema_migrations` 版本表，迁移可重复执行。LangGraph 官方 checkpoint 表尚未接入，接入后由 saver 自行管理，不并入这组迁移。
+
+这是单机实验实例，没有备份、副本或连接池容量规划，不构成生产建议。
+
+## 9. 复位与删除
 
 故障实验的复位由 F01 脚本完成，保留坏 ReplicaSet 作为证据，最终业务和监控工作负载保持健康。
 
