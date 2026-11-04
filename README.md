@@ -15,9 +15,14 @@ uv run --frozen aiops status --output json
 
 配置变量使用 `VIGIL_` 前缀；可将 [.env.example](.env.example) 复制为根目录 `.env`。配置文件与相对运行路径始终以仓库根目录为基准，不随启动目录改变。W0 不需要模型密钥或数据库。
 
-- [架构与决策记录](docs/architecture.md)
+- [文档导航](docs/README.md)
+- [已有决策与待确认事项](docs/decisions.md)
+- [领域词汇表](GLOSSARY.md)
+- [总体架构](docs/architecture.md)
 - [模块契约](docs/contracts.md)
-- [阶段产出与验收](docs/roadmap.md)
+- [MVP 范围与验收](docs/mvp.md)
+- [里程碑与验收](docs/milestone.md)
+- [滚动迭代计划](docs/iterations.md)
 - [评估约定](docs/eval.md)
 - [归档校验与迁移说明](docs/migration.md)
 
