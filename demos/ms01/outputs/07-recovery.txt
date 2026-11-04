@@ -1,0 +1,27 @@
+# MS01 步骤 7：平台与业务恢复验证
+time=2026-11-04T13:47:38Z
+image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef
+revision=21
+generation=21
+probe=1
+home=200
+active_alerts=0
+bad_rs_replicas=0
+deployments=12 not_ready=0
+        id        |  status   | attempt  |                  result                  | verified 
+------------------+-----------+----------+------------------------------------------+----------
+ act-f363f67ddbb1 | succeeded | verified | {"stage": "applied", "rolled_out": true} | true
+(1 row)
+
+      actor      |      event       |          occurred_at          
+-----------------+------------------+-------------------------------
+ ms01-demo       | action.proposed  | 2026-11-04 13:44:41.445811+00
+ ms01-demo       | action.approved  | 2026-11-04 13:45:19.119777+00
+ action-executor | action.succeeded | 2026-11-04 13:47:21.823975+00
+(3 rows)
+
+   actor   | decision |                          proposal_hash                           |          decided_at           
+-----------+----------+------------------------------------------------------------------+-------------------------------
+ ms01-demo | approved | 7bdd78987cc8e4ea5b6db17a867f77fecd1fb23aa12d2716dbc77dd25b844fb6 | 2026-11-04 13:45:19.112807+00
+(1 row)
+

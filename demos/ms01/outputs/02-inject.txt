@@ -1,0 +1,14 @@
+# MS01 步骤 2：注入实验坏镜像并核验
+inject_start=2026-11-04T13:41:00Z
+deployment.apps/productcatalogservice image updated
+Waiting for deployment "productcatalogservice" rollout to finish: 0 out of 1 new replicas have been updated...
+Waiting for deployment "productcatalogservice" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "productcatalogservice" rollout to finish: 1 old replicas are pending termination...
+deployment "productcatalogservice" successfully rolled out
+rollout_done=2026-11-04T13:41:01Z
+image=vigil/productcatalogservice:canary-20261104
+revision=20
+NAME                                     READY   IMAGE
+productcatalogservice-57f9df78f8-dcl9n   true    vigil/productcatalogservice:canary-20261104
+productcatalogservice-7b58b447f7-8hst6   false   gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef
+home_after_inject=500 at 2026-11-04T13:41:21Z

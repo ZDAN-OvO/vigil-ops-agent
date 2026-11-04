@@ -86,6 +86,7 @@ class ActionExecutor:
         reason: str,
         actor: str,
         namespace: str | None = None,
+        investigation_id: str | None = None,
     ) -> tuple[ActionProposal, RiskDecision]:
         namespace = namespace or self._namespace
         plan = await asyncio.to_thread(self._adapter.plan, namespace, deployment)
@@ -108,6 +109,7 @@ class ActionExecutor:
             idempotency_key=f"{plan.deployment_uid}:{plan.current_revision}",
             reason=reason,
             origin=ActionOrigin.OPERATOR,
+            investigation_id=investigation_id,
             created_at=datetime.now(UTC),
         )
         key = target_key(self._cluster, namespace, "Deployment", deployment)

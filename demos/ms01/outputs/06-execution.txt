@@ -1,0 +1,3 @@
+执行 act-f363f67ddbb1：verified
+结果：{"stage": "applied", "rolled_out": true}
+验证：{"ok": true, "raw_ref": "evidence/action-check-vigil-lab/58ec6aa1c3d64b6fa487666cdbeadf4b.json", "samples": 7, "tail_failures": 0, "failed_samples": 0, "window_seconds": 90}
