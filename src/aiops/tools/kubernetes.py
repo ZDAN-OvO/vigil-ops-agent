@@ -22,11 +22,17 @@ def trim_pod(pod: dict[str, Any]) -> dict[str, Any]:
     metadata = pod.get("metadata") or {}
     spec = pod.get("spec") or {}
     status = pod.get("status") or {}
+    spec_containers = {
+        container.get("name"): container for container in spec.get("containers") or []
+    }
     containers = []
     for container in status.get("container_statuses") or []:
         state = container.get("state") or {}
         terminated = state.get("terminated") or {}
         waiting = state.get("waiting") or {}
+        running = state.get("running") or {}
+        last_terminated = (container.get("last_state") or {}).get("terminated") or {}
+        resources = (spec_containers.get(container.get("name")) or {}).get("resources") or {}
         containers.append(
             {
                 "name": container.get("name"),
@@ -36,6 +42,20 @@ def trim_pod(pod: dict[str, Any]) -> dict[str, Any]:
                 "phase": "terminated" if terminated else "waiting" if waiting else "running",
                 "reason": terminated.get("reason") or waiting.get("reason"),
                 "exit_code": terminated.get("exit_code"),
+                "started_at": running.get("started_at"),
+                "last_terminated": (
+                    {
+                        "reason": last_terminated.get("reason"),
+                        "exit_code": last_terminated.get("exit_code"),
+                        "finished_at": last_terminated.get("finished_at"),
+                    }
+                    if last_terminated
+                    else None
+                ),
+                "resources": {
+                    "limits": resources.get("limits") or {},
+                    "requests": resources.get("requests") or {},
+                },
             }
         )
     return {
@@ -54,9 +74,21 @@ def trim_pod(pod: dict[str, Any]) -> dict[str, Any]:
 
 def trim_deployment(deployment: dict[str, Any]) -> dict[str, Any]:
     metadata = deployment.get("metadata") or {}
+    annotations = metadata.get("annotations") or {}
     spec = deployment.get("spec") or {}
     status = deployment.get("status") or {}
     pod_spec = (spec.get("template") or {}).get("spec") or {}
+    containers = []
+    for container in pod_spec.get("containers") or []:
+        resources = container.get("resources") or {}
+        containers.append(
+            {
+                "name": container.get("name"),
+                "image": container.get("image"),
+                "limits": resources.get("limits") or {},
+                "requests": resources.get("requests") or {},
+            }
+        )
     return {
         "name": metadata.get("name"),
         "uid": metadata.get("uid"),
@@ -67,9 +99,50 @@ def trim_deployment(deployment: dict[str, Any]) -> dict[str, Any]:
         "available_replicas": status.get("available_replicas"),
         "unavailable_replicas": status.get("unavailable_replicas"),
         "strategy": (spec.get("strategy") or {}).get("type"),
+        "labels": metadata.get("labels") or {},
+        "revision": annotations.get("deployment.kubernetes.io/revision"),
+        "change_cause": annotations.get("kubernetes.io/change-cause"),
         "images": [container.get("image") for container in pod_spec.get("containers") or []],
+        "containers": containers,
         "selector": (spec.get("selector") or {}).get("match_labels") or {},
     }
+
+
+def trim_replica_set(replicaset: dict[str, Any]) -> dict[str, Any]:
+    metadata = replicaset.get("metadata") or {}
+    spec = replicaset.get("spec") or {}
+    status = replicaset.get("status") or {}
+    annotations = metadata.get("annotations") or {}
+    template_spec = (spec.get("template") or {}).get("spec") or {}
+    containers = template_spec.get("containers") or []
+    container = containers[0] if containers else {}
+    resources = container.get("resources") or {}
+    return {
+        "revision": int(annotations.get("deployment.kubernetes.io/revision", "0") or 0),
+        "image": container.get("image"),
+        "memory_limit": (resources.get("limits") or {}).get("memory"),
+        "memory_request": (resources.get("requests") or {}).get("memory"),
+        "replicas": spec.get("replicas"),
+        "ready_replicas": status.get("ready_replicas") or 0,
+        "created_at": metadata.get("creation_timestamp"),
+        "owners": [
+            {"kind": owner.get("kind"), "uid": owner.get("uid")}
+            for owner in metadata.get("owner_references") or []
+        ],
+    }
+
+
+def matches_selector(selector: str, item: dict[str, Any]) -> bool:
+    """按 Deployment 自身标签或 Pod 选择器匹配；没有标签的 Deployment 也能被 app=x 命中。"""
+    pairs = [part for part in selector.split(",") if "=" in part]
+    if not pairs:
+        return True
+    labels = {**(item.get("labels") or {}), **(item.get("selector") or {})}
+    for part in pairs:
+        key, value = (piece.strip() for piece in part.split("=", 1))
+        if labels.get(key) != value:
+            return False
+    return True
 
 
 def trim_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -210,8 +283,25 @@ class KubernetesRead:
         query = {"kind": "deployments", "namespace": context.namespace, "selector": selector}
 
         def call() -> tuple[list[dict[str, Any]], bool]:
-            response = apps.list_namespaced_deployment(context.namespace, label_selector=selector)
-            return self._limit([trim_deployment(item.to_dict()) for item in response.items])
+            response = apps.list_namespaced_deployment(context.namespace)
+            # 历史模板是回退适用性的证据，按 owner 归到各自 Deployment。
+            history: dict[str, list[dict[str, Any]]] = {}
+            for item in apps.list_namespaced_replica_set(context.namespace).items:
+                replicaset = trim_replica_set(item.to_dict())
+                for owner in replicaset.pop("owners"):
+                    if owner.get("kind") == "Deployment" and owner.get("uid"):
+                        history.setdefault(owner["uid"], []).append(dict(replicaset))
+            items = []
+            for deployment in response.items:
+                trimmed = trim_deployment(deployment.to_dict())
+                if selector and not matches_selector(selector, trimmed):
+                    continue
+                revisions = sorted(
+                    history.get(deployment.metadata.uid, []), key=lambda row: row["revision"]
+                )
+                trimmed["revisions"] = revisions[-5:]
+                items.append(trimmed)
+            return self._limit(items)
 
         return await self._call(context, time_range, query, call)
 

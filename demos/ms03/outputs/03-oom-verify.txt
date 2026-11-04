@@ -1,0 +1,8 @@
+2026-11-04T17:01:41Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-5q4zl restarts=2 ready=false last=OOMKilled/137 state=
+2026-11-04T17:01:52Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-5q4zl restarts=2 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-04T17:02:02Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-5q4zl restarts=2 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-04T17:02:13Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-5q4zl restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-04T17:02:23Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-5q4zl restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-04T17:02:34Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-5q4zl restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-04T17:02:44Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=firing | currencyservice-f6d9b8f46-5q4zl restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-04T17:02:44Z VERIFIED sustained_oom=1 business_failure=1 alert_firing=1 revision=4 limit=16Mi

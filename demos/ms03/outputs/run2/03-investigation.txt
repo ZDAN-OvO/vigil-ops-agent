@@ -1,0 +1,7 @@
+调查 inv-e545a5e2facc：completed
+动作提案：act-150f872a4097
+根因候选：根因是依赖服务 currencyservice 的资源规格回归，不是入口 frontend 自身故障。证据：frontend Pod 7797c7cd78-rrgzw ready=true、restartCount=0、无 last_terminated，Deployment frontend revision=1/generation=1、change_cause 为空、available_replicas=1，资源 200m/128Mi 未变（证据 0、1、6）；同命名空间 currencyservice Pod f6d9b8f46-78vj5 为 CrashLoopBackOff、restartCount=5、ready=false、last_terminated.reason=OOMKilled/exit 137（finished_at 17:21:03），Deployment 当前 revision=6 的 memory limit=16Mi / request=8Mi（created_at 16:49:34，change_cause="vigil rollback act-a5175e380402"），而历史 revision=5 在同镜像下为 128Mi / 64Mi（证据 1、6）；currencyservice 的 Killing/重启事件与 restartCount 序列（4→5→6）显示反复 OOMKilled 而非单次偶发（证据 2、5）。探针时序进一步支持依赖链路解释：probe_success 在窗口内仅 17:11:59–17:17:59 恢复为 1，恰好落在 currencyservice Pod rbkls 存活区间（17:10:46 启动、17:18:14 被 Kill）之内，其余时段均为 0（证据 3）。证据边界：现有证据未包含应用日志/链路追踪，frontend 返回 500 与 currencyservice 不可用之间是时序相关性而非直接错误码归因；另外 paymentservice 在 17:14:22 有一次 OOMKilled 重启（restartCount=1，limit 仍为 128Mi，revision=1 无规格变化），属于次要异常，不构成规格回归。关于修复方式：本故障为内存限额不足，重建 Pod 会沿用当前 Deployment 模板（currencyservice revision 6，16Mi），无法修复该故障，因此不建议重建 Pod，也不建议直接改限额或重启工作负载；可回退的历史模板（revision 5，128Mi）存在，应通过回退发布恢复规格，并由人工确认目标 revision。
+证据 7 条，工具调用 7 次
+  - [refuted] frontend 自身的 Pod 出现崩溃/重启（含 OOMKilled）或就绪性失败，导致首页返回 500 且探针失败。
+  - [supported] frontend 自身健康，但命名空间内某个依赖服务（backend/cart/checkout 等）出现 OOMKilled、重启或资源规格下调，使 frontend 上游调用失败并返回 500。
+  - [supported] 近期一次发布变更降低了某工作负载（frontend 或依赖）的内存限额，造成反复 OOMKilled，属于可回退的规格回归。

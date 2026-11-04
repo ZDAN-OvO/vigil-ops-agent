@@ -1,0 +1,17 @@
+MS03 run2 final
+2026-11-04T17:31:21Z
+REV   LIM     REQ
+7     128Mi   64Mi
+NAME                               RESTARTS   READY   LAST
+currencyservice-567db8cb65-f5jbg   0          true    <none>
+probe: ['1']
+alerts: none
+act-150f872a4097 rollout_undo vigil-shop/currencyservice [succeeded]
+目标版本 revision 6 → 5，uid f53f30e5-f4ad-4d72-a493-d2f417b3bf3d，resourceVersion 13140
+创建于 2026-11-04T17:24:58.148811+00:00，已等待 6m26s
+审批：approved by ms03-reviewer at 2026-11-04T17:25:28.058195+00:00，有效期至 2026-11-04T17:40:28.058195+00:00
+执行：att-d2e9f93ac862 verified
+验证：{"ok": true, "raw_ref": "evidence/action-check-vigil-lab/8312e1f516f0482bbc075ae55bec43a7.json", "runtime": {"uid": "f53f30e5-f4ad-4d72-a493-d2f417b3bf3d", "pods": [{"uid": "514fd850-87f8-480a-bb00-4b225249128f", "name": "currencyservice-567db8cb65-f5jbg", "phase": "Running", "ready": true, "restarts": 0, "last_terminated_reason": null, "last_terminated_exit_code": null}], "image": "gcr.io/google-samples/microservices-demo/currencyservice@sha256:16d16968f90aff24d4170ca7c4c0ff97303612b98c509052d5c3618f6e75937a", "replicas": 1, "revision": 7, "memory_limit": "128Mi", "memory_request": "64Mi", "resource_version": "13382", "available_replicas": 1}, "samples": 21, "ready_pods": 1, "pod_restarts": 0, "tail_failures": 0, "failed_samples": 0, "window_seconds": 300, "memory_limit_restored": true}
+  2026-11-04T17:24:58.151284+00:00 investigation-runtime action.proposed
+  2026-11-04T17:25:28.060541+00:00 ms03-reviewer action.approved
+  2026-11-04T17:31:10.341959+00:00 action-executor action.succeeded

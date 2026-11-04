@@ -1,0 +1,6 @@
+调查 inv-ad00d3655493：completed
+根因候选：frontend 自身健康（Pod Running/Ready，restartCount=0，Deployment 仅 revision 1、无近期发布），故障位于依赖链路：currencyservice 的 Deployment revision 4（创建于 2026-11-04 16:49:34，对应新 Pod 16:48:16 创建）将容器内存 limit 从历史 revision 3 的 128Mi 下调到 16Mi（request 64Mi→8Mi），导致 currencyservice Pod 反复 OOMKilled（exit_code 137）、restartCount=6、处于 CrashLoopBackOff 且 Ready=False，readiness/liveness 探针超时（10.42.0.80:7000、10.42.0.42:7000 连接超时）。probe_success{job="frontend-probe"} 自 16:48:17 起出现 0，并在 17:01:47 之后持续为 0，与依赖侧故障时间线一致；frontend 因下游不可用而返回 500、FrontendProbeFailed 持续 firing。frontend 服务端内部代码缺陷不在证据范围内，未被证实。
+证据 7 条，工具调用 7 次
+  - [refuted] frontend Pod 自身不健康（反复重启/OOMKilled 或未就绪），导致探针失败与首页 500。
+  - [refuted] frontend Deployment 近期发布的新 revision 引入了缺陷（镜像/配置变更，或资源规格被下调导致规格不足）。
+  - [supported] 故障位于依赖链路（frontend 所调用的后端服务不可用或变慢），frontend 进程本身健康但返回 500。
