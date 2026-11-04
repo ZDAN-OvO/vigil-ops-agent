@@ -345,6 +345,7 @@ def act(
     deployment: str = typer.Option(..., help="目标 Deployment"),
     reason: str = typer.Option(..., help="发起原因"),
     namespace: str | None = typer.Option(None, help="默认读配置"),
+    investigation: str | None = typer.Option(None, help="关联的调查 ID"),
     actor: str = typer.Option("operator", help="发起人"),
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
@@ -355,7 +356,11 @@ def act(
             await store.migrate()
             async with _open_executor(Settings(), store) as executor:
                 return await executor.propose_rollback(
-                    deployment=deployment, reason=reason, actor=actor, namespace=namespace
+                    deployment=deployment,
+                    reason=reason,
+                    actor=actor,
+                    namespace=namespace,
+                    investigation_id=investigation,
                 )
 
     try:
