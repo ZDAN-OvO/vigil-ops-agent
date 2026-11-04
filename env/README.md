@@ -187,7 +187,40 @@ uv run --frozen aiops db status
 
 这是单机实验实例，没有备份、副本或连接池容量规划，不构成生产建议。
 
-## 9. 复位与删除
+## 9. 告警入口
+
+AlertManager 通过 webhook 把 firing 告警交给 `aiops serve`。接收端只保留白名单标签，`scenario` 等实验标记不会进入事件。
+
+| 项目 | 实测值 |
+|---|---|
+| 接收地址 | `http://172.20.0.1:8081/webhook/alertmanager` |
+| 172.20.0.1 | k3d 网络网关，即宿主在 `k3d-vigil-lab` 网络上的地址；换机器要重新确认 |
+| 鉴权 | `Authorization: Bearer <token>`，token 存于 Secret `vigil-webhook-token` 的 `token` 键 |
+| 路由 | `alertname="FrontendProbeFailed"` 走 `vigil-webhook`，其余仍为 `default` |
+| 去重 | 同一告警指纹在 `VIGIL_DEDUP_MINUTES`（默认 10 分钟）内只建一次事件 |
+
+宿主地址可用下面的命令确认，不要把 172.20.0.1 当成固定值：
+
+```bash
+docker inspect k3d-vigil-lab-server-0 --format '{{range $n, $net := .NetworkSettings.Networks}}{{$n}} gw={{$net.Gateway}}{{"\n"}}{{end}}'
+```
+
+启动接收端前先建 Secret，token 从 `.env` 读取，不写入仓库：
+
+```bash
+kubectl create secret generic vigil-webhook-token -n vigil-monitoring \
+  --from-literal=token="$(grep '^VIGIL_WEBHOOK_TOKEN=' .env | cut -d= -f2-)"
+```
+
+```bash
+uv run --frozen aiops serve --host 172.20.0.1 --port 8081
+```
+
+调查仍需要 Prometheus 的 port-forward 在位。收到告警后服务先返回 202，再异步发起调查；`aiops incidents` 查看事件，`aiops report <investigation_id>` 查看结论与证据统计。
+
+2026-11-04 实测：经 AlertManager 的 v2 API 投递一条带 `scenario` 标签的测试告警，接收端返回 202，建立事件 `inc-4845d5099c7c` 与调查 `inv-42f562005c5f`；事件上下文不含 `scenario`；同一指纹再次投递返回 `deduplicated`。调查结论为 `inconclusive`，因为真实探测当时健康，假设被证据反驳。
+
+## 10. 复位与删除
 
 故障实验的复位由 F01 脚本完成，保留坏 ReplicaSet 作为证据，最终业务和监控工作负载保持健康。
 

@@ -20,11 +20,9 @@ from aiops.contracts import (
     TimeRange,
 )
 from aiops.db import Store, StoreUnavailable
-from aiops.investigation.runtime import InvestigationRuntime, Report
-from aiops.investigation.toolbox import Toolbox
-from aiops.model import ModelClient
-from aiops.tools.kubernetes import KubernetesRead
-from aiops.tools.prometheus import PrometheusClient
+from aiops.investigation.factory import open_runtime
+from aiops.investigation.runtime import Report
+from aiops.webhook import build_app
 
 app = typer.Typer(
     help="Vigil AIOps：故障调查与受控修复（当前支持只读调查）。",
@@ -193,40 +191,14 @@ def investigate(
                     )
                 ]
             )
-            async with PrometheusClient.connect(
-                settings.prometheus_url,
-                timeout_seconds=settings.tool_timeout_seconds,
-                max_points=settings.tool_max_points,
-                max_series=settings.tool_max_series,
-            ) as prometheus:
-                toolbox = Toolbox(
-                    prometheus,
-                    KubernetesRead(
-                        kubeconfig=settings.kubeconfig,
-                        context_name=settings.kube_context,
-                        max_items=settings.tool_max_items,
-                    ),
-                )
-                async with ModelClient.connect(
-                    settings.model_base_url,
-                    model=settings.model_name,
-                    api_key=settings.model_api_key,
-                    timeout_seconds=settings.model_timeout_seconds,
-                    max_retries=settings.model_max_retries,
-                ) as model:
-                    runtime = InvestigationRuntime(
-                        store=store,
-                        toolbox=toolbox,
-                        model=model,
-                        dsn=dsn,
-                        incident=incident,
-                        investigation=investigation,
-                        observation_window=incident.time_range,
-                        runtime_path=settings.runtime_path,
-                        tool_timeout_seconds=settings.tool_timeout_seconds,
-                        max_observation_chars=settings.investigation_max_observation_chars,
-                    )
-                    return await runtime.run()
+            async with open_runtime(
+                settings=settings,
+                store=store,
+                dsn=dsn,
+                incident=incident,
+                investigation=investigation,
+            ) as runtime:
+                return await runtime.run()
 
     try:
         report = asyncio.run(run())
@@ -240,6 +212,107 @@ def investigate(
     if report.status is InvestigationStatus.INCONCLUSIVE:
         raise typer.Exit(code=5)
     raise typer.Exit(code=1)
+
+
+@app.command()
+def incidents(
+    limit: int = typer.Option(20, min=1, max=200),
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """列出最近的告警事件及关联调查。"""
+
+    async def run() -> list[dict]:
+        async with Store.open(_require_dsn()) as store:
+            items = await store.list_incidents(limit)
+            return [
+                {
+                    "incident_id": incident.id,
+                    "service": incident.service,
+                    "symptoms": incident.symptoms,
+                    "trigger": incident.trigger,
+                    "alert_ids": incident.alert_ids,
+                    "investigations": [
+                        {"id": investigation.id, "status": investigation.status.value}
+                        for investigation in await store.list_investigations(incident.id)
+                    ],
+                }
+                for incident in items
+            ]
+
+    try:
+        items = asyncio.run(run())
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if output == OutputFormat.JSON:
+        typer.echo(json.dumps({"schema_version": "1", "data": items}, ensure_ascii=False))
+        return
+    for item in items:
+        ids = ", ".join(f"{inv['id']}({inv['status']})" for inv in item["investigations"])
+        typer.echo(
+            f"{item['incident_id']} {item['service']} [{item['trigger']}] {item['symptoms']}"
+        )
+        typer.echo(f"  调查：{ids or '无'}")
+
+
+@app.command()
+def report(investigation_id: str, output: OutputFormat = OutputFormat.TEXT) -> None:
+    """按调查 ID 查看已持久化的结论与证据统计。"""
+
+    async def run() -> Report:
+        async with Store.open(_require_dsn()) as store:
+            saved = await store.get_investigation(investigation_id)
+            if saved is None:
+                raise LookupError(investigation_id)
+            hypotheses = await store.list_hypotheses(investigation_id)
+            evidence = await store.list_evidence(investigation_id)
+            calls = await store.list_tool_calls(investigation_id)
+        return Report(
+            investigation_id=saved.id,
+            status=saved.status,
+            conclusion=saved.conclusion,
+            termination_reason=saved.termination_reason,
+            hypotheses=[
+                {"statement": hypothesis.statement, "status": hypothesis.status.value}
+                for hypothesis in hypotheses
+            ],
+            evidence_count=len(evidence),
+            tool_call_count=len(calls),
+        )
+
+    try:
+        result = asyncio.run(run())
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    except LookupError as exc:
+        typer.echo(f"调查不存在：{exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    _print_report(result, output)
+
+
+@app.command()
+def serve(
+    host: str | None = typer.Option(None, help="监听地址，默认读配置"),
+    port: int | None = typer.Option(None, help="监听端口，默认读配置"),
+) -> None:
+    """启动 AlertManager webhook 服务；收到告警后异步发起调查。"""
+    settings = Settings()
+    if settings.webhook_token is None:
+        typer.echo("未配置 VIGIL_WEBHOOK_TOKEN，拒绝启动无鉴权的 webhook。", err=True)
+        raise typer.Exit(code=2)
+    _require_dsn()
+    if settings.model_name is None:
+        typer.echo("未配置 VIGIL_MODEL_NAME，无法发起调查。", err=True)
+        raise typer.Exit(code=2)
+
+    import uvicorn
+
+    uvicorn.run(
+        build_app(settings),
+        host=host or settings.webhook_host,
+        port=port or settings.webhook_port,
+    )
 
 
 if __name__ == "__main__":

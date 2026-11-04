@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     investigation_budget_seconds: int = 300
     investigation_max_observation_chars: int = 4000
 
+    # 告警入口。token 未配置时服务拒绝启动，避免裸奔的 webhook。
+    cluster: str = "vigil-lab"
+    namespace: str = "vigil-shop"
+    webhook_token: SecretStr | None = None
+    webhook_host: str = "127.0.0.1"
+    webhook_port: int = 8081
+    dedup_minutes: int = 10
+
     @property
     def runtime_path(self) -> Path:
         return (PROJECT_ROOT / self.runtime_dir).resolve()
