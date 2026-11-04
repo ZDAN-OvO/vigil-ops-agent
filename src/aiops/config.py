@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = 60.0
     model_max_retries: int = 2
 
+    # 调查预算同样是临时默认值，等实验后冻结。
+    investigation_budget_tool_calls: int = 8
+    investigation_budget_model_calls: int = 6
+    investigation_budget_seconds: int = 300
+    investigation_max_observation_chars: int = 4000
+
     @property
     def runtime_path(self) -> Path:
         return (PROJECT_ROOT / self.runtime_dir).resolve()

@@ -271,6 +271,22 @@ class Store:
             for row in rows
         ]
 
+    async def set_hypothesis_status(self, hypothesis_id: str, status: str) -> None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE hypotheses SET status = %s WHERE id = %s", (status, hypothesis_id)
+            )
+            if cursor.rowcount != 1:
+                raise LookupError(f"假设不存在：{hypothesis_id}")
+
+    async def set_evidence_relation(self, evidence_id: str, relation: str) -> None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE evidence SET relation = %s WHERE id = %s", (relation, evidence_id)
+            )
+            if cursor.rowcount != 1:
+                raise LookupError(f"证据不存在：{evidence_id}")
+
     async def save_tool_call(self, call: ToolCall) -> None:
         async with self._pool.connection() as conn:
             await conn.execute(
