@@ -5,6 +5,8 @@ description = "面向 Kubernetes 的可审计故障调查与受控修复"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "httpx>=0.28,<1",
+    "kubernetes>=33,<36",
     "loguru>=0.7,<1",
     "psycopg[binary,pool]>=3.3,<4",
     "pydantic>=2.10,<3",
