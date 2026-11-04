@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     environment: Literal["local", "test"] = "local"
     runtime_dir: Path = Path("runtime")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    database_url: str | None = None
 
     @property
     def runtime_path(self) -> Path:
