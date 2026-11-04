@@ -22,6 +22,8 @@ class QueryRequest(BaseModel):
         "kubernetes.list_deployments",
         "kubernetes.list_pods",
         "kubernetes.list_events",
+        "kubernetes.list_services",
+        "kubernetes.list_logs",
     ]
     purpose: str
     expression: str

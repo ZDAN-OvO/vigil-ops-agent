@@ -1,0 +1,13 @@
+MS04 final state
+2026-11-04T18:01:09Z
+service redis-cart selector=redis-cart
+proxy deployment: Error from server (NotFound): deployments.apps "redis-access-proxy" not found
+home: 200 0.008500s
+cart: 200 0.090784s
+probe_duration_2m_s: 0.010349696125
+probe_success: 1
+alerts: none
+NAME                          APP           RESTARTS   READY
+cartservice-d8584dd58-qndxd   cartservice   0          true
+frontend-7797c7cd78-rrgzw     frontend      0          true
+redis-cart-dd5d68467-g7d42    redis-cart    0          true

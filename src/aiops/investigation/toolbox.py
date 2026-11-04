@@ -71,6 +71,17 @@ class Toolbox:
                 return await self._kubernetes.list_events(
                     context, time_range, involved_name=request.involved_name or None
                 )
+            case "kubernetes.list_services":
+                return await self._kubernetes.list_services(
+                    context, time_range, selector=request.selector or None
+                )
+            case "kubernetes.list_logs":
+                return await self._kubernetes.list_logs(
+                    context,
+                    time_range,
+                    selector=request.selector or None,
+                    pod_name=request.involved_name or None,
+                )
         return _invalid(request, time_range, f"未注册的工具：{request.tool}")
 
     async def _prometheus_query(

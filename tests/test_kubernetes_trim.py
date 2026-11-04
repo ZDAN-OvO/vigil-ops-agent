@@ -2,10 +2,12 @@
 
 from aiops.tools.kubernetes import (
     matches_selector,
+    matches_service_selector,
     trim_deployment,
     trim_event,
     trim_pod,
     trim_replica_set,
+    trim_service,
 )
 
 
@@ -208,3 +210,29 @@ def test_deployment_selector_matches_template_labels():
 
     assert matches_selector("app=currencyservice", item)
     assert not matches_selector("app=frontend", item)
+
+
+def test_service_trim_exposes_selector_and_ports():
+    service = {
+        "metadata": {"name": "redis-cart", "labels": {}},
+        "spec": {
+            "type": "ClusterIP",
+            "cluster_ip": "10.43.105.174",
+            "selector": {"app": "redis-cart"},
+            "ports": [{"name": "tcp-redis", "port": 6379, "target_port": 6379}],
+        },
+    }
+
+    trimmed = trim_service(service)
+
+    assert trimmed["name"] == "redis-cart"
+    assert trimmed["selector"] == {"app": "redis-cart"}
+    assert trimmed["ports"][0]["port"] == 6379
+
+
+def test_service_selector_accepts_name_or_label():
+    item = {"name": "redis-cart", "labels": {"app": "redis-cart"}, "selector": {}}
+
+    assert matches_service_selector("redis-cart", item)
+    assert matches_service_selector("app=redis-cart", item)
+    assert not matches_service_selector("app=frontend", item)

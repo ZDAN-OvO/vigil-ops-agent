@@ -145,6 +145,33 @@ def matches_selector(selector: str, item: dict[str, Any]) -> bool:
     return True
 
 
+def trim_service(service: dict[str, Any]) -> dict[str, Any]:
+    metadata = service.get("metadata") or {}
+    spec = service.get("spec") or {}
+    return {
+        "name": metadata.get("name"),
+        "labels": metadata.get("labels") or {},
+        "type": spec.get("type"),
+        "cluster_ip": spec.get("cluster_ip"),
+        "selector": spec.get("selector") or {},
+        "ports": [
+            {
+                "name": port.get("name"),
+                "port": port.get("port"),
+                "target_port": port.get("target_port"),
+            }
+            for port in spec.get("ports") or []
+        ],
+    }
+
+
+def matches_service_selector(selector: str, item: dict[str, Any]) -> bool:
+    """标签选择器或服务名都能命中，避免模型把服务名当选择器时得到空结果。"""
+    if "=" in selector:
+        return matches_selector(selector, item)
+    return selector in (item.get("name") or "")
+
+
 def trim_event(event: dict[str, Any]) -> dict[str, Any]:
     involved = event.get("involved_object") or {}
     return {
@@ -302,6 +329,77 @@ class KubernetesRead:
                 trimmed["revisions"] = revisions[-5:]
                 items.append(trimmed)
             return self._limit(items)
+
+        return await self._call(context, time_range, query, call)
+
+    async def list_services(
+        self,
+        context: ToolContext,
+        time_range: TimeRange,
+        *,
+        selector: str | None = None,
+    ) -> ToolResult:
+        core, _ = self._clients()
+        query = {"kind": "services", "namespace": context.namespace, "selector": selector}
+
+        def call() -> tuple[list[dict[str, Any]], bool]:
+            response = core.list_namespaced_service(context.namespace)
+            items = [trim_service(item.to_dict()) for item in response.items]
+            if selector:
+                items = [item for item in items if matches_service_selector(selector, item)]
+            return self._limit(items)
+
+        return await self._call(context, time_range, query, call)
+
+    async def list_logs(
+        self,
+        context: ToolContext,
+        time_range: TimeRange,
+        *,
+        selector: str | None = None,
+        pod_name: str | None = None,
+    ) -> ToolResult:
+        tool_call_id = uuid.uuid4().hex
+        query = {
+            "kind": "logs",
+            "namespace": context.namespace,
+            "selector": selector,
+            "pod": pod_name,
+        }
+        if not selector and not pod_name:
+            return self._failure(
+                tool_call_id, time_range, query, "invalid_argument", "需要 selector 或 Pod 名称"
+            )
+        core, _ = self._clients()
+        window = max(60, min(3600, int((time_range.end - time_range.start).total_seconds())))
+
+        def call() -> tuple[list[dict[str, Any]], bool]:
+            if pod_name:
+                pods = [core.read_namespaced_pod(pod_name, context.namespace)]
+            else:
+                pods = core.list_namespaced_pod(context.namespace, label_selector=selector).items[
+                    :1
+                ]
+            items = []
+            for pod in pods:
+                containers = [container.name for container in pod.spec.containers or []]
+                container = containers[0] if containers else None
+                text = core.read_namespaced_pod_log(
+                    pod.metadata.name,
+                    context.namespace,
+                    container=container,
+                    tail_lines=60,
+                    since_seconds=window,
+                    timestamps=True,
+                )
+                items.append(
+                    {
+                        "pod": pod.metadata.name,
+                        "container": container,
+                        "lines": (text or "").splitlines()[-60:],
+                    }
+                )
+            return items, False
 
         return await self._call(context, time_range, query, call)
 
