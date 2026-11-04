@@ -195,14 +195,77 @@ class ActionTarget(Contract):
     resource_version: str
 
 
+class ActionOrigin(StrEnum):
+    OPERATOR = "operator"
+    MODEL = "model"
+
+
+class ProposalStatus(StrEnum):
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    DENIED = "denied"
+    EXECUTING = "executing"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+
+class AttemptStatus(StrEnum):
+    INTENT = "intent"
+    EXECUTING = "executing"
+    VERIFIED = "verified"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+
+class ApprovalDecision(StrEnum):
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 class ActionProposal(Contract):
     id: str
-    investigation_id: str
     kind: ActionKind
     target: ActionTarget
     parameters: dict[str, Any]
-    evidence_ids: list[str] = Field(min_length=1)
     idempotency_key: str
+    reason: str
+    created_at: AwareDatetime
+    origin: ActionOrigin = ActionOrigin.OPERATOR
+    investigation_id: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+    status: ProposalStatus = ProposalStatus.PENDING_APPROVAL
+
+    @model_validator(mode="after")
+    def model_proposal_needs_evidence(self) -> Self:
+        if self.origin is ActionOrigin.MODEL and not self.evidence_ids:
+            raise ValueError("模型提案必须绑定证据；人工提案记录操作者")
+        return self
+
+
+class ActionAttempt(Contract):
+    id: str
+    proposal_id: str
+    status: AttemptStatus
+    idempotency_key: str
+    snapshot: dict[str, Any]
+    request: dict[str, Any]
+    started_at: AwareDatetime
+    result: dict[str, Any] | None = None
+    verification: dict[str, Any] | None = None
+    finished_at: AwareDatetime | None = None
+
+
+class Approval(Contract):
+    id: str
+    proposal_id: str
+    proposal_hash: str
+    actor: str
+    decision: ApprovalDecision
+    reason: str
+    decided_at: AwareDatetime
+    expires_at: AwareDatetime | None = None
 
 
 class RiskDisposition(StrEnum):

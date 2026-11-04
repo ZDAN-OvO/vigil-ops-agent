@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     webhook_port: int = 8081
     dedup_minutes: int = 10
 
+    # 受控执行的时间窗，同样是临时默认值。
+    action_rollout_timeout_seconds: float = 180.0
+    action_verify_seconds: int = 90
+    action_sample_seconds: int = 15
+
     @property
     def runtime_path(self) -> Path:
         return (PROJECT_ROOT / self.runtime_dir).resolve()

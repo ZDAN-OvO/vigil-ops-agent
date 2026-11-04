@@ -21,7 +21,7 @@ def test_status_json_reports_only_implemented_capabilities():
     payload = json.loads(result.stdout)
     assert payload["stage"] == "W0"
     assert payload["capabilities"]["investigation"] is True
-    assert payload["capabilities"]["remediation"] is False
+    assert payload["capabilities"]["remediation"] is True
     assert payload["external_services_checked"] is False
 
 
