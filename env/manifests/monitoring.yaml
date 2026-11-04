@@ -73,8 +73,21 @@ data:
       group_wait: 10s
       group_interval: 30s
       repeat_interval: 1h
+      routes:
+        - matchers:
+            - alertname="FrontendProbeFailed"
+          receiver: vigil-webhook
+          group_wait: 10s
     receivers:
       - name: default
+      - name: vigil-webhook
+        webhook_configs:
+          - url: http://172.20.0.1:8081/webhook/alertmanager
+            send_resolved: false
+            http_config:
+              authorization:
+                type: Bearer
+                credentials_file: /etc/alertmanager/secrets/token
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -201,6 +214,9 @@ spec:
               mountPath: /etc/alertmanager
             - name: data
               mountPath: /alertmanager
+            - name: webhook-token
+              mountPath: /etc/alertmanager/secrets
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /-/ready
@@ -219,6 +235,12 @@ spec:
             name: alertmanager-config
         - name: data
           emptyDir: {}
+        - name: webhook-token
+          secret:
+            secretName: vigil-webhook-token
+            items:
+              - key: token
+                path: token
 ---
 apiVersion: v1
 kind: Service

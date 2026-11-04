@@ -161,6 +161,99 @@ class Store:
                 ),
             )
 
+    async def find_recent_incident(self, fingerprints: Sequence[str], *, since) -> Incident | None:
+        """按告警指纹取最近的事件，用于基本去重。"""
+        if not fingerprints:
+            return None
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM incidents
+                 WHERE alert_ids && %s AND created_at >= %s
+                 ORDER BY created_at DESC
+                 LIMIT 1
+                """,
+                (list(fingerprints), since),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return Incident(
+            id=row["id"],
+            environment=row["environment"],
+            cluster=row["cluster"],
+            namespace=row["namespace"],
+            service=row["service"],
+            trigger=row["trigger"],
+            symptoms=row["symptoms"],
+            time_range=TimeRange(start=row["time_start"], end=row["time_end"]),
+            alert_ids=row["alert_ids"],
+            context=row["context"],
+        )
+
+    async def list_incidents(self, limit: int = 20) -> list[Incident]:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM incidents ORDER BY created_at DESC, id LIMIT %s", (limit,)
+            )
+            rows = await cursor.fetchall()
+        return [
+            Incident(
+                id=row["id"],
+                environment=row["environment"],
+                cluster=row["cluster"],
+                namespace=row["namespace"],
+                service=row["service"],
+                trigger=row["trigger"],
+                symptoms=row["symptoms"],
+                time_range=TimeRange(start=row["time_start"], end=row["time_end"]),
+                alert_ids=row["alert_ids"],
+                context=row["context"],
+            )
+            for row in rows
+        ]
+
+    async def list_investigations(self, incident_id: str) -> list[Investigation]:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM investigations WHERE incident_id = %s ORDER BY started_at, id",
+                (incident_id,),
+            )
+            rows = await cursor.fetchall()
+        return [
+            Investigation(
+                id=row["id"],
+                incident_id=row["incident_id"],
+                parent_run_id=row["parent_run_id"],
+                status=InvestigationStatus(row["status"]),
+                model=row["model"],
+                policy_version=row["policy_version"],
+                budget=Budget(
+                    max_tool_calls=row["budget_tool_calls"],
+                    max_model_calls=row["budget_model_calls"],
+                    max_wall_clock_seconds=row["budget_wall_clock_seconds"],
+                ),
+                usage=BudgetUsage(
+                    tool_calls=row["used_tool_calls"],
+                    model_calls=row["used_model_calls"],
+                ),
+                conclusion=row["conclusion"],
+                termination_reason=row["termination_reason"],
+                started_at=row["started_at"],
+                finished_at=row["finished_at"],
+            )
+            for row in rows
+        ]
+
+    async def mark_investigation_running(self, investigation_id: str, started_at) -> None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE investigations SET status = 'running', started_at = %s WHERE id = %s",
+                (started_at, investigation_id),
+            )
+            if cursor.rowcount != 1:
+                raise LookupError(f"调查不存在：{investigation_id}")
+
     async def get_investigation(self, investigation_id: str) -> Investigation | None:
         async with self._pool.connection() as conn:
             cursor = await conn.execute(
