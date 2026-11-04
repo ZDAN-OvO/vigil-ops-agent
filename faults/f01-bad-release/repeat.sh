@@ -7,7 +7,7 @@ export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/vigil-lab.yaml}"
 KUBECTL="${KUBECTL:-kubectl}"
 NS="${NS:-vigil-shop}"
 MON="${MON:-vigil-monitoring}"
-BAD="${BAD:-vigil/productcatalogservice-bad:exp-20261104-1}"
+BAD="${BAD:-vigil/productcatalogservice:canary-20261104}"
 HEALTHY="${HEALTHY:-gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef}"
 PF_PORT="${PF_PORT:-8080}"
 PF_LOG="${PF_LOG:-${TMPDIR:-/tmp}/vigil-f01-port-forward.log}"
@@ -32,9 +32,10 @@ deploy_image() {
 }
 bad_rs_replicas() {
   "$KUBECTL" get rs -n "$NS" -l app=productcatalogservice -o json 2>/dev/null \
-    | python3 -I -c 'import sys,json
+    | BAD_IMAGE="$BAD" python3 -I -c 'import os,sys,json
+bad = os.environ["BAD_IMAGE"]
 for r in json.load(sys.stdin)["items"]:
-    if r["spec"]["template"]["spec"]["containers"][0]["image"].startswith("vigil/productcatalogservice-bad"):
+    if r["spec"]["template"]["spec"]["containers"][0]["image"] == bad:
         print(r["spec"].get("replicas", 0)); break
 else: print(0)' 2>/dev/null || echo 0
 }
