@@ -1,0 +1,15 @@
+# 拒绝路径（跨进程） 2026-11-04T15:28:50Z
+proposal=act-fec2807deece
+提案 act-fec2807deece：rejected
+reject_exit=0
+--- 提案状态
+act-fec2807deece rollout_undo vigil-shop/productcatalogservice [rejected]
+目标版本 revision 30 → 29，uid a4c96990-fb28-40a5-bdf9-55cca7cc3062，resourceVersion 10554
+创建于 2026-11-04T15:28:54.320270+00:00，已等待 7s
+审批：rejected by ms02-reviewer at 2026-11-04T15:28:58.218400+00:00，有效期至 2026-11-04T15:43:58.218400+00:00
+执行：尚未开始
+  2026-11-04T15:28:54.324049+00:00 ms02-operator action.proposed
+  2026-11-04T15:28:58.220772+00:00 ms02-reviewer action.rejected
+--- 集群未写入
+revision: 30
+home: 500

@@ -1,0 +1,3 @@
+# 提案 2026-11-04T15:24:28Z
+{"schema_version": "1", "status": "pending_approval", "action_id": "act-83ecd5d53f68", "data": {"target": {"cluster": "vigil-lab", "namespace": "vigil-shop", "kind": "Deployment", "name": "productcatalogservice", "uid": "a4c96990-fb28-40a5-bdf9-55cca7cc3062", "resource_version": "10393"}, "parameters": {"from_revision": 28, "to_revision": 27, "target_image": "gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef"}, "disposition": "approval", "reasons": ["动作 rollout_undo", "目标在实验命名空间", "首次执行需人工审批", "人工发起"]}}
+exit=3

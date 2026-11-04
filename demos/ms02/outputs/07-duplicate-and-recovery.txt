@@ -1,0 +1,19 @@
+# 重复 resume 与恢复观测 2026-11-04T15:27:32Z
+未执行（already_executed）：提案已有执行记录，不重复写
+exit=1
+--- 提案最终状态
+act-83ecd5d53f68 rollout_undo vigil-shop/productcatalogservice [succeeded]
+目标版本 revision 28 → 27，uid a4c96990-fb28-40a5-bdf9-55cca7cc3062，resourceVersion 10393
+创建于 2026-11-04T15:24:32.114709+00:00，已等待 3m07s
+审批：approved by ms02-reviewer-1 at 2026-11-04T15:25:00.642880+00:00，有效期至 2026-11-04T15:40:00.642880+00:00
+执行：att-6fdd65ccc940 verified
+验证：{"ok": true, "raw_ref": "evidence/action-check-vigil-lab/90c3149c0e92464ab26dc6d00e1b45c7.json", "samples": 7, "tail_failures": 0, "failed_samples": 0, "window_seconds": 90}
+  2026-11-04T15:24:32.119138+00:00 ms02-operator action.proposed
+  2026-11-04T15:25:00.644888+00:00 ms02-reviewer-1 action.approved
+  2026-11-04T15:25:16.568653+00:00 ms02-reviewer-1 action.resumed
+  2026-11-04T15:27:18.819940+00:00 action-executor action.succeeded
+--- 集群
+image: gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef
+revision: 29
+probe_success: 1
+home: 200

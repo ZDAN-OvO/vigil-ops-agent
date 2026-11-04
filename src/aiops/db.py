@@ -49,6 +49,10 @@ class DuplicateProposal(RuntimeError):
     """同一目标版本已有进行中的提案。"""
 
 
+class DuplicateAttempt(RuntimeError):
+    """同一提案已有执行记录，不得再次写入。"""
+
+
 def migration_files() -> list[Path]:
     return sorted(MIGRATIONS_DIR.glob("*.sql"))
 
@@ -593,6 +597,17 @@ class Store:
             if cursor.rowcount != 1:
                 raise LookupError(f"提案不存在：{proposal_id}")
 
+    async def transition_proposal(
+        self, proposal_id: str, *, expected: ProposalStatus, target: ProposalStatus
+    ) -> bool:
+        """仅当当前状态为 expected 时迁移；返回是否抢到这次迁移。"""
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE action_proposals SET status = %s WHERE id = %s AND status = %s",
+                (target.value, proposal_id, expected.value),
+            )
+            return cursor.rowcount == 1
+
     async def save_approval(self, approval: Approval) -> None:
         async with self._pool.connection() as conn:
             await conn.execute(
@@ -636,26 +651,29 @@ class Store:
 
     async def save_attempt(self, attempt: ActionAttempt) -> None:
         async with self._pool.connection() as conn:
-            await conn.execute(
-                """
-                INSERT INTO action_attempts (
-                    id, proposal_id, status, idempotency_key, snapshot, request,
-                    result, verification, started_at, finished_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    attempt.id,
-                    attempt.proposal_id,
-                    attempt.status.value,
-                    attempt.idempotency_key,
-                    Jsonb(attempt.snapshot),
-                    Jsonb(attempt.request),
-                    Jsonb(attempt.result) if attempt.result is not None else None,
-                    Jsonb(attempt.verification) if attempt.verification is not None else None,
-                    attempt.started_at,
-                    attempt.finished_at,
-                ),
-            )
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO action_attempts (
+                        id, proposal_id, status, idempotency_key, snapshot, request,
+                        result, verification, started_at, finished_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        attempt.id,
+                        attempt.proposal_id,
+                        attempt.status.value,
+                        attempt.idempotency_key,
+                        Jsonb(attempt.snapshot),
+                        Jsonb(attempt.request),
+                        Jsonb(attempt.result) if attempt.result is not None else None,
+                        Jsonb(attempt.verification) if attempt.verification is not None else None,
+                        attempt.started_at,
+                        attempt.finished_at,
+                    ),
+                )
+            except psycopg.errors.UniqueViolation as exc:
+                raise DuplicateAttempt("该提案已有执行记录") from exc
 
     async def update_attempt(
         self,

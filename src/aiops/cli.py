@@ -340,7 +340,36 @@ async def _open_executor(settings: Settings, store: Store):
             rollout_timeout_seconds=settings.action_rollout_timeout_seconds,
             verify_seconds=settings.action_verify_seconds,
             sample_seconds=settings.action_sample_seconds,
+            approval_ttl_seconds=settings.action_approval_ttl_seconds,
         )
+
+
+def _report_attempt(attempt, output: OutputFormat) -> None:
+    if output == OutputFormat.JSON:
+        typer.echo(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "status": attempt.status.value,
+                    "action_id": attempt.proposal_id,
+                    "data": {"result": attempt.result, "verification": attempt.verification},
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    typer.echo(f"执行 {attempt.proposal_id}：{attempt.status.value}")
+    typer.echo(f"结果：{json.dumps(attempt.result, ensure_ascii=False)}")
+    typer.echo(f"验证：{json.dumps(attempt.verification, ensure_ascii=False)}")
+
+
+def _duration(since: datetime) -> str:
+    seconds = max(0, int((datetime.now(UTC) - since).total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
 
 
 @app.command("act")
@@ -452,7 +481,7 @@ def approvals(
     for item in items:
         typer.echo(
             f"{item.id} {item.kind.value} {item.target.namespace}/{item.target.name} "
-            f"[{item.status.value}] {item.reason}"
+            f"[{item.status.value}] 已等待 {_duration(item.created_at)} {item.reason}"
         )
 
 
@@ -461,6 +490,7 @@ def approve(
     proposal_id: str,
     actor: str = typer.Option("operator", help="审批人"),
     reason: str = typer.Option("", help="审批意见"),
+    defer: bool = typer.Option(False, "--defer", help="只记录审批，稍后用 resume 执行"),
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
     """批准并执行提案；执行前会再次校验目标，未知结果停止不重放。"""
@@ -469,7 +499,7 @@ def approve(
         async with Store.open(_require_dsn()) as store:
             await store.migrate()
             async with _open_executor(Settings(), store) as executor:
-                return await executor.approve(proposal_id, actor=actor, reason=reason)
+                return await executor.approve(proposal_id, actor=actor, reason=reason, defer=defer)
 
     try:
         attempt = asyncio.run(run())
@@ -480,23 +510,107 @@ def approve(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
+    if attempt is None:
+        typer.echo(f"提案 {proposal_id}：approved（未执行）")
+        typer.echo(f"继续执行：aiops resume {proposal_id}")
+        return
+    _report_attempt(attempt, output)
+    raise typer.Exit(code=0 if attempt.status.value == "verified" else 1)
+
+
+@app.command()
+def resume(
+    proposal_id: str,
+    actor: str = typer.Option("operator", help="继续执行的人"),
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """继续执行已批准的提案；重新校验有效期、提案哈希与目标资源版本。"""
+
+    async def run():
+        async with Store.open(_require_dsn()) as store:
+            await store.migrate()
+            async with _open_executor(Settings(), store) as executor:
+                return await executor.resume(proposal_id, actor=actor)
+
+    try:
+        attempt = asyncio.run(run())
+    except ActionError as exc:
+        typer.echo(f"未执行（{exc.code}）：{exc.message}", err=True)
+        raise typer.Exit(code=1) from exc
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    _report_attempt(attempt, output)
+    raise typer.Exit(code=0 if attempt.status.value == "verified" else 1)
+
+
+@app.command("proposal")
+def show_proposal(
+    proposal_id: str,
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """查看单个提案、最近一次审批与执行记录；用于重启后核对同一提案状态。"""
+
+    async def run():
+        async with Store.open(_require_dsn()) as store:
+            proposal = await store.get_proposal(proposal_id)
+            approval = await store.get_approval(proposal_id)
+            attempt = await store.get_attempt(proposal_id)
+            audit = await store.list_audit(proposal_id)
+            return proposal, approval, attempt, audit
+
+    try:
+        proposal, approval, attempt, audit = asyncio.run(run())
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    if proposal is None:
+        typer.echo(f"提案不存在：{proposal_id}", err=True)
+        raise typer.Exit(code=1)
     if output == OutputFormat.JSON:
         typer.echo(
             json.dumps(
                 {
                     "schema_version": "1",
-                    "status": attempt.status.value,
-                    "action_id": attempt.proposal_id,
-                    "data": {"result": attempt.result, "verification": attempt.verification},
+                    "data": {
+                        "proposal": proposal.model_dump(mode="json"),
+                        "approval": approval.model_dump(mode="json") if approval else None,
+                        "attempt": attempt.model_dump(mode="json") if attempt else None,
+                        "audit": [event.model_dump(mode="json") for event in audit],
+                    },
                 },
                 ensure_ascii=False,
             )
         )
+        return
+
+    typer.echo(
+        f"{proposal.id} {proposal.kind.value} "
+        f"{proposal.target.namespace}/{proposal.target.name} [{proposal.status.value}]"
+    )
+    typer.echo(
+        f"目标版本 revision {proposal.parameters.get('from_revision')} → "
+        f"{proposal.parameters.get('to_revision')}，uid {proposal.target.uid}，"
+        f"resourceVersion {proposal.target.resource_version}"
+    )
+    typer.echo(f"创建于 {proposal.created_at.isoformat()}，已等待 {_duration(proposal.created_at)}")
+    if approval is None:
+        typer.echo("审批：无")
     else:
-        typer.echo(f"执行 {attempt.proposal_id}：{attempt.status.value}")
-        typer.echo(f"结果：{json.dumps(attempt.result, ensure_ascii=False)}")
+        expires = approval.expires_at.isoformat() if approval.expires_at else "无"
+        typer.echo(
+            f"审批：{approval.decision.value} by {approval.actor} at "
+            f"{approval.decided_at.isoformat()}，有效期至 {expires}"
+        )
+    if attempt is None:
+        typer.echo("执行：尚未开始")
+    else:
+        typer.echo(f"执行：{attempt.id} {attempt.status.value}")
         typer.echo(f"验证：{json.dumps(attempt.verification, ensure_ascii=False)}")
-    raise typer.Exit(code=0 if attempt.status.value == "verified" else 1)
+    for event in audit:
+        typer.echo(f"  {event.occurred_at.isoformat()} {event.actor} {event.event}")
 
 
 @app.command()

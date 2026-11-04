@@ -1,0 +1,15 @@
+# 并发批准（同一提案，两个进程） 2026-11-04T15:29:17Z
+proposal=act-58394bfae960
+--- A exit=1
+未执行（not_pending）：提案状态为 approved，不能审批
+--- B exit=0
+提案 act-58394bfae960：approved（未执行）
+继续执行：aiops resume act-58394bfae960
+--- 提案与审计（只应有一条 action.approved）
+act-58394bfae960 rollout_undo vigil-shop/productcatalogservice [approved]
+目标版本 revision 30 → 29，uid a4c96990-fb28-40a5-bdf9-55cca7cc3062，resourceVersion 10554
+创建于 2026-11-04T15:29:21.079913+00:00，已等待 7s
+审批：approved by ms02-reviewer-b at 2026-11-04T15:29:24.859764+00:00，有效期至 2026-11-04T15:44:24.859764+00:00
+执行：尚未开始
+  2026-11-04T15:29:21.083843+00:00 ms02-operator action.proposed
+  2026-11-04T15:29:24.861847+00:00 ms02-reviewer-b action.approved

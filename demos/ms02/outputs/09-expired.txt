@@ -1,0 +1,20 @@
+# 过期路径 2026-11-04T15:28:22Z
+proposal=act-79ff5b02dcd0
+提案 act-79ff5b02dcd0：approved（未执行）
+继续执行：aiops resume act-79ff5b02dcd0
+已等待 3 秒
+未执行（expired）：审批已过期，需重新提案
+resume_exit=1
+--- 提案状态
+act-79ff5b02dcd0 rollout_undo vigil-shop/productcatalogservice [expired]
+目标版本 revision 30 → 29，uid a4c96990-fb28-40a5-bdf9-55cca7cc3062，resourceVersion 10554
+创建于 2026-11-04T15:28:26.140184+00:00，已等待 14s
+审批：approved by ms02-reviewer at 2026-11-04T15:28:30.109134+00:00，有效期至 2026-11-04T15:28:32.109134+00:00
+执行：尚未开始
+  2026-11-04T15:28:26.144121+00:00 ms02-operator action.proposed
+  2026-11-04T15:28:30.111537+00:00 ms02-reviewer action.approved
+  2026-11-04T15:28:36.631631+00:00 ms02-reviewer action.resumed
+  2026-11-04T15:28:36.640243+00:00 action-executor action.expired
+--- 集群未写入
+revision: 30
+home: 500
