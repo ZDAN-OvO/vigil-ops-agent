@@ -1,0 +1,16 @@
+# MS01 步骤 3：真实告警入口
+alert_firing=2026-11-04T13:42:27Z
+incident_id=inc-1b7afb60bb91
+investigation_id=inv-919644e08833
+fingerprint=ab769bbcfb100879
+        id        |    service     |            symptoms            |     alert_ids      |                                                           context                                                            
+------------------+----------------+--------------------------------+--------------------+------------------------------------------------------------------------------------------------------------------------------
+ inc-1b7afb60bb91 | frontend-probe | Frontend blackbox probe failed | {ab769bbcfb100879} | {alertname=FrontendProbeFailed,severity=critical,instance=http://frontend.vigil-shop.svc.cluster.local./,job=frontend-probe}
+(1 row)
+
+     event      |          occurred_at          |                                                   payload                                                    
+----------------+-------------------------------+--------------------------------------------------------------------------------------------------------------
+ alert.received | 2026-11-04 13:42:37.399315+00 | {"alerts": ["FrontendProbeFailed"], "incident_id": "inc-1b7afb60bb91", "fingerprints": ["ab769bbcfb100879"]}
+(1 row)
+
+dedup_response={"status":"deduplicated","incident_id":"inc-1b7afb60bb91"}

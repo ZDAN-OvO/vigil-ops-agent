@@ -1,0 +1,60 @@
+# MS01 步骤 4：模型调查取证
+investigation_id=inv-919644e08833
+  status   | used_model_calls | used_tool_calls |                                                                                                                                                                                                                                                 conclusion                                                                                                                                                                                                                                                 | termination_reason 
+-----------+------------------+-----------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------
+ completed |                3 |               8 | 结论（基于现有证据）：frontend 服务本身可连通且后端就绪，故障点在应用层返回 HTTP 500，而非工作负载不可用、Service/Endpoints 异常或网络超时。                                                                                                                                                                                                                                                                                                                                                              +| 
+           |                  |                 |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           +| 
+           |                  |                 | 证据链：                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  +| 
+           |                  |                 | 1) 探针状态演进：probe_success 在窗口前半段恒为 1，自 1793799678 起转为 0（ev-e581d51e7117）；同期 probe_http_status_code 由 200 → 一次 0 → 持续 500（ev-cbd1a76a167a），说明失败原因是 HTTP 响应码为 500，被 blackbox 判定为失败（非 2xx/3xx）。                                                                                                                                                                                                                                                         +| 
+           |                  |                 | 2) 网络与延迟被排除：probe_duration_seconds 除转换点一次 5.004s 尖峰外，失败采样仅 0.002s 量级，属快速失败而非超时（ev-1cbd38cf159a）。                                                                                                                                                                                                                                                                                                                                                                   +| 
+           |                  |                 | 3) 工作负载与端点被排除：frontend-7797c7cd78-rrgzw Running/Ready=True、restart_count=0（ev-51f1e5e578ce）；frontend Deployment 1/1 可用、无不可用副本（ev-0354f3d46f4d）；事件中无 frontend 相关镜像拉取失败、OOMKilled、探针失败或调度失败（ev-a1a7d1212116）。能够返回 500 本身即证明 Service 已把请求转发到 Pod。                                                                                                                                                                                      +| 
+           |                  |                 |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           +| 
+           |                  |                 | 下一层怀疑（未直接证实）：同一命名空间中 productcatalogservice 正在以 vigil/productcatalogservice:canary-20261104 反复滚动——Deployment generation=20（其余服务均为 1），事件显示 13:07 与 13:41 各有 Pod 被删除/重建（ev-0354f3d46f4d、ev-a1a7d1212116、ev-d22a0132995a 显示其新 Pod 为该 canary 镜像且 Running/Ready）。时间上与告警窗口相邻，符合“前端下游依赖（商品目录）异常 → frontend 返回 500”的模式，但当前无 frontend 日志、下游 5xx/错误率或 gRPC 状态指标，因果链尚属推断，不能作为已证实结论。+| 
+           |                  |                 |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           +| 
+           |                  |                 | 不确定/未覆盖：ev-b3c20f39f68e 返回 items 为空（count=0），无法据此确认或否认任何端点状态；未获取 Endpoints/EndpointSlice 对象、frontend 容器日志与下游服务错误率指标。                                                                                                                                                                                                                                                                                                                                   +| 
+           |                  |                 |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           +| 
+           |                  |                 | 建议下一步（只读、本次未执行，工具调用预算已耗尽）：查询 frontend 容器日志中的下游调用错误；查询 productcatalogservice 的请求错误率/gRPC 状态与 canary 镜像的 Pod 重启历史；检查 Endpoints/EndpointSlice 后端列表以确证选择器与端口映射。                                                                                                                                                                                                                                                                  | 
+(1 row)
+
+            tool             |                                                                               purpose                                                                               | error_code 
+-----------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------+------------
+ prometheus.query_range      | 确认告警窗口内探针成功率的下降形态与起始时间                                                                                                                        | 
+ prometheus.query_range      | 区分是超时类失败（时长升高）还是立即拒绝类失败（时长很低）                                                                                                          | 
+ kubernetes.list_pods        | 查看 vigil-shop 中 frontend 相关 Pod 是否存在、是否 Ready、重启次数与状态                                                                                           | 
+ kubernetes.list_deployments | 核对 frontend Deployment 的期望副本数与可用副本数是否一致                                                                                                           | 
+ kubernetes.list_events      | 检索该时段内与 frontend 相关的事件（镜像拉取、探针失败、OOMKilled、调度失败等）                                                                                     | 
+ prometheus.query_range      | 判断失败是应用层 HTTP 状态码（如 500，说明前端进程在响应但后端/逻辑出错）还是无状态码/0（连接被拒绝或无端点），用于区分 Service/Endpoints 路径问题与依赖故障        | 
+ kubernetes.list_pods        | 确认被重建的 productcatalogservice（canary-20261104）Pod 当前是否 Ready、重启次数是否上升或处于异常状态，验证上游依赖是否在故障窗口内不可用（用于解释前端首页失败） | 
+ kubernetes.list_events      | 查找 frontend Pod/Service/Endpoints 相关事件（Unhealthy、Readiness probe failed、Endpoint 变更、Killing 等），验证端点是否被摘除或存在选择器/探针相关异常           | 
+(8 rows)
+
+  hypothesis_id   | relation |                              observation                               
+------------------+----------+------------------------------------------------------------------------
+ hyp-4336d9a3f253 | neutral  | {"result_type": "matrix", "series": [{"labels": {"__name__": "probe_su
+ hyp-eb71cd902fc9 | refuting | {"result_type": "matrix", "series": [{"labels": {"__name__": "probe_du
+ hyp-4336d9a3f253 | refuting | {"items": [{"name": "adservice-77996d57f6-ncp7f", "uid": "775f8721-aa5
+ hyp-4336d9a3f253 | refuting | {"items": [{"name": "adservice", "uid": "cf9f546e-6cf1-409b-bc80-66b04
+ hyp-4336d9a3f253 | neutral  | {"items": [{"name": "productcatalogservice-57f9df78f8-cdqh6.18e4d970eb
+ hyp-a705573b21cc | refuting | {"result_type": "matrix", "series": [{"labels": {"__name__": "probe_ht
+ hyp-a705573b21cc | neutral  | {"items": [{"name": "productcatalogservice-57f9df78f8-dcl9n", "uid": "
+ hyp-a705573b21cc | neutral  | {"items": [], "count": 0}                                             +
+                  |          | 原始引用：evidence/inv-919644e08833/39688cb66a1b4
+(8 rows)
+
+调查 inv-919644e08833：completed
+根因候选：结论（基于现有证据）：frontend 服务本身可连通且后端就绪，故障点在应用层返回 HTTP 500，而非工作负载不可用、Service/Endpoints 异常或网络超时。
+
+证据链：
+1) 探针状态演进：probe_success 在窗口前半段恒为 1，自 1793799678 起转为 0（ev-e581d51e7117）；同期 probe_http_status_code 由 200 → 一次 0 → 持续 500（ev-cbd1a76a167a），说明失败原因是 HTTP 响应码为 500，被 blackbox 判定为失败（非 2xx/3xx）。
+2) 网络与延迟被排除：probe_duration_seconds 除转换点一次 5.004s 尖峰外，失败采样仅 0.002s 量级，属快速失败而非超时（ev-1cbd38cf159a）。
+3) 工作负载与端点被排除：frontend-7797c7cd78-rrgzw Running/Ready=True、restart_count=0（ev-51f1e5e578ce）；frontend Deployment 1/1 可用、无不可用副本（ev-0354f3d46f4d）；事件中无 frontend 相关镜像拉取失败、OOMKilled、探针失败或调度失败（ev-a1a7d1212116）。能够返回 500 本身即证明 Service 已把请求转发到 Pod。
+
+下一层怀疑（未直接证实）：同一命名空间中 productcatalogservice 正在以 vigil/productcatalogservice:canary-20261104 反复滚动——Deployment generation=20（其余服务均为 1），事件显示 13:07 与 13:41 各有 Pod 被删除/重建（ev-0354f3d46f4d、ev-a1a7d1212116、ev-d22a0132995a 显示其新 Pod 为该 canary 镜像且 Running/Ready）。时间上与告警窗口相邻，符合“前端下游依赖（商品目录）异常 → frontend 返回 500”的模式，但当前无 frontend 日志、下游 5xx/错误率或 gRPC 状态指标，因果链尚属推断，不能作为已证实结论。
+
+不确定/未覆盖：ev-b3c20f39f68e 返回 items 为空（count=0），无法据此确认或否认任何端点状态；未获取 Endpoints/EndpointSlice 对象、frontend 容器日志与下游服务错误率指标。
+
+建议下一步（只读、本次未执行，工具调用预算已耗尽）：查询 frontend 容器日志中的下游调用错误；查询 productcatalogservice 的请求错误率/gRPC 状态与 canary 镜像的 Pod 重启历史；检查 Endpoints/EndpointSlice 后端列表以确证选择器与端口映射。
+证据 8 条，工具调用 8 次
+  - [refuted] frontend 工作负载不可用（Pod 崩溃/未就绪/副本不足），导致 blackbox 探针无法连通
+  - [refuted] frontend Service/Endpoints 异常（无可用端点或选择器不匹配），Pod 本身健康
+  - [refuted] 网络/DNS 路径延迟或丢包导致 blackbox 探针超时失败，容器进程正常

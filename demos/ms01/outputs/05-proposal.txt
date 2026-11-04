@@ -1,0 +1,18 @@
+# MS01 步骤 5：提案与授权
+time=2026-11-04T13:44:38Z
+提案 act-f363f67ddbb1：pending_approval
+目标 vigil-shop/productcatalogservice：revision 20 → 19
+风险判定：approval
+  - 动作 rollout_undo
+  - 目标在实验命名空间
+  - 首次执行需人工审批
+  - 人工发起
+act_exit=3
+act-f363f67ddbb1 rollout_undo vigil-shop/productcatalogservice [pending_approval] 调查结论指向 productcatalogservice 的近期滚动，申请回退上一版本
+--- 失败停止：越界命名空间应被拒绝 ---
+无法提案（no_previous_revision）：没有可回退的历史 revision
+denied_exit=1
+
+--- 失败停止：同一目标版本已有待审批提案时不得重复提案 ---
+无法提案（duplicate）：同一目标版本已有进行中的提案
+duplicate_exit=1

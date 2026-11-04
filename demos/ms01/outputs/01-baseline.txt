@@ -1,0 +1,13 @@
+# MS01 步骤 1：固定基线
+time=2026-11-04T13:40:42Z
+git=fbe0a60 branch=fix/f01-neutral-image
+model=mythos-magpie-1505138152
+policy=mvp-policy-1
+server=v1.35.5+k3s1
+image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef
+revision=19
+generation=19
+deployments=12 not_ready=0
+probe=1
+home=200
+active_alerts=0
