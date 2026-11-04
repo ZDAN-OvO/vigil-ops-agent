@@ -122,6 +122,14 @@ Prometheus 与 AlertManager 同样只通过 port-forward 访问：
 kubectl port-forward -n vigil-monitoring svc/prometheus 9090:9090 --address 127.0.0.1
 ```
 
+只读调查需要 Prometheus 转发在位，并读取 `.env` 中的 `VIGIL_DATABASE_URL`、`VIGIL_KUBECONFIG` 和 `VIGIL_MODEL_NAME`：
+
+```bash
+uv run --frozen aiops investigate --service frontend --symptoms "首页探测是否持续成功" --lookback-minutes 10
+```
+
+该命令会写业务表与 checkpoint 表，但不修改集群。
+
 ## 5. 资源实测
 
 2026-11-04T09:28Z 快照：
