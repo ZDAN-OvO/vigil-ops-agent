@@ -3,6 +3,7 @@
 import asyncio
 import json
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Annotated
@@ -10,6 +11,8 @@ from typing import Annotated
 import typer
 
 from aiops import __version__
+from aiops.actions.executor import ActionExecutor
+from aiops.actions.rollout_undo import ActionError, RolloutUndoAdapter
 from aiops.config import Settings
 from aiops.contracts import (
     AuditEvent,
@@ -17,11 +20,13 @@ from aiops.contracts import (
     Incident,
     Investigation,
     InvestigationStatus,
+    ProposalStatus,
     TimeRange,
 )
 from aiops.db import Store, StoreUnavailable
 from aiops.investigation.factory import open_runtime
 from aiops.investigation.runtime import Report
+from aiops.tools.prometheus import PrometheusClient
 from aiops.webhook import build_app
 
 app = typer.Typer(
@@ -96,13 +101,13 @@ def status(output: OutputFormat = OutputFormat.TEXT) -> None:
         "schema_version": "1",
         "version": __version__,
         "stage": "W0",
-        "capabilities": {"cli": True, "investigation": True, "remediation": False},
+        "capabilities": {"cli": True, "investigation": True, "remediation": True},
         "external_services_checked": False,
     }
     if output == OutputFormat.JSON:
         typer.echo(json.dumps(payload, ensure_ascii=False))
     else:
-        typer.echo(f"Vigil AIOps {__version__} · W0：只读调查可用，受控处置尚未实现。")
+        typer.echo(f"Vigil AIOps {__version__} · W0：只读调查与受控回退可用，自动处置尚未实现。")
 
 
 def _print_report(report: Report, output: OutputFormat) -> None:
@@ -313,6 +318,199 @@ def serve(
         host=host or settings.webhook_host,
         port=port or settings.webhook_port,
     )
+
+
+@asynccontextmanager
+async def _open_executor(settings: Settings, store: Store):
+    async with PrometheusClient.connect(
+        settings.prometheus_url, timeout_seconds=settings.tool_timeout_seconds
+    ) as prometheus:
+        yield ActionExecutor(
+            store=store,
+            adapter=RolloutUndoAdapter(
+                kubeconfig=settings.kubeconfig, context_name=settings.kube_context
+            ),
+            prometheus=prometheus,
+            runtime_path=settings.runtime_path,
+            cluster=settings.cluster,
+            namespace=settings.namespace,
+            rollout_timeout_seconds=settings.action_rollout_timeout_seconds,
+            verify_seconds=settings.action_verify_seconds,
+            sample_seconds=settings.action_sample_seconds,
+        )
+
+
+@app.command("act")
+def act(
+    deployment: str = typer.Option(..., help="目标 Deployment"),
+    reason: str = typer.Option(..., help="发起原因"),
+    namespace: str | None = typer.Option(None, help="默认读配置"),
+    actor: str = typer.Option("operator", help="发起人"),
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """提交一个受控动作；当前只注册 rollout-undo。只提案，不执行。"""
+
+    async def run():
+        async with Store.open(_require_dsn()) as store:
+            await store.migrate()
+            async with _open_executor(Settings(), store) as executor:
+                return await executor.propose_rollback(
+                    deployment=deployment, reason=reason, actor=actor, namespace=namespace
+                )
+
+    try:
+        proposal, decision = asyncio.run(run())
+    except ActionError as exc:
+        typer.echo(f"无法提案（{exc.code}）：{exc.message}", err=True)
+        raise typer.Exit(code=1) from exc
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    if output == OutputFormat.JSON:
+        typer.echo(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "status": proposal.status.value,
+                    "action_id": proposal.id,
+                    "data": {
+                        "target": proposal.target.model_dump(),
+                        "parameters": proposal.parameters,
+                        "disposition": decision.disposition.value,
+                        "reasons": decision.reasons,
+                    },
+                },
+                ensure_ascii=False,
+            )
+        )
+    else:
+        typer.echo(f"提案 {proposal.id}：{proposal.status.value}")
+        typer.echo(
+            f"目标 {proposal.target.namespace}/{proposal.target.name}："
+            f"revision {proposal.parameters['from_revision']} → "
+            f"{proposal.parameters['to_revision']}"
+        )
+        typer.echo(f"风险判定：{decision.disposition.value}")
+        for item in decision.reasons:
+            typer.echo(f"  - {item}")
+    raise typer.Exit(code=4 if proposal.status.value == "denied" else 3)
+
+
+@app.command()
+def approvals(
+    status: str = typer.Option("pending_approval", help="按状态过滤"),
+    limit: int = typer.Option(20, min=1, max=200),
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """列出动作提案，默认只看待审批的。"""
+    try:
+        wanted = ProposalStatus(status)
+    except ValueError as exc:
+        typer.echo(f"未知状态：{status}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    async def run():
+        async with Store.open(_require_dsn()) as store:
+            return await store.list_proposals(status=wanted, limit=limit)
+
+    try:
+        items = asyncio.run(run())
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    if output == OutputFormat.JSON:
+        typer.echo(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "data": [
+                        {
+                            "action_id": item.id,
+                            "kind": item.kind.value,
+                            "target": item.target.model_dump(),
+                            "reason": item.reason,
+                            "status": item.status.value,
+                            "created_at": item.created_at.isoformat(),
+                        }
+                        for item in items
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    for item in items:
+        typer.echo(
+            f"{item.id} {item.kind.value} {item.target.namespace}/{item.target.name} "
+            f"[{item.status.value}] {item.reason}"
+        )
+
+
+@app.command()
+def approve(
+    proposal_id: str,
+    actor: str = typer.Option("operator", help="审批人"),
+    reason: str = typer.Option("", help="审批意见"),
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """批准并执行提案；执行前会再次校验目标，未知结果停止不重放。"""
+
+    async def run():
+        async with Store.open(_require_dsn()) as store:
+            await store.migrate()
+            async with _open_executor(Settings(), store) as executor:
+                return await executor.approve(proposal_id, actor=actor, reason=reason)
+
+    try:
+        attempt = asyncio.run(run())
+    except ActionError as exc:
+        typer.echo(f"未执行（{exc.code}）：{exc.message}", err=True)
+        raise typer.Exit(code=1) from exc
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    if output == OutputFormat.JSON:
+        typer.echo(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "status": attempt.status.value,
+                    "action_id": attempt.proposal_id,
+                    "data": {"result": attempt.result, "verification": attempt.verification},
+                },
+                ensure_ascii=False,
+            )
+        )
+    else:
+        typer.echo(f"执行 {attempt.proposal_id}：{attempt.status.value}")
+        typer.echo(f"结果：{json.dumps(attempt.result, ensure_ascii=False)}")
+        typer.echo(f"验证：{json.dumps(attempt.verification, ensure_ascii=False)}")
+    raise typer.Exit(code=0 if attempt.status.value == "verified" else 1)
+
+
+@app.command()
+def reject(
+    proposal_id: str,
+    actor: str = typer.Option("operator", help="审批人"),
+    reason: str = typer.Option("", help="拒绝理由"),
+) -> None:
+    """拒绝提案；不执行任何集群写操作。"""
+
+    async def run():
+        async with Store.open(_require_dsn()) as store:
+            await store.migrate()
+            async with _open_executor(Settings(), store) as executor:
+                return await executor.reject(proposal_id, actor=actor, reason=reason)
+
+    try:
+        proposal = asyncio.run(run())
+    except ActionError as exc:
+        typer.echo(f"未拒绝（{exc.code}）：{exc.message}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"提案 {proposal.id}：{proposal.status.value}")
 
 
 if __name__ == "__main__":

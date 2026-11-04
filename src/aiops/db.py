@@ -8,11 +8,17 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Self
 
+import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from aiops.contracts import (
+    ActionAttempt,
+    ActionProposal,
+    ActionTarget,
+    Approval,
+    AttemptStatus,
     AuditEvent,
     Budget,
     BudgetUsage,
@@ -21,6 +27,8 @@ from aiops.contracts import (
     Incident,
     Investigation,
     InvestigationStatus,
+    ProposalStatus,
+    RiskDecision,
     TimeRange,
     ToolCall,
 )
@@ -35,6 +43,10 @@ SCHEMA_MIGRATIONS = (
 
 class StoreUnavailable(RuntimeError):
     """数据库不可用时抛出，调用方不得把它当成调查结论。"""
+
+
+class DuplicateProposal(RuntimeError):
+    """同一目标版本已有进行中的提案。"""
 
 
 def migration_files() -> list[Path]:
@@ -503,3 +515,243 @@ class Store:
             )
             rows = await cursor.fetchall()
         return [AuditEvent(**row) for row in rows]
+
+    async def save_proposal(self, proposal: ActionProposal, decision: RiskDecision) -> None:
+        async with self._pool.connection() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO action_proposals (
+                        id, investigation_id, origin, kind, cluster, namespace, target_kind,
+                        target_name, target_uid, target_resource_version, parameters,
+                        evidence_ids, idempotency_key, reason, status, risk_disposition,
+                        risk_reasons, policy_version, created_at
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    """,
+                    (
+                        proposal.id,
+                        proposal.investigation_id,
+                        proposal.origin.value,
+                        proposal.kind.value,
+                        proposal.target.cluster,
+                        proposal.target.namespace,
+                        proposal.target.kind,
+                        proposal.target.name,
+                        proposal.target.uid,
+                        proposal.target.resource_version,
+                        Jsonb(proposal.parameters),
+                        proposal.evidence_ids,
+                        proposal.idempotency_key,
+                        proposal.reason,
+                        proposal.status.value,
+                        decision.disposition.value,
+                        decision.reasons,
+                        decision.policy_version,
+                        proposal.created_at,
+                    ),
+                )
+            except psycopg.errors.UniqueViolation as exc:
+                raise DuplicateProposal("同一目标版本已有进行中的提案") from exc
+
+    async def get_proposal(self, proposal_id: str) -> ActionProposal | None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM action_proposals WHERE id = %s", (proposal_id,)
+            )
+            row = await cursor.fetchone()
+        return _proposal_from_row(row) if row else None
+
+    async def list_proposals(
+        self, *, status: ProposalStatus | None = None, limit: int = 50
+    ) -> list[ActionProposal]:
+        async with self._pool.connection() as conn:
+            if status is None:
+                cursor = await conn.execute(
+                    "SELECT * FROM action_proposals ORDER BY created_at DESC, id LIMIT %s",
+                    (limit,),
+                )
+            else:
+                cursor = await conn.execute(
+                    """
+                    SELECT * FROM action_proposals
+                     WHERE status = %s ORDER BY created_at DESC, id LIMIT %s
+                    """,
+                    (status.value, limit),
+                )
+            rows = await cursor.fetchall()
+        return [_proposal_from_row(row) for row in rows]
+
+    async def set_proposal_status(self, proposal_id: str, status: ProposalStatus) -> None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE action_proposals SET status = %s WHERE id = %s",
+                (status.value, proposal_id),
+            )
+            if cursor.rowcount != 1:
+                raise LookupError(f"提案不存在：{proposal_id}")
+
+    async def save_approval(self, approval: Approval) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO approvals (
+                    id, proposal_id, proposal_hash, actor, decision, reason,
+                    decided_at, expires_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    approval.id,
+                    approval.proposal_id,
+                    approval.proposal_hash,
+                    approval.actor,
+                    approval.decision.value,
+                    approval.reason,
+                    approval.decided_at,
+                    approval.expires_at,
+                ),
+            )
+
+    async def get_approval(self, proposal_id: str) -> Approval | None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM approvals WHERE proposal_id = %s ORDER BY decided_at DESC LIMIT 1",
+                (proposal_id,),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return Approval(
+            id=row["id"],
+            proposal_id=row["proposal_id"],
+            proposal_hash=row["proposal_hash"],
+            actor=row["actor"],
+            decision=row["decision"],
+            reason=row["reason"],
+            decided_at=row["decided_at"],
+            expires_at=row["expires_at"],
+        )
+
+    async def save_attempt(self, attempt: ActionAttempt) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO action_attempts (
+                    id, proposal_id, status, idempotency_key, snapshot, request,
+                    result, verification, started_at, finished_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    attempt.id,
+                    attempt.proposal_id,
+                    attempt.status.value,
+                    attempt.idempotency_key,
+                    Jsonb(attempt.snapshot),
+                    Jsonb(attempt.request),
+                    Jsonb(attempt.result) if attempt.result is not None else None,
+                    Jsonb(attempt.verification) if attempt.verification is not None else None,
+                    attempt.started_at,
+                    attempt.finished_at,
+                ),
+            )
+
+    async def update_attempt(
+        self,
+        attempt_id: str,
+        *,
+        status: AttemptStatus,
+        result: dict | None = None,
+        verification: dict | None = None,
+        finished_at=None,
+    ) -> None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE action_attempts
+                   SET status = %s,
+                       result = COALESCE(%s, result),
+                       verification = COALESCE(%s, verification),
+                       finished_at = COALESCE(%s, finished_at)
+                 WHERE id = %s
+                """,
+                (
+                    status.value,
+                    Jsonb(result) if result is not None else None,
+                    Jsonb(verification) if verification is not None else None,
+                    finished_at,
+                    attempt_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise LookupError(f"执行记录不存在：{attempt_id}")
+
+    async def get_attempt(self, proposal_id: str) -> ActionAttempt | None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM action_attempts WHERE proposal_id = %s", (proposal_id,)
+            )
+            row = await cursor.fetchone()
+        return _attempt_from_row(row) if row else None
+
+    async def acquire_lock(self, key: str, proposal_id: str) -> bool:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO action_locks (target_key, proposal_id) VALUES (%s, %s)
+                ON CONFLICT (target_key) DO NOTHING
+                """,
+                (key, proposal_id),
+            )
+            return cursor.rowcount == 1
+
+    async def release_lock(self, key: str, proposal_id: str) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM action_locks WHERE target_key = %s AND proposal_id = %s",
+                (key, proposal_id),
+            )
+
+    async def target_is_locked(self, key: str) -> bool:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute("SELECT 1 FROM action_locks WHERE target_key = %s", (key,))
+            return await cursor.fetchone() is not None
+
+
+def _proposal_from_row(row: dict) -> ActionProposal:
+    return ActionProposal(
+        id=row["id"],
+        investigation_id=row["investigation_id"],
+        origin=row["origin"],
+        kind=row["kind"],
+        target=ActionTarget(
+            cluster=row["cluster"],
+            namespace=row["namespace"],
+            kind=row["target_kind"],
+            name=row["target_name"],
+            uid=row["target_uid"],
+            resource_version=row["target_resource_version"],
+        ),
+        parameters=row["parameters"],
+        evidence_ids=row["evidence_ids"],
+        idempotency_key=row["idempotency_key"],
+        reason=row["reason"],
+        status=row["status"],
+        created_at=row["created_at"],
+    )
+
+
+def _attempt_from_row(row: dict) -> ActionAttempt:
+    return ActionAttempt(
+        id=row["id"],
+        proposal_id=row["proposal_id"],
+        status=row["status"],
+        idempotency_key=row["idempotency_key"],
+        snapshot=row["snapshot"],
+        request=row["request"],
+        result=row["result"],
+        verification=row["verification"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+    )

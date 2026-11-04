@@ -220,7 +220,36 @@ uv run --frozen aiops serve --host 172.20.0.1 --port 8081
 
 2026-11-04 实测：经 AlertManager 的 v2 API 投递一条带 `scenario` 标签的测试告警，接收端返回 202，建立事件 `inc-4845d5099c7c` 与调查 `inv-42f562005c5f`；事件上下文不含 `scenario`；同一指纹再次投递返回 `deduplicated`。调查结论为 `inconclusive`，因为真实探测当时健康，假设被证据反驳。
 
-## 10. 复位与删除
+## 10. 受控回退
+
+`aiops act` 只创建提案并给出风险判定，`aiops approve` 才执行。执行前重新读取目标，比对 UID 与 resourceVersion；滚动完成后再观察业务探测的末段连续样本。
+
+```bash
+uv run --frozen aiops act --deployment productcatalogservice --reason "前端探测持续失败" --actor <name>
+uv run --frozen aiops approvals
+uv run --frozen aiops approve <proposal_id> --actor <name>
+```
+
+| 项目 | 实测值 |
+|---|---|
+| 白名单 | 只允许 `vigil-shop` 下的 `rollout_undo` |
+| 审批 | 首次执行一律需人工审批，规则不接受模型自评分 |
+| 回退目标 | 当前 revision 的前一 revision 的 Pod 模板，`resourceVersion` 作为并发前置 |
+| 并发 | `action_locks` 保证同一目标同时只有一个执行 |
+| 幂等 | 同一目标版本只允许一个进行中的提案；失败或拒绝后可重新提案 |
+| 业务验证 | 滚动完成后等两个抓取周期，窗口 90 秒、步长 15 秒；末段 3 个样本必须全为 1 |
+| 未知结果 | 写入异常记为 `unknown`，停止且不重放 |
+
+2026-11-04 实测：把 `productcatalogservice` 切到实验坏镜像（revision 16），探测失败后提案 `act-b5be04095a56`，审批后回退到 revision 15，滚动完成，窗口内 7 个样本全部为 1，状态 `verified`；集群恢复健康 digest，`probe_success=1`。
+
+同一天的前四次尝试都是失败记录，保留在库中：
+
+1. `act-e2edf74326b2`：dry-run 返回 HTTP 500。原因是 ReplicaSet 模板用 `to_dict()` 得到蛇形字段，`containerPort` 等合并键不匹配；改用 `sanitize_for_serialization`。
+2. `act-cd220f97659d`、`act-a52cb91c1f80`：执行成功但验证窗口覆盖了滚动前的失败样本，判为失败。
+3. `act-a384b3a40e42`：加了两个抓取周期的等待后仍有 1 个预热样本为 0，于是把判定改为末段连续样本。
+4. 期间还修正了一次性约束：原先 `idempotency_key` 全局唯一，失败后无法重新提案，改为只约束进行中的提案。
+
+## 11. 复位与删除
 
 故障实验的复位由 F01 脚本完成，保留坏 ReplicaSet 作为证据，最终业务和监控工作负载保持健康。
 
