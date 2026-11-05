@@ -12,6 +12,7 @@ import typer
 
 from aiops import __version__
 from aiops.actions.executor import ActionExecutor
+from aiops.actions.restart_pod import PodRestartAdapter
 from aiops.actions.rollout_undo import ActionError, RolloutUndoAdapter
 from aiops.config import Settings
 from aiops.contracts import (
@@ -333,6 +334,9 @@ async def _open_executor(settings: Settings, store: Store):
             adapter=RolloutUndoAdapter(
                 kubeconfig=settings.kubeconfig, context_name=settings.kube_context
             ),
+            restart_adapter=PodRestartAdapter(
+                kubeconfig=settings.kubeconfig, context_name=settings.kube_context
+            ),
             prometheus=prometheus,
             runtime_path=settings.runtime_path,
             cluster=settings.cluster,
@@ -374,19 +378,39 @@ def _duration(since: datetime) -> str:
 
 @app.command("act")
 def act(
-    deployment: str = typer.Option(..., help="目标 Deployment"),
+    kind: str = typer.Option("rollout-undo", help="动作类型：rollout-undo 或 restart-pod"),
+    deployment: str | None = typer.Option(None, help="目标 Deployment，rollout-undo 必填"),
+    pod: str | None = typer.Option(None, help="目标 Pod，restart-pod 必填"),
+    service: str | None = typer.Option(None, help="验证恢复用的 Service，restart-pod 必填"),
+    path: str = typer.Option("/", help="验证请求的路径"),
     reason: str = typer.Option(..., help="发起原因"),
     namespace: str | None = typer.Option(None, help="默认读配置"),
     investigation: str | None = typer.Option(None, help="关联的调查 ID"),
     actor: str = typer.Option("operator", help="发起人"),
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
-    """提交一个受控动作；当前只注册 rollout-undo。只提案，不执行。"""
+    """提交一个受控动作；支持 rollout-undo 与 restart-pod。只提案，不执行。"""
 
     async def run():
         async with Store.open(_require_dsn()) as store:
             await store.migrate()
             async with _open_executor(Settings(), store) as executor:
+                if kind == "restart-pod":
+                    if not pod or not service:
+                        raise ActionError("invalid_argument", "restart-pod 需要 --pod 与 --service")
+                    return await executor.propose_restart_pod(
+                        pod=pod,
+                        service=service,
+                        path=path,
+                        reason=reason,
+                        actor=actor,
+                        namespace=namespace,
+                        investigation_id=investigation,
+                    )
+                if kind != "rollout-undo":
+                    raise ActionError("invalid_argument", f"未知动作类型：{kind}")
+                if not deployment:
+                    raise ActionError("invalid_argument", "rollout-undo 需要 --deployment")
                 return await executor.propose_rollback(
                     deployment=deployment,
                     reason=reason,
@@ -423,10 +447,16 @@ def act(
         )
     else:
         typer.echo(f"提案 {proposal.id}：{proposal.status.value}")
+        if proposal.kind.value == "rollout_undo":
+            detail = (
+                f"revision {proposal.parameters['from_revision']} → "
+                f"{proposal.parameters['to_revision']}"
+            )
+        else:
+            detail = f"{proposal.parameters['pod']}（{proposal.parameters['replica_set']}）"
         typer.echo(
-            f"目标 {proposal.target.namespace}/{proposal.target.name}："
-            f"revision {proposal.parameters['from_revision']} → "
-            f"{proposal.parameters['to_revision']}"
+            f"目标 {proposal.target.kind} "
+            f"{proposal.target.namespace}/{proposal.target.name}：{detail}"
         )
         typer.echo(f"风险判定：{decision.disposition.value}")
         for item in decision.reasons:
@@ -590,11 +620,17 @@ def show_proposal(
         f"{proposal.id} {proposal.kind.value} "
         f"{proposal.target.namespace}/{proposal.target.name} [{proposal.status.value}]"
     )
-    typer.echo(
-        f"目标版本 revision {proposal.parameters.get('from_revision')} → "
-        f"{proposal.parameters.get('to_revision')}，uid {proposal.target.uid}，"
-        f"resourceVersion {proposal.target.resource_version}"
-    )
+    if proposal.kind.value == "restart_pod":
+        typer.echo(
+            f"目标 Pod {proposal.target.name}，ReplicaSet "
+            f"{proposal.parameters.get('replica_set')}，uid {proposal.target.uid}"
+        )
+    else:
+        typer.echo(
+            f"目标版本 revision {proposal.parameters.get('from_revision')} → "
+            f"{proposal.parameters.get('to_revision')}，uid {proposal.target.uid}，"
+            f"resourceVersion {proposal.target.resource_version}"
+        )
     typer.echo(f"创建于 {proposal.created_at.isoformat()}，已等待 {_duration(proposal.created_at)}")
     if approval is None:
         typer.echo("审批：无")

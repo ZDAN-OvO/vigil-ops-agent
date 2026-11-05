@@ -9,6 +9,7 @@ import pytest
 
 from aiops.actions.executor import ActionExecutor, proposal_hash
 from aiops.actions.policy import decide
+from aiops.actions.restart_pod import PodPlan, PodRestartAdapter
 from aiops.actions.rollout_undo import ActionError, RolloutPlan
 from aiops.config import Settings
 from aiops.contracts import (
@@ -178,16 +179,27 @@ def cleanup():
             conn.execute("DELETE FROM action_proposals WHERE id = %s", (proposal_id,))
 
 
-def build_executor(store, adapter, prometheus, tmp_path, *, approval_ttl_seconds=900):
+def build_executor(
+    store,
+    adapter,
+    prometheus,
+    tmp_path,
+    *,
+    approval_ttl_seconds=900,
+    restart_adapter=None,
+    verify_seconds=60,
+    sample_seconds=15,
+):
     return ActionExecutor(
         store=store,
         adapter=adapter,
+        restart_adapter=restart_adapter,
         prometheus=prometheus,
         runtime_path=tmp_path,
         cluster="vigil-lab",
         namespace="vigil-shop",
-        verify_seconds=60,
-        sample_seconds=15,
+        verify_seconds=verify_seconds,
+        sample_seconds=sample_seconds,
         approval_ttl_seconds=approval_ttl_seconds,
         verify_delay_seconds=0,
         verify_grace_seconds=0,
@@ -560,3 +572,308 @@ def test_proposal_binds_memory_limits(tmp_path, cleanup):
     assert saved is not None
     assert saved.parameters["from_memory_limit"] == "16Mi"
     assert saved.parameters["to_memory_limit"] == "128Mi"
+
+
+def pod_plan(**overrides) -> PodPlan:
+    values = {
+        "namespace": "vigil-shop",
+        "name": "rebuild-demo-abc",
+        "uid": "pod-uid-1",
+        "resource_version": "100",
+        "owner_kind": "ReplicaSet",
+        "owner_name": "rebuild-demo-5f6",
+        "owner_uid": "rs-uid-1",
+        "template_hash": "tmpl-1",
+        "spec_hash": "spec-1",
+        "sibling_uids": (),
+        "restart_count": 0,
+        "ready": True,
+        "image": "vigil/pod-rebuild-demo:20261105",
+        "discardable": True,
+    }
+    values.update(overrides)
+    return PodPlan(**values)
+
+
+class FakeRestartAdapter:
+    def __init__(
+        self,
+        plan,
+        *,
+        rebuilt_spec_hash=None,
+        fail_on_delete=False,
+        replan=None,
+        service_status=200,
+        service_selects=True,
+        live_ready=True,
+        live_restarts=0,
+        rebuild_available=True,
+    ):
+        self._plan = plan
+        self._rebuilt_spec_hash = rebuilt_spec_hash or plan.spec_hash
+        self._fail_on_delete = fail_on_delete
+        self._replan = replan
+        self._service_status = service_status
+        self._service_selects = service_selects
+        self._live_ready = live_ready
+        self._live_restarts = live_restarts
+        self._rebuild_available = rebuild_available
+        self.calls = []
+        self._plan_calls = 0
+
+    def plan(self, namespace, name):
+        self._plan_calls += 1
+        if self._replan is not None and self._plan_calls > 1:
+            return self._replan
+        return self._plan
+
+    def dry_run(self, plan):
+        self.calls.append(("dry_run", plan.uid))
+        return {"dry_run": True}
+
+    def execute(self, plan):
+        self.calls.append(("execute", plan.uid))
+        if self._fail_on_delete:
+            raise RuntimeError("连接中断")
+        return {"deleted": plan.name, "uid": plan.uid}
+
+    def wait_rebuilt(self, plan, timeout_seconds):
+        self.calls.append(("wait", plan.uid))
+        if not self._rebuild_available:
+            return None
+        return {
+            "name": "rebuild-demo-def",
+            "uid": "pod-uid-2",
+            "ready": True,
+            "restarts": 0,
+            "template_hash": self._rebuilt_spec_hash,
+            "ip": "10.42.0.9",
+            "phase": "Running",
+        }
+
+    def pod_get(self, namespace, name, path):
+        status = self._service_status
+        return {"ok": status == 200, "status": status, "body": "ok" if status == 200 else ""}
+
+    def service_selects(self, namespace, service, pod_ip):
+        return {"ok": self._service_selects, "pod_ip": pod_ip, "addresses": [pod_ip]}
+
+    def pod_state(self, namespace, owner_uid, uid):
+        return {
+            "name": "rebuild-demo-def",
+            "uid": uid,
+            "ready": self._live_ready,
+            "restarts": self._live_restarts,
+            "template_hash": self._rebuilt_spec_hash,
+            "ip": "10.42.0.9",
+            "phase": "Running",
+        }
+
+
+def restart_proposal(**overrides) -> ActionProposal:
+    values = {
+        "kind": ActionKind.RESTART_POD,
+        "target": ActionTarget(
+            cluster="vigil-lab",
+            namespace="vigil-shop",
+            kind="Pod",
+            name="rebuild-demo-abc",
+            uid="pod-uid-1",
+            resource_version="100",
+        ),
+        "parameters": {
+            "pod": "rebuild-demo-abc",
+            "replica_set": "rebuild-demo-5f6",
+            "owner_kind": "ReplicaSet",
+            "discardable": True,
+            "template_hash": "tmpl-1",
+            "service": "rebuild-demo",
+            "path": "/work",
+        },
+        "idempotency_key": "restart:pod-uid-1",
+        "reason": "Pod 级状态损坏",
+    }
+    values.update(overrides)
+    return make_proposal(**values)
+
+
+def test_restart_policy_allows_only_controlled_discardable_pod():
+    decision = decide(restart_proposal(), target_busy=False)
+
+    assert decision.disposition is RiskDisposition.APPROVAL
+
+
+def test_restart_policy_denies_pod_without_controller():
+    proposal = restart_proposal()
+    proposal = proposal.model_copy(
+        update={"parameters": {**proposal.parameters, "owner_kind": None}}
+    )
+
+    decision = decide(proposal, target_busy=False)
+
+    assert decision.disposition is RiskDisposition.DENY
+    assert any("ReplicaSet" in reason for reason in decision.reasons)
+
+
+def test_restart_policy_denies_pod_not_marked_discardable():
+    proposal = restart_proposal()
+    proposal = proposal.model_copy(
+        update={"parameters": {**proposal.parameters, "discardable": False}}
+    )
+
+    assert decide(proposal, target_busy=False).disposition is RiskDisposition.DENY
+
+
+def test_restart_policy_denies_missing_business_service():
+    proposal = restart_proposal()
+    proposal = proposal.model_copy(update={"parameters": {**proposal.parameters, "service": ""}})
+
+    assert decide(proposal, target_busy=False).disposition is RiskDisposition.DENY
+
+
+async def run_restart(adapter, tmp_path, cleanup, *, verify_seconds=1, sample_seconds=0.2):
+    async with Store.open(DSN) as store:
+        await store.migrate()
+        executor = build_executor(
+            store,
+            FakeAdapter(rollout_plan()),
+            FakePrometheus([1.0]),
+            tmp_path,
+            restart_adapter=adapter,
+            verify_seconds=verify_seconds,
+            sample_seconds=sample_seconds,
+        )
+        proposal, decision = await executor.propose_restart_pod(
+            pod="rebuild-demo-abc",
+            service="rebuild-demo",
+            path="/work",
+            reason="Pod 级状态损坏",
+            actor="tester",
+        )
+        cleanup.append(proposal.id)
+        attempt = None
+        try:
+            attempt = await executor.approve(proposal.id, actor="tester", reason="同意")
+        except ActionError:
+            attempt = None
+        saved = await store.get_proposal(proposal.id)
+    return proposal, decision, attempt, saved
+
+
+def test_restart_pod_is_proposed_then_verified(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan())
+
+    proposal, decision, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
+
+    assert decision.disposition is RiskDisposition.APPROVAL
+    assert proposal.target.kind == "Pod"
+    assert proposal.parameters["replica_set"] == "rebuild-demo-5f6"
+    assert attempt.status.value == "verified"
+    assert saved.status is ProposalStatus.SUCCEEDED
+    assert attempt.verification["old_uid"] == "pod-uid-1"
+    assert attempt.verification["new_uid"] == "pod-uid-2"
+    assert attempt.verification["template_unchanged"] is True
+    assert [call[0] for call in adapter.calls] == ["dry_run", "execute", "wait"]
+
+
+def test_restart_with_changed_template_is_not_success(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(), rebuilt_spec_hash="spec-other")
+
+    _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
+
+    assert attempt.status.value == "failed"
+    assert attempt.verification["template_unchanged"] is False
+    assert saved.status is ProposalStatus.FAILED
+
+
+def test_restart_with_pod_missing_from_service_is_not_success(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(), service_selects=False)
+
+    _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
+
+    assert attempt.status.value == "failed"
+    assert attempt.verification["service_selects_new_pod"] is False
+    assert saved.status is ProposalStatus.FAILED
+
+
+def test_restart_business_failure_is_not_success(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(), service_status=500)
+
+    _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
+
+    assert attempt.status.value == "failed"
+    assert attempt.verification["ok"] is False
+    assert saved.status is ProposalStatus.FAILED
+
+
+def test_restart_drift_blocks_execution(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(), replan=pod_plan(uid="pod-uid-9"))
+
+    _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
+
+    assert attempt is None
+    assert saved.status is ProposalStatus.FAILED
+    assert adapter.calls == []
+
+
+def test_restart_unknown_delete_result_stops_without_replay(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(), fail_on_delete=True)
+
+    _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
+
+    assert attempt.status.value == "unknown"
+    assert saved.status is ProposalStatus.UNKNOWN
+    assert [call[0] for call in adapter.calls] == ["dry_run", "execute"]
+
+
+def test_restart_rechecks_policy_before_delete(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(), replan=pod_plan(discardable=False))
+
+    _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
+
+    assert attempt is None
+    assert saved.status is ProposalStatus.FAILED
+    assert adapter.calls == []
+
+
+def test_restart_requires_a_newly_created_pod(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(), rebuild_available=False)
+
+    _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
+
+    assert attempt.status.value == "failed"
+    assert attempt.verification["new_uid"] is None
+    assert saved.status is ProposalStatus.FAILED
+
+
+def test_restart_detects_restart_during_observation_window(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(), live_ready=False, live_restarts=3)
+
+    _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
+
+    assert attempt.status.value == "failed"
+    assert attempt.verification["pod_restarts"] == 3
+    assert attempt.verification["pod_ready"] is False
+    assert saved.status is ProposalStatus.FAILED
+
+
+def test_delete_request_is_bound_to_the_approved_uid():
+    options = PodRestartAdapter()._delete_options(pod_plan())
+
+    assert options.preconditions.uid == "pod-uid-1"
+    assert options.preconditions.resource_version is None
+
+
+def test_wait_rebuilt_ignores_pods_that_existed_before_deletion(monkeypatch):
+    adapter = PodRestartAdapter()
+    plan = pod_plan(sibling_uids=("sibling-uid",))
+    monkeypatch.setattr(
+        adapter,
+        "pods_of_owner",
+        lambda namespace, owner_uid: [
+            {"name": "old", "uid": "pod-uid-1", "ready": True, "restarts": 0},
+            {"name": "sibling", "uid": "sibling-uid", "ready": True, "restarts": 0},
+        ],
+    )
+
+    assert adapter.wait_rebuilt(plan, 0.3, sample_seconds=0.1) is None

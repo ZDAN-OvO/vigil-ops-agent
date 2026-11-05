@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from aiops.actions.policy import decide, target_key
+from aiops.actions.restart_pod import PodPlan, PodRestartAdapter
 from aiops.actions.rollout_undo import ActionError, RolloutUndoAdapter
 from aiops.contracts import (
     ActionAttempt,
@@ -50,6 +52,7 @@ class ActionExecutor:
         *,
         store: Store,
         adapter: RolloutUndoAdapter,
+        restart_adapter: PodRestartAdapter | None = None,
         prometheus: PrometheusClient,
         runtime_path: Path,
         cluster: str,
@@ -64,6 +67,7 @@ class ActionExecutor:
     ) -> None:
         self._store = store
         self._adapter = adapter
+        self._restart_adapter = restart_adapter
         self._prometheus = prometheus
         self._runtime_path = runtime_path
         self._cluster = cluster
@@ -139,6 +143,78 @@ class ActionExecutor:
                 "kind": proposal.kind.value,
                 "target": f"{namespace}/{deployment}",
                 "to_revision": plan.target_revision,
+                "disposition": decision.disposition.value,
+                "reasons": decision.reasons,
+            },
+        )
+        return proposal, decision
+
+    async def propose_restart_pod(
+        self,
+        *,
+        pod: str,
+        service: str,
+        reason: str,
+        actor: str,
+        path: str = "/",
+        namespace: str | None = None,
+        investigation_id: str | None = None,
+        origin: ActionOrigin = ActionOrigin.OPERATOR,
+        evidence_ids: list[str] | None = None,
+    ) -> tuple[ActionProposal, RiskDecision]:
+        namespace = namespace or self._namespace
+        adapter = self._restart_adapter
+        if adapter is None:
+            raise ActionError("adapter_missing", "未配置 restart_pod 适配器")
+        plan = await asyncio.to_thread(adapter.plan, namespace, pod)
+        proposal = ActionProposal(
+            id=f"act-{uuid.uuid4().hex[:12]}",
+            kind=ActionKind.RESTART_POD,
+            target=ActionTarget(
+                cluster=self._cluster,
+                namespace=namespace,
+                kind="Pod",
+                name=plan.name,
+                uid=plan.uid,
+                resource_version=plan.resource_version,
+            ),
+            parameters={
+                "pod": plan.name,
+                "replica_set": plan.owner_name,
+                "owner_kind": plan.owner_kind,
+                "discardable": plan.discardable,
+                "template_hash": plan.template_hash,
+                "restart_count": plan.restart_count,
+                "service": service,
+                "path": path,
+            },
+            idempotency_key=f"restart:{plan.uid}",
+            reason=reason,
+            origin=origin,
+            investigation_id=investigation_id,
+            evidence_ids=evidence_ids or [],
+            created_at=datetime.now(UTC),
+        )
+        key = target_key(self._cluster, namespace, "Pod", plan.name)
+        decision = decide(proposal, target_busy=await self._store.target_is_locked(key))
+        status = (
+            ProposalStatus.DENIED
+            if decision.disposition is RiskDisposition.DENY
+            else ProposalStatus.PENDING_APPROVAL
+        )
+        proposal = proposal.model_copy(update={"status": status})
+        try:
+            await self._store.save_proposal(proposal, decision)
+        except DuplicateProposal as exc:
+            raise ActionError("duplicate", str(exc)) from exc
+        await self._audit(
+            proposal.id,
+            actor,
+            "action.proposed",
+            {
+                "kind": proposal.kind.value,
+                "target": f"{namespace}/{plan.name}",
+                "replica_set": plan.owner_name,
                 "disposition": decision.disposition.value,
                 "reasons": decision.reasons,
             },
@@ -260,115 +336,312 @@ class ActionExecutor:
             )
             raise ActionError("target_busy", "目标已有未完成的执行，本次不重放")
         try:
-            try:
-                plan = await asyncio.to_thread(
-                    self._adapter.plan, proposal.target.namespace, proposal.target.name
-                )
-            except ActionError as exc:
-                raise await self._fail(proposal, exc.code, exc.message) from exc
-
-            if (
-                plan.deployment_uid != proposal.target.uid
-                or plan.resource_version != proposal.target.resource_version
-            ):
-                raise await self._fail(proposal, "drift", "审批后目标资源已变化，需重新提案")
-
-            attempt = ActionAttempt(
-                id=f"att-{uuid.uuid4().hex[:12]}",
-                proposal_id=proposal.id,
-                status=AttemptStatus.INTENT,
-                idempotency_key=proposal.idempotency_key,
-                snapshot={
-                    "uid": plan.deployment_uid,
-                    "resource_version": plan.resource_version,
-                    "from_revision": plan.current_revision,
-                    "to_revision": plan.target_revision,
-                    "current_image": plan.current_image,
-                    "target_image": plan.target_image,
-                    "approval_hash": approval.proposal_hash,
-                },
-                request={
-                    "kind": "rollout_undo",
-                    "namespace": plan.namespace,
-                    "name": plan.name,
-                    "revision": plan.target_revision,
-                },
-                started_at=datetime.now(UTC),
-            )
-            try:
-                await self._store.save_attempt(attempt)
-            except DuplicateAttempt as exc:
-                raise ActionError("already_executed", str(exc)) from exc
-            await self._store.set_proposal_status(proposal.id, ProposalStatus.EXECUTING)
-
-            try:
-                await asyncio.to_thread(
-                    self._adapter.apply, plan, dry_run=True, proposal_id=proposal.id
-                )
-            except ActionError as exc:
-                return await self._finish(
-                    attempt,
-                    AttemptStatus.FAILED,
-                    ProposalStatus.FAILED,
-                    result={"stage": "dry_run", "code": exc.code, "message": exc.message},
-                )
-
-            await self._store.update_attempt(
-                attempt.id,
-                status=AttemptStatus.EXECUTING,
-                result={"stage": "apply_started"},
-            )
-            try:
-                await asyncio.to_thread(
-                    self._adapter.apply, plan, dry_run=False, proposal_id=proposal.id
-                )
-            except Exception as exc:  # noqa: BLE001 - 结果未知时停止，不重放写请求
-                return await self._finish(
-                    attempt,
-                    AttemptStatus.UNKNOWN,
-                    ProposalStatus.UNKNOWN,
-                    result={"stage": "apply", "error": exc.__class__.__name__},
-                )
-
-            rolled_out = await asyncio.to_thread(
-                self._adapter.wait_rolled_out, plan, self._rollout_timeout
-            )
-            # 滚动完成后再等两个抓取周期，避免把恢复前的最后一个样本算进来。
-            await asyncio.sleep(self._verify_grace)
-            recovered_from = datetime.now(UTC)
-            await asyncio.sleep(self._verify_delay)
-            verification = await self._verify_business(recovered_from)
-            runtime = await self._runtime_state(proposal)
-            ready = [pod for pod in runtime.get("pods", []) if pod.get("ready")]
-            restarts = sum(int(pod.get("restarts") or 0) for pod in ready)
-            # 无内存限额目标时跳过该检查；有目标就必须在窗口内回到目标规格且无重启。
-            limit_ok = (
-                plan.target_memory_limit is None
-                or runtime.get("memory_limit") == plan.target_memory_limit
-            )
-            ok = (
-                rolled_out
-                and verification.get("ok") is True
-                and limit_ok
-                and bool(ready)
-                and restarts == 0
-            )
-            verification = {
-                **verification,
-                "runtime": runtime,
-                "memory_limit_restored": limit_ok,
-                "ready_pods": len(ready),
-                "pod_restarts": restarts,
-            }
-            return await self._finish(
-                attempt,
-                AttemptStatus.VERIFIED if ok else AttemptStatus.FAILED,
-                ProposalStatus.SUCCEEDED if ok else ProposalStatus.FAILED,
-                result={"stage": "applied", "rolled_out": rolled_out},
-                verification=verification,
-            )
+            if proposal.kind is ActionKind.RESTART_POD:
+                return await self._execute_restart(proposal, approval)
+            return await self._execute_rollout(proposal, approval)
         finally:
             await self._store.release_lock(key, proposal.id)
+
+    async def _execute_rollout(self, proposal: ActionProposal, approval: Approval) -> ActionAttempt:
+        try:
+            plan = await asyncio.to_thread(
+                self._adapter.plan, proposal.target.namespace, proposal.target.name
+            )
+        except ActionError as exc:
+            raise await self._fail(proposal, exc.code, exc.message) from exc
+
+        if (
+            plan.deployment_uid != proposal.target.uid
+            or plan.resource_version != proposal.target.resource_version
+        ):
+            raise await self._fail(proposal, "drift", "审批后目标资源已变化，需重新提案")
+
+        attempt = ActionAttempt(
+            id=f"att-{uuid.uuid4().hex[:12]}",
+            proposal_id=proposal.id,
+            status=AttemptStatus.INTENT,
+            idempotency_key=proposal.idempotency_key,
+            snapshot={
+                "uid": plan.deployment_uid,
+                "resource_version": plan.resource_version,
+                "from_revision": plan.current_revision,
+                "to_revision": plan.target_revision,
+                "current_image": plan.current_image,
+                "target_image": plan.target_image,
+                "approval_hash": approval.proposal_hash,
+            },
+            request={
+                "kind": "rollout_undo",
+                "namespace": plan.namespace,
+                "name": plan.name,
+                "revision": plan.target_revision,
+            },
+            started_at=datetime.now(UTC),
+        )
+        try:
+            await self._store.save_attempt(attempt)
+        except DuplicateAttempt as exc:
+            raise ActionError("already_executed", str(exc)) from exc
+        await self._store.set_proposal_status(proposal.id, ProposalStatus.EXECUTING)
+
+        try:
+            await asyncio.to_thread(
+                self._adapter.apply, plan, dry_run=True, proposal_id=proposal.id
+            )
+        except ActionError as exc:
+            return await self._finish(
+                attempt,
+                AttemptStatus.FAILED,
+                ProposalStatus.FAILED,
+                result={"stage": "dry_run", "code": exc.code, "message": exc.message},
+            )
+
+        await self._store.update_attempt(
+            attempt.id,
+            status=AttemptStatus.EXECUTING,
+            result={"stage": "apply_started"},
+        )
+        try:
+            await asyncio.to_thread(
+                self._adapter.apply, plan, dry_run=False, proposal_id=proposal.id
+            )
+        except Exception as exc:  # noqa: BLE001 - 结果未知时停止，不重放写请求
+            return await self._finish(
+                attempt,
+                AttemptStatus.UNKNOWN,
+                ProposalStatus.UNKNOWN,
+                result={"stage": "apply", "error": exc.__class__.__name__},
+            )
+
+        rolled_out = await asyncio.to_thread(
+            self._adapter.wait_rolled_out, plan, self._rollout_timeout
+        )
+        # 滚动完成后再等两个抓取周期，避免把恢复前的最后一个样本算进来。
+        await asyncio.sleep(self._verify_grace)
+        recovered_from = datetime.now(UTC)
+        await asyncio.sleep(self._verify_delay)
+        verification = await self._verify_business(recovered_from)
+        runtime = await self._runtime_state(proposal)
+        ready = [pod for pod in runtime.get("pods", []) if pod.get("ready")]
+        restarts = sum(int(pod.get("restarts") or 0) for pod in ready)
+        # 无内存限额目标时跳过该检查；有目标就必须在窗口内回到目标规格且无重启。
+        limit_ok = (
+            plan.target_memory_limit is None
+            or runtime.get("memory_limit") == plan.target_memory_limit
+        )
+        ok = (
+            rolled_out
+            and verification.get("ok") is True
+            and limit_ok
+            and bool(ready)
+            and restarts == 0
+        )
+        verification = {
+            **verification,
+            "runtime": runtime,
+            "memory_limit_restored": limit_ok,
+            "ready_pods": len(ready),
+            "pod_restarts": restarts,
+        }
+        return await self._finish(
+            attempt,
+            AttemptStatus.VERIFIED if ok else AttemptStatus.FAILED,
+            ProposalStatus.SUCCEEDED if ok else ProposalStatus.FAILED,
+            result={"stage": "applied", "rolled_out": rolled_out},
+            verification=verification,
+        )
+
+    async def _execute_restart(self, proposal: ActionProposal, approval: Approval) -> ActionAttempt:
+        adapter = self._restart_adapter
+        if adapter is None:
+            raise await self._fail(proposal, "adapter_missing", "未配置 restart_pod 适配器")
+        try:
+            plan = await asyncio.to_thread(
+                adapter.plan, proposal.target.namespace, proposal.target.name
+            )
+        except ActionError as exc:
+            raise await self._fail(proposal, exc.code, exc.message) from exc
+        # Pod 的 resourceVersion 随状态更新频繁变化，身份以 UID 为准。
+        if plan.uid != proposal.target.uid:
+            raise await self._fail(proposal, "drift", "审批后目标 Pod 已变化，需重新提案")
+        if plan.owner_kind != "ReplicaSet" or not plan.owner_uid:
+            raise await self._fail(
+                proposal, "not_controlled", "目标 Pod 没有 ReplicaSet 归属，删除后不会重建"
+            )
+        if plan.template_hash != proposal.parameters.get("template_hash"):
+            raise await self._fail(proposal, "template_changed", "目标 Pod 的模板与提案时不同")
+        # 用执行前的真实状态重跑一次规则：提案等待期间目标可能失去可丢弃标记，
+        # 持久化的提案本身也可能被改成不满足硬约束。
+        rechecked = proposal.model_copy(
+            update={
+                "parameters": {
+                    **proposal.parameters,
+                    "owner_kind": plan.owner_kind,
+                    "discardable": plan.discardable,
+                    "template_hash": plan.template_hash,
+                }
+            }
+        )
+        if decide(rechecked, target_busy=False).disposition is RiskDisposition.DENY:
+            raise await self._fail(proposal, "policy_denied", "执行前规则复查拒绝，不能删除该 Pod")
+
+        attempt = ActionAttempt(
+            id=f"att-{uuid.uuid4().hex[:12]}",
+            proposal_id=proposal.id,
+            status=AttemptStatus.INTENT,
+            idempotency_key=proposal.idempotency_key,
+            snapshot={
+                "uid": plan.uid,
+                "resource_version": plan.resource_version,
+                "pod": plan.name,
+                "replica_set": plan.owner_name,
+                "template_hash": plan.template_hash,
+                "spec_hash": plan.spec_hash,
+                "restart_count": plan.restart_count,
+                "approval_hash": approval.proposal_hash,
+            },
+            request={
+                "kind": "restart_pod",
+                "namespace": plan.namespace,
+                "pod": plan.name,
+                "service": proposal.parameters.get("service"),
+                "path": proposal.parameters.get("path", "/"),
+            },
+            started_at=datetime.now(UTC),
+        )
+        try:
+            await self._store.save_attempt(attempt)
+        except DuplicateAttempt as exc:
+            raise ActionError("already_executed", str(exc)) from exc
+        await self._store.set_proposal_status(proposal.id, ProposalStatus.EXECUTING)
+
+        try:
+            await asyncio.to_thread(adapter.dry_run, plan)
+        except ActionError as exc:
+            return await self._finish(
+                attempt,
+                AttemptStatus.FAILED,
+                ProposalStatus.FAILED,
+                result={"stage": "dry_run", "code": exc.code, "message": exc.message},
+            )
+
+        await self._store.update_attempt(
+            attempt.id, status=AttemptStatus.EXECUTING, result={"stage": "apply_started"}
+        )
+        try:
+            await asyncio.to_thread(adapter.execute, plan)
+        except Exception as exc:  # noqa: BLE001 - 删除结果未知时停止，不重放
+            return await self._finish(
+                attempt,
+                AttemptStatus.UNKNOWN,
+                ProposalStatus.UNKNOWN,
+                result={
+                    "stage": "apply",
+                    "error": exc.__class__.__name__,
+                    "code": getattr(exc, "code", None),
+                    "message": str(exc)[:200],
+                },
+            )
+
+        # 删除已经发出，之后的任何异常都必须落成 unknown，不能把执行记录留在 executing。
+        try:
+            new_pod = await asyncio.to_thread(adapter.wait_rebuilt, plan, self._rollout_timeout)
+            verification = await self._verify_restart(proposal, plan, new_pod)
+            live = None
+            if new_pod is not None:
+                live = await asyncio.to_thread(
+                    adapter.pod_state, plan.namespace, plan.owner_uid or "", str(new_pod["uid"])
+                )
+        except Exception as exc:  # noqa: BLE001 - 删除后结果不可核实，停止等待人工
+            return await self._finish(
+                attempt,
+                AttemptStatus.UNKNOWN,
+                ProposalStatus.UNKNOWN,
+                result={
+                    "stage": "verify_after_delete",
+                    "error": exc.__class__.__name__,
+                    "code": getattr(exc, "code", None),
+                    "message": str(exc)[:200],
+                },
+            )
+        template_unchanged = bool(live) and live.get("template_hash") == plan.spec_hash
+        ready = bool(live and live.get("ready"))
+        restarts = int(live.get("restarts") or 0) if live else None
+        ok = (
+            new_pod is not None
+            and verification.get("ok") is True
+            and verification.get("service_selects_new_pod") is True
+            and template_unchanged
+            and ready
+            and restarts == 0
+        )
+        verification = {
+            **verification,
+            "old_uid": plan.uid,
+            "new_uid": new_pod.get("uid") if new_pod else None,
+            "new_pod": new_pod.get("name") if new_pod else None,
+            "template_unchanged": template_unchanged,
+            "pod_ready": ready,
+            "pod_restarts": restarts,
+        }
+        return await self._finish(
+            attempt,
+            AttemptStatus.VERIFIED if ok else AttemptStatus.FAILED,
+            ProposalStatus.SUCCEEDED if ok else ProposalStatus.FAILED,
+            result={
+                "stage": "rebuilt",
+                "old_uid": plan.uid,
+                "new_uid": new_pod.get("uid") if new_pod else None,
+            },
+            verification=verification,
+        )
+
+    async def _verify_restart(
+        self, proposal: ActionProposal, plan: PodPlan, new_pod: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """在窗口内反复请求重建后的 Pod，只看末尾连续样本，并确认 Service 已接上它。"""
+        adapter = self._restart_adapter
+        if adapter is None:
+            return {"ok": False, "reason": "adapter_missing"}
+        if new_pod is None:
+            return {"ok": False, "reason": "no_new_pod", "service_selects_new_pod": False}
+        service = str(proposal.parameters.get("service") or "")
+        path = str(proposal.parameters.get("path") or "/")
+        await asyncio.sleep(min(5.0, self._verify_grace))
+        samples: list[dict[str, Any]] = []
+        deadline = time.monotonic() + self._verify_seconds
+        while time.monotonic() < deadline:
+            samples.append(
+                await asyncio.to_thread(adapter.pod_get, plan.namespace, str(new_pod["name"]), path)
+            )
+            await asyncio.sleep(self._sample_seconds)
+        endpoints = await asyncio.to_thread(
+            adapter.service_selects, plan.namespace, service, str(new_pod.get("ip") or "")
+        )
+        if len(samples) < self._min_samples:
+            return {
+                "ok": False,
+                "reason": "insufficient_data",
+                "samples": len(samples),
+                "service_selects_new_pod": endpoints.get("ok"),
+            }
+        failures = [item for item in samples if not (item["ok"] and item["status"] == 200)]
+        tail_failures = sum(
+            1
+            for item in samples[-self._min_samples :]
+            if not (item["ok"] and item["status"] == 200)
+        )
+        return {
+            "ok": tail_failures == 0,
+            "samples": len(samples),
+            "failed_samples": len(failures),
+            "tail_failures": tail_failures,
+            "window_seconds": self._verify_seconds,
+            "service": service,
+            "path": path,
+            "service_selects_new_pod": endpoints.get("ok"),
+            "service_addresses": endpoints.get("addresses"),
+        }
 
     async def _runtime_state(self, proposal: ActionProposal) -> dict[str, Any]:
         try:

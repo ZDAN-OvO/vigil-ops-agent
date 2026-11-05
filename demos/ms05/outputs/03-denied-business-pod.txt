@@ -1,0 +1,4 @@
+提案 act-2cf158999f5e：denied
+目标 Pod vigil-shop/frontend-7797c7cd78-f2f84：frontend-7797c7cd78-f2f84（frontend-7797c7cd78）
+风险判定：deny
+  - 目标 Pod 未标记为可丢弃工作负载

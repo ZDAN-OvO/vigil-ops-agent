@@ -1,0 +1,7 @@
+提案 act-8c4d56f1f1fa：pending_approval
+目标 Pod vigil-shop/rebuild-demo-58958844c8-mlxsm：rebuild-demo-58958844c8-mlxsm（rebuild-demo-58958844c8）
+风险判定：approval
+  - 动作 restart_pod
+  - 目标在实验命名空间
+  - 首次执行需人工审批
+  - 人工发起

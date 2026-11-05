@@ -1,0 +1,4 @@
+2026-11-05T04:09:33Z CLEANUP start pods=1
+2026-11-05T04:10:05Z CLEANED deployment=rebuild-demo service=rebuild-demo pods=0
+12
+rebuild-demo pods= 0

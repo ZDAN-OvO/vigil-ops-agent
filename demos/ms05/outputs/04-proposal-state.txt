@@ -1,0 +1,9 @@
+act-8c4d56f1f1fa restart_pod vigil-shop/rebuild-demo-58958844c8-mlxsm [succeeded]
+目标 Pod rebuild-demo-58958844c8-mlxsm，ReplicaSet rebuild-demo-58958844c8，uid 8e2ad336-2c87-4d9a-a6fb-db61da536a77
+创建于 2026-11-05T04:07:03.903981+00:00，已等待 2m18s
+审批：approved by ms05-demo at 2026-11-05T04:07:18.488333+00:00，有效期至 2026-11-05T04:22:18.488333+00:00
+执行：att-cd263265f070 verified
+验证：{"ok": true, "path": "/work", "new_pod": "rebuild-demo-58958844c8-m8hfj", "new_uid": "5e0b0414-33ea-48b9-958b-cb3c92abdcd7", "old_uid": "8e2ad336-2c87-4d9a-a6fb-db61da536a77", "samples": 6, "service": "rebuild-demo", "pod_ready": true, "pod_restarts": 0, "tail_failures": 0, "failed_samples": 0, "window_seconds": 90, "service_addresses": ["10.42.0.124"], "template_unchanged": true, "service_selects_new_pod": true}
+  2026-11-05T04:07:03.907860+00:00 ms05-demo action.proposed
+  2026-11-05T04:07:18.491080+00:00 ms05-demo action.approved
+  2026-11-05T04:09:02.474614+00:00 action-executor action.succeeded

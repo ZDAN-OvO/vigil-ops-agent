@@ -1,0 +1,16 @@
+### 2026-11-05T04:09:22Z pods
+NAME                            READY   STATUS    RESTARTS   AGE    IP            NODE                     NOMINATED NODE   READINESS GATES
+rebuild-demo-58958844c8-m8hfj   1/1     Running   0          2m4s   10.42.0.124   k3d-vigil-lab-server-0   <none>           <none>
+
+### endpoints
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME           ENDPOINTS          AGE
+rebuild-demo   10.42.0.124:8080   2m29s
+
+### events
+2026-11-05T04:07:18Z   SuccessfulCreate    rebuild-demo-58958844c8         Created pod: rebuild-demo-58958844c8-m8hfj
+2026-11-05T03:17:42Z   ScalingReplicaSet   rebuild-demo                    Scaled up replica set rebuild-demo-58958844c8 from 0 to 1
+2026-11-05T03:18:34Z   ScalingReplicaSet   rebuild-demo                    Scaled up replica set rebuild-demo-58958844c8 from 0 to 1
+2026-11-05T03:36:37Z   ScalingReplicaSet   rebuild-demo                    Scaled up replica set rebuild-demo-58958844c8 from 0 to 1
+2026-11-05T03:38:57Z   ScalingReplicaSet   rebuild-demo                    Scaled up replica set rebuild-demo-58958844c8 from 0 to 1
+2026-11-05T04:06:53Z   ScalingReplicaSet   rebuild-demo                    Scaled up replica set rebuild-demo-58958844c8 from 0 to 1
