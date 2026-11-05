@@ -7,7 +7,12 @@ from uuid import uuid4
 import psycopg
 import pytest
 
-from aiops.actions.executor import ActionExecutor, proposal_hash
+from aiops.actions.executor import (
+    ActionExecutor,
+    AutoExecutionError,
+    _initial_status,
+    proposal_hash,
+)
 from aiops.actions.policy import decide
 from aiops.actions.restart_pod import PodPlan, PodRestartAdapter
 from aiops.actions.rollout_undo import ActionError, RolloutPlan
@@ -17,7 +22,10 @@ from aiops.contracts import (
     ActionOrigin,
     ActionProposal,
     ActionTarget,
+    Approval,
+    ApprovalDecision,
     ProposalStatus,
+    RiskDecision,
     RiskDisposition,
     TimeRange,
     ToolResult,
@@ -29,6 +37,8 @@ pytestmark = pytest.mark.skipif(not DSN, reason="未配置 VIGIL_DATABASE_URL，
 
 START = datetime.now(UTC)
 WINDOW = TimeRange(start=START, end=START + timedelta(minutes=1))
+# 测试提案的统一标记；清理只删带这个标记的记录，避免误删并发创建的真实提案。
+TEST_REASON = "测试：Pod 级状态损坏"
 
 
 def make_proposal(**overrides) -> ActionProposal:
@@ -169,9 +179,18 @@ def rollout_plan(*, current_memory_limit=None, target_memory_limit=None):
 @pytest.fixture
 def cleanup():
     ids: list[str] = []
+    started_at = datetime.now(UTC)
     yield ids
     with psycopg.connect(DSN) as conn:
-        for proposal_id in ids:
+        # 失败路径可能来不及登记提案 ID；实验命名空间里本用例开始后的提案都属于测试。
+        rows = conn.execute(
+            """
+            SELECT id FROM action_proposals
+             WHERE namespace = %s AND created_at >= %s AND reason = %s
+            """,
+            ("vigil-experiment", started_at, TEST_REASON),
+        ).fetchall()
+        for proposal_id in {row[0] for row in rows} | set(ids):
             conn.execute("DELETE FROM action_locks WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM action_attempts WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM approvals WHERE proposal_id = %s", (proposal_id,))
@@ -189,6 +208,7 @@ def build_executor(
     restart_adapter=None,
     verify_seconds=60,
     sample_seconds=15,
+    cluster="vigil-lab",
 ):
     return ActionExecutor(
         store=store,
@@ -196,7 +216,7 @@ def build_executor(
         restart_adapter=restart_adapter,
         prometheus=prometheus,
         runtime_path=tmp_path,
-        cluster="vigil-lab",
+        cluster=cluster,
         namespace="vigil-shop",
         verify_seconds=verify_seconds,
         sample_seconds=sample_seconds,
@@ -590,6 +610,7 @@ def pod_plan(**overrides) -> PodPlan:
         "ready": True,
         "image": "vigil/pod-rebuild-demo:20261105",
         "discardable": True,
+        "ip": "10.42.0.9",
     }
     values.update(overrides)
     return PodPlan(**values)
@@ -605,9 +626,12 @@ class FakeRestartAdapter:
         replan=None,
         service_status=200,
         service_selects=True,
+        service_selects_after=None,
+        service_selects_not_ready=False,
         live_ready=True,
         live_restarts=0,
         rebuild_available=True,
+        replan_error=None,
     ):
         self._plan = plan
         self._rebuilt_spec_hash = rebuilt_spec_hash or plan.spec_hash
@@ -615,14 +639,20 @@ class FakeRestartAdapter:
         self._replan = replan
         self._service_status = service_status
         self._service_selects = service_selects
+        self._service_selects_after = service_selects_after
+        self._service_selects_not_ready = service_selects_not_ready
         self._live_ready = live_ready
         self._live_restarts = live_restarts
         self._rebuild_available = rebuild_available
+        self._replan_error = replan_error
         self.calls = []
         self._plan_calls = 0
+        self._service_calls = 0
 
     def plan(self, namespace, name):
         self._plan_calls += 1
+        if self._replan_error is not None and self._plan_calls > 1:
+            raise self._replan_error
         if self._replan is not None and self._plan_calls > 1:
             return self._replan
         return self._plan
@@ -655,8 +685,15 @@ class FakeRestartAdapter:
         status = self._service_status
         return {"ok": status == 200, "status": status, "body": "ok" if status == 200 else ""}
 
-    def service_selects(self, namespace, service, pod_ip):
-        return {"ok": self._service_selects, "pod_ip": pod_ip, "addresses": [pod_ip]}
+    def service_selects(self, namespace, service, pod_ip, *, ready_only=True):
+        self._service_calls += 1
+        ok = self._service_selects
+        if self._service_selects_not_ready:
+            # 目标只出现在 notReadyAddresses：选择关系成立，但还没有就绪端点。
+            ok = not ready_only
+        if self._service_selects_after is not None and self._service_calls > 1:
+            ok = self._service_selects_after
+        return {"ok": ok, "pod_ip": pod_ip, "addresses": [pod_ip], "ready_only": ready_only}
 
     def pod_state(self, namespace, owner_uid, uid):
         return {
@@ -703,6 +740,90 @@ def test_restart_policy_allows_only_controlled_discardable_pod():
     assert decision.disposition is RiskDisposition.APPROVAL
 
 
+def experiment_restart_proposal() -> ActionProposal:
+    proposal = restart_proposal()
+    return proposal.model_copy(
+        update={"target": proposal.target.model_copy(update={"namespace": "vigil-experiment"})}
+    )
+
+
+def test_restart_in_experiment_namespace_is_auto_allowed():
+    decision = decide(experiment_restart_proposal(), target_busy=False)
+
+    assert decision.disposition is RiskDisposition.AUTO
+    assert any("自动执行规则" in reason for reason in decision.reasons)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"discardable": False},
+        {"owner_kind": None},
+        {"service": ""},
+    ],
+)
+def test_experiment_namespace_auto_still_obeys_hard_constraints(override):
+    proposal = experiment_restart_proposal()
+    proposal = proposal.model_copy(update={"parameters": {**proposal.parameters, **override}})
+
+    decision = decide(proposal, target_busy=False)
+
+    assert decision.disposition is RiskDisposition.DENY
+
+
+def test_experiment_namespace_busy_target_is_denied():
+    decision = decide(experiment_restart_proposal(), target_busy=True)
+
+    assert decision.disposition is RiskDisposition.DENY
+
+
+def test_auto_decision_maps_to_approved_proposal_status():
+    decision = RiskDecision(
+        proposal_id="act-1",
+        disposition=RiskDisposition.AUTO,
+        policy_version="test",
+        reasons=["规则"],
+        requires_compensation=False,
+    )
+
+    assert _initial_status(decision) is ProposalStatus.APPROVED
+    assert _initial_status(decision.model_copy(update={"disposition": RiskDisposition.DENY})) is (
+        ProposalStatus.DENIED
+    )
+    assert (
+        _initial_status(decision.model_copy(update={"disposition": RiskDisposition.APPROVAL}))
+        is ProposalStatus.PENDING_APPROVAL
+    )
+
+
+def test_auto_restart_stops_after_a_failed_auto_execution():
+    decision = decide(experiment_restart_proposal(), target_busy=False, prior_auto_failure=True)
+
+    assert decision.disposition is RiskDisposition.APPROVAL
+    assert any("上一次执行失败" in reason for reason in decision.reasons)
+
+
+def test_rollback_in_experiment_namespace_still_needs_approval():
+    proposal = make_proposal(
+        target=ActionTarget(
+            cluster="vigil-lab",
+            namespace="vigil-experiment",
+            kind="Deployment",
+            name="rebuild-demo",
+            uid="uid-3",
+            resource_version="1",
+        )
+    )
+
+    assert decide(proposal, target_busy=False).disposition is RiskDisposition.APPROVAL
+
+
+def test_restart_outside_experiment_namespace_is_not_auto():
+    proposal = restart_proposal()
+
+    assert decide(proposal, target_busy=False).disposition is RiskDisposition.APPROVAL
+
+
 def test_restart_policy_denies_pod_without_controller():
     proposal = restart_proposal()
     proposal = proposal.model_copy(
@@ -731,7 +852,19 @@ def test_restart_policy_denies_missing_business_service():
     assert decide(proposal, target_busy=False).disposition is RiskDisposition.DENY
 
 
-async def run_restart(adapter, tmp_path, cleanup, *, verify_seconds=1, sample_seconds=0.2):
+async def run_restart(
+    adapter,
+    tmp_path,
+    cleanup,
+    *,
+    verify_seconds=1,
+    sample_seconds=0.2,
+    namespace="vigil-shop",
+    approve=True,
+    origin=ActionOrigin.OPERATOR,
+    evidence_ids=None,
+    cluster="vigil-lab",
+):
     async with Store.open(DSN) as store:
         await store.migrate()
         executor = build_executor(
@@ -742,22 +875,429 @@ async def run_restart(adapter, tmp_path, cleanup, *, verify_seconds=1, sample_se
             restart_adapter=adapter,
             verify_seconds=verify_seconds,
             sample_seconds=sample_seconds,
+            cluster=cluster,
         )
-        proposal, decision = await executor.propose_restart_pod(
-            pod="rebuild-demo-abc",
-            service="rebuild-demo",
-            path="/work",
-            reason="Pod 级状态损坏",
-            actor="tester",
-        )
-        cleanup.append(proposal.id)
-        attempt = None
         try:
-            attempt = await executor.approve(proposal.id, actor="tester", reason="同意")
-        except ActionError:
-            attempt = None
+            proposal, decision = await executor.propose_restart_pod(
+                pod="rebuild-demo-abc",
+                service="rebuild-demo",
+                path="/work",
+                reason=TEST_REASON,
+                actor="tester",
+                namespace=namespace,
+                origin=origin,
+                evidence_ids=evidence_ids,
+            )
+        except AutoExecutionError as exc:
+            cleanup.append(exc.proposal_id)
+            raise
+        cleanup.append(proposal.id)
+        attempt = await store.get_attempt(proposal.id)
+        if approve:
+            try:
+                attempt = await executor.approve(proposal.id, actor="tester", reason="同意")
+            except ActionError:
+                attempt = None
         saved = await store.get_proposal(proposal.id)
     return proposal, decision, attempt, saved
+
+
+def test_auto_restart_executes_without_human_approval(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"))
+
+    proposal, decision, attempt, saved = asyncio.run(
+        run_restart(adapter, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert decision.disposition is RiskDisposition.AUTO
+    assert attempt is not None
+    assert attempt.status.value == "verified"
+    assert saved.status is ProposalStatus.SUCCEEDED
+    assert [call[0] for call in adapter.calls] == ["dry_run", "execute", "wait"]
+
+    async def read():
+        async with Store.open(DSN) as store:
+            return (
+                await store.get_approval(proposal.id),
+                await store.list_audit(proposal.id),
+            )
+
+    approval, audit = asyncio.run(read())
+    assert approval is not None
+    assert approval.actor.startswith("policy:")
+    assert approval.reason.startswith("自动允许")
+    assert any(event.event == "action.auto_approved" for event in audit)
+    assert any(event.actor.startswith("policy:") for event in audit)
+
+
+def test_auto_restart_failure_is_not_reported_as_verified(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), service_status=500)
+
+    _, decision, attempt, saved = asyncio.run(
+        run_restart(adapter, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert decision.disposition is RiskDisposition.AUTO
+    assert attempt.status.value == "failed"
+    assert saved.status is ProposalStatus.FAILED
+
+
+def test_model_proposal_in_experiment_namespace_is_auto_executed(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"))
+
+    _, decision, attempt, saved = asyncio.run(
+        run_restart(
+            adapter,
+            tmp_path,
+            cleanup,
+            namespace="vigil-experiment",
+            approve=False,
+            origin=ActionOrigin.MODEL,
+            evidence_ids=["ev-1"],
+        )
+    )
+
+    assert decision.disposition is RiskDisposition.AUTO
+    assert attempt is not None
+    assert attempt.status.value == "verified"
+    assert saved.status is ProposalStatus.SUCCEEDED
+
+
+def test_auto_restart_is_not_repeated_after_a_failed_auto_attempt(tmp_path, cleanup):
+    first = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), service_status=500)
+    _, decision, attempt, _ = asyncio.run(
+        run_restart(first, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+    assert decision.disposition is RiskDisposition.AUTO
+    assert attempt.status.value == "failed"
+
+    second = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment", name="rebuild-demo-def", uid="pod-uid-3")
+    )
+    _, decision2, attempt2, saved2 = asyncio.run(
+        run_restart(second, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert decision2.disposition is RiskDisposition.APPROVAL
+    assert attempt2 is None
+    assert saved2.status is ProposalStatus.PENDING_APPROVAL
+    assert second.calls == []
+
+
+def test_auto_restart_stops_after_a_pre_delete_failure(tmp_path, cleanup):
+    """删除前被拒也要留下停止状态，不能因为没写执行记录就再次自动放行。"""
+
+    async def first_attempt():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                FakeAdapter(rollout_plan()),
+                FakePrometheus([1.0]),
+                tmp_path,
+                restart_adapter=FakeRestartAdapter(
+                    pod_plan(namespace="vigil-experiment"), service_selects=False
+                ),
+                verify_seconds=1,
+                sample_seconds=0.2,
+            )
+            with pytest.raises(AutoExecutionError) as info:
+                await executor.propose_restart_pod(
+                    pod="rebuild-demo-abc",
+                    service="rebuild-demo",
+                    path="/work",
+                    reason=TEST_REASON,
+                    actor="tester",
+                    namespace="vigil-experiment",
+                )
+            return info.value.proposal_id
+
+    cleanup.append(asyncio.run(first_attempt()))
+
+    second = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment", name="rebuild-demo-def", uid="pod-uid-3")
+    )
+    _, decision, attempt, _ = asyncio.run(
+        run_restart(second, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert decision.disposition is RiskDisposition.APPROVAL
+    assert attempt is None
+    assert second.calls == []
+
+
+def test_auto_stop_gate_survives_a_replica_set_change(tmp_path, cleanup):
+    first = FakeRestartAdapter(
+        pod_plan(
+            namespace="vigil-experiment", owner_name="rebuild-demo-old", workload_uid="deploy-uid-1"
+        ),
+        service_status=500,
+    )
+    _, decision, attempt, _ = asyncio.run(
+        run_restart(first, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+    assert decision.disposition is RiskDisposition.AUTO
+    assert attempt.status.value == "failed"
+
+    second = FakeRestartAdapter(
+        pod_plan(
+            namespace="vigil-experiment",
+            name="rebuild-demo-def",
+            uid="pod-uid-3",
+            owner_name="rebuild-demo-new",
+            workload_uid="deploy-uid-1",
+        )
+    )
+    _, decision2, attempt2, _ = asyncio.run(
+        run_restart(second, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert decision2.disposition is RiskDisposition.APPROVAL
+    assert attempt2 is None
+
+
+def test_auto_stop_gate_is_scoped_to_one_cluster(tmp_path, cleanup):
+    other = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), service_status=500)
+    _, first, attempt, _ = asyncio.run(
+        run_restart(
+            other,
+            tmp_path,
+            cleanup,
+            namespace="vigil-experiment",
+            approve=False,
+            cluster="other-cluster",
+        )
+    )
+    assert first.disposition is RiskDisposition.AUTO
+    assert attempt.status.value == "failed"
+
+    second = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment", name="rebuild-demo-def", uid="pod-uid-3")
+    )
+    _, decision, attempt2, _ = asyncio.run(
+        run_restart(second, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert decision.disposition is RiskDisposition.AUTO
+    assert attempt2.status.value == "verified"
+
+
+def test_in_flight_proposal_blocks_auto(tmp_path, cleanup):
+    first = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"))
+    proposal, _, _, _ = asyncio.run(
+        run_restart(first, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    async def mark_executing():
+        async with Store.open(DSN) as store:
+            await store.set_proposal_status(proposal.id, ProposalStatus.EXECUTING)
+
+    asyncio.run(mark_executing())
+    second = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment", name="rebuild-demo-def", uid="pod-uid-3")
+    )
+    _, decision, attempt, _ = asyncio.run(
+        run_restart(second, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert decision.disposition is RiskDisposition.APPROVAL
+    assert attempt is None
+
+
+def test_pending_proposal_does_not_clear_the_stop_gate(tmp_path, cleanup):
+    first = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), service_status=500)
+    _, decision, _, _ = asyncio.run(
+        run_restart(first, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+    assert decision.disposition is RiskDisposition.AUTO
+
+    second = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment", name="rebuild-demo-def", uid="pod-uid-3")
+    )
+    _, decision2, _, _ = asyncio.run(
+        run_restart(second, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+    assert decision2.disposition is RiskDisposition.APPROVAL
+
+    third = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment", name="rebuild-demo-ghi", uid="pod-uid-4")
+    )
+    _, decision3, attempt3, _ = asyncio.run(
+        run_restart(third, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert decision3.disposition is RiskDisposition.APPROVAL
+    assert attempt3 is None
+    assert third.calls == []
+
+
+def test_rejected_proposal_does_not_clear_the_stop_gate(tmp_path, cleanup):
+    first = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), service_status=500)
+    asyncio.run(run_restart(first, tmp_path, cleanup, namespace="vigil-experiment", approve=False))
+
+    second = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment", name="rebuild-demo-def", uid="pod-uid-3")
+    )
+    proposal, _, _, _ = asyncio.run(
+        run_restart(second, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    async def reject():
+        async with Store.open(DSN) as store:
+            await store.transition_proposal(
+                proposal.id,
+                expected=ProposalStatus.PENDING_APPROVAL,
+                target=ProposalStatus.REJECTED,
+            )
+
+    asyncio.run(reject())
+    third = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment", name="rebuild-demo-ghi", uid="pod-uid-4")
+    )
+    _, decision, attempt, _ = asyncio.run(
+        run_restart(third, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert decision.disposition is RiskDisposition.APPROVAL
+    assert attempt is None
+
+
+def test_legacy_rollback_failure_blocks_by_target_uid(tmp_path, cleanup):
+    """修复前的 rollout_undo 没有 workload 字段，只能用 target_uid 关联到部署。"""
+    legacy_id = f"act-{uuid4().hex[:12]}"
+
+    async def save_legacy():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            proposal = make_proposal(
+                id=legacy_id,
+                status=ProposalStatus.FAILED,
+                target=ActionTarget(
+                    cluster="vigil-lab",
+                    namespace="vigil-experiment",
+                    kind="Deployment",
+                    name="rebuild-demo",
+                    uid="deploy-uid-1",
+                    resource_version="1",
+                ),
+                parameters={},
+                idempotency_key=f"legacy-{uuid4().hex[:8]}",
+            )
+            decision = RiskDecision(
+                proposal_id=proposal.id,
+                disposition=RiskDisposition.APPROVAL,
+                policy_version="legacy",
+                reasons=["历史提案"],
+                requires_compensation=False,
+            )
+            await store.save_proposal(proposal, decision)
+
+    asyncio.run(save_legacy())
+    cleanup.append(legacy_id)
+
+    adapter = FakeRestartAdapter(
+        pod_plan(
+            namespace="vigil-experiment",
+            name="rebuild-demo-def",
+            uid="pod-uid-3",
+            workload_uid="deploy-uid-1",
+        )
+    )
+    _, decision, attempt, _ = asyncio.run(
+        run_restart(adapter, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert decision.disposition is RiskDisposition.APPROVAL
+    assert attempt is None
+
+
+def test_audit_failure_does_not_hide_the_proposal_id(tmp_path, cleanup, monkeypatch):
+    adapter = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), service_status=500)
+
+    async def broken_audit(*args, **kwargs):
+        raise ConnectionError("审计写入失败")
+
+    monkeypatch.setattr(ActionExecutor, "_audit", broken_audit)
+
+    with pytest.raises(AutoExecutionError) as info:
+        asyncio.run(
+            run_restart(adapter, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+        )
+
+    assert info.value.proposal_id
+
+
+def test_authorized_auto_proposal_is_stopped_when_the_workload_failed_meanwhile(tmp_path, cleanup):
+    first = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), service_status=500)
+    asyncio.run(run_restart(first, tmp_path, cleanup, namespace="vigil-experiment", approve=False))
+
+    adapter = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment", name="rebuild-demo-def", uid="pod-uid-3")
+    )
+    proposal, decision, _, _ = asyncio.run(
+        run_restart(adapter, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+    assert decision.disposition is RiskDisposition.APPROVAL
+
+    async def authorize_and_resume():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                FakeAdapter(rollout_plan()),
+                FakePrometheus([1.0]),
+                tmp_path,
+                restart_adapter=adapter,
+                verify_seconds=1,
+                sample_seconds=0.2,
+            )
+            decided_at = datetime.now(UTC)
+            approval = Approval(
+                id=f"apr-{uuid4().hex[:12]}",
+                proposal_id=proposal.id,
+                proposal_hash=proposal_hash(proposal),
+                actor="policy:test",
+                decision=ApprovalDecision.APPROVED,
+                reason="测试：执行前仍持有自动授权",
+                decided_at=decided_at,
+                expires_at=decided_at + timedelta(minutes=5),
+            )
+            await store.transition_proposal(
+                proposal.id,
+                expected=ProposalStatus.PENDING_APPROVAL,
+                target=ProposalStatus.APPROVED,
+            )
+            await store.save_approval(approval)
+            with pytest.raises(ActionError) as info:
+                await executor.resume(proposal.id)
+            return info.value.code
+
+    assert asyncio.run(authorize_and_resume()) == "auto_stopped"
+    assert adapter.calls == []
+
+
+def test_restart_precheck_accepts_not_ready_endpoint(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(), service_selects=False, service_selects_not_ready=True)
+
+    _, _, attempt, _ = asyncio.run(run_restart(adapter, tmp_path, cleanup))
+
+    # 删除前选择关系成立（NotReady），删除后仍不出现就绪端点，所以最终失败但确实执行过。
+    assert [call[0] for call in adapter.calls] == ["dry_run", "execute", "wait"]
+    assert attempt.verification["service_selects_new_pod"] is False
+
+
+def test_auto_execution_transport_error_keeps_the_proposal(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment"), replan_error=ConnectionError("连接中断")
+    )
+
+    with pytest.raises(AutoExecutionError) as info:
+        asyncio.run(
+            run_restart(adapter, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+        )
+
+    cleanup.append(info.value.proposal_id)
+    assert info.value.code == "auto_execute_error"
 
 
 def test_restart_pod_is_proposed_then_verified(tmp_path, cleanup):
@@ -786,8 +1326,18 @@ def test_restart_with_changed_template_is_not_success(tmp_path, cleanup):
     assert saved.status is ProposalStatus.FAILED
 
 
-def test_restart_with_pod_missing_from_service_is_not_success(tmp_path, cleanup):
+def test_restart_stops_before_delete_when_service_does_not_select_pod(tmp_path, cleanup):
     adapter = FakeRestartAdapter(pod_plan(), service_selects=False)
+
+    _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
+
+    assert attempt is None
+    assert saved.status is ProposalStatus.FAILED
+    assert adapter.calls == []
+
+
+def test_restart_with_service_that_stops_selecting_new_pod_is_not_success(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(), service_selects=True, service_selects_after=False)
 
     _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
 

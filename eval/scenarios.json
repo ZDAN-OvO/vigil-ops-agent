@@ -216,6 +216,26 @@
           "attempt_id": "att-cd263265f070",
           "recovered": true,
           "investigation_correct": false
+        },
+        {
+          "run_id": "a01-v04-auto",
+          "valid": true,
+          "reason": "实验命名空间的自动允许重建，执行验证通过",
+          "investigation_id": "",
+          "proposal_id": "act-744f3f556fd7",
+          "attempt_id": "att-d264f10a23bd",
+          "recovered": true,
+          "investigation_correct": false
+        },
+        {
+          "run_id": "a01-v04-deny",
+          "valid": true,
+          "reason": "实验命名空间内未标记可丢弃的 Pod 被规则拒绝，没有执行记录",
+          "investigation_id": "",
+          "proposal_id": "act-bcd790e376f7",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": false
         }
       ]
     }

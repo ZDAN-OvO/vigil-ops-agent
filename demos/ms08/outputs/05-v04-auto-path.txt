@@ -1,0 +1,52 @@
+
+$ bash faults/a01-pod-rebuild/repeat.sh deploy
+2026-11-05T14:29:01Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild
+2026-11-05T14:29:11Z DEPLOYED pod=rebuild-demo-58958844c8-jwfrr uid=4342e162-ef17-43a6-bc21-63673ffeb7f7 rs=d3054e6d-4698-4aae-80c1-a0e3e7f4662d template=5427399d73722fda540480d8127ec4bdbb9d3e1dba750007aefebd7a9cc67e80 ready=true restarts=0 work=200
+
+$ kubectl -n vigil-experiment create deployment deny-probe --image=vigil/pod-rebuild-demo:20261105 --replicas=1
+$ kubectl -n vigil-experiment rollout status deploy/deny-probe --timeout=90s
+Waiting for deployment "deny-probe" rollout to finish: 0 of 1 updated replicas are available...
+deployment "deny-probe" successfully rolled out
+
+$ uv run --frozen aiops act --kind restart-pod \
+    --pod deny-probe-64c6544fc5-77bcg --service deny-probe --path /work \
+    --reason "验证自动规则不会越过可丢弃硬约束" \
+    --namespace vigil-experiment --actor operator
+提案 act-bcd790e376f7：denied
+目标 Pod vigil-experiment/deny-probe-64c6544fc5-77bcg：deny-probe-64c6544fc5-77bcg（deny-probe-64c6544fc5）
+风险判定：deny
+  - 目标 Pod 未标记为可丢弃工作负载
+exit=4
+
+$ kubectl -n vigil-experiment delete deployment deny-probe --wait=true
+deny-probe removed
+
+$ bash faults/a01-pod-rebuild/repeat.sh inject
+2026-11-05T14:29:32Z BASELINE pod=rebuild-demo-58958844c8-jwfrr uid=4342e162-ef17-43a6-bc21-63673ffeb7f7 rs=d3054e6d-4698-4aae-80c1-a0e3e7f4662d template=5427399d73722fda540480d8127ec4bdbb9d3e1dba750007aefebd7a9cc67e80 restarts=0 work=200
+2026-11-05T14:29:32Z INJECTED pod=rebuild-demo-58958844c8-jwfrr uid=4342e162-ef17-43a6-bc21-63673ffeb7f7 restarts=0 work=500
+
+$ OBSERVE_SECONDS=15 bash faults/a01-pod-rebuild/repeat.sh verify
+2026-11-05T14:29:48Z OBSERVE seconds=15 ok=0 fail=14 other=0 uid=4342e162-ef17-43a6-bc21-63673ffeb7f7 restarts=0
+2026-11-05T14:29:48Z VERIFIED_FAULT uid=4342e162-ef17-43a6-bc21-63673ffeb7f7 restarts=0 work=500
+
+$ set -a; . ./.env; set +a; uv run --frozen aiops act --kind restart-pod \
+    --pod rebuild-demo-58958844c8-jwfrr --service rebuild-demo --path /work \
+    --reason "Pod 级状态损坏，/work 持续 500，容器未重启" \
+    --namespace vigil-experiment --actor operator
+提案 act-744f3f556fd7：succeeded
+目标 Pod vigil-experiment/rebuild-demo-58958844c8-jwfrr：rebuild-demo-58958844c8-jwfrr（rebuild-demo-58958844c8）
+风险判定：auto
+  - 动作 restart_pod 命中自动执行规则
+  - 目标在专用实验命名空间：vigil-experiment
+  - 目标 Pod 可丢弃，删除后由 ReplicaSet 重建
+  - 执行后按 Pod 与 Service 验证恢复
+执行 att-d264f10a23bd：verified
+验证：{"ok": true, "path": "/work", "new_pod": "rebuild-demo-58958844c8-c29fh", "new_uid": "e75c6814-0f2d-422c-9884-8b4b9e444756", "old_uid": "4342e162-ef17-43a6-bc21-63673ffeb7f7", "samples": 6, "service": "rebuild-demo", "pod_ready": true, "pod_restarts": 0, "tail_failures": 0, "failed_samples": 0, "window_seconds": 90, "service_addresses": ["10.42.0.172"], "template_unchanged": true, "service_selects_new_pod": true}
+exit=0
+
+$ kubectl -n vigil-experiment get pods -o wide
+NAME                            READY   STATUS    RESTARTS   AGE    IP            NODE                     NOMINATED NODE   READINESS GATES
+rebuild-demo-58958844c8-c29fh   1/1     Running   0          116s   10.42.0.172   k3d-vigil-lab-server-0   <none>           <none>
+
+$ printf "work="; curl -s -o /dev/null -w "%{http_code}\\n" http://127.0.0.1:8083/work
+work=200

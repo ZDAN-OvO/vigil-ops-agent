@@ -599,43 +599,110 @@ class Store:
 
     async def save_proposal(self, proposal: ActionProposal, decision: RiskDecision) -> None:
         async with self._pool.connection() as conn:
-            try:
-                await conn.execute(
-                    """
-                    INSERT INTO action_proposals (
-                        id, investigation_id, origin, kind, cluster, namespace, target_kind,
-                        target_name, target_uid, target_resource_version, parameters,
-                        evidence_ids, idempotency_key, reason, status, risk_disposition,
-                        risk_reasons, policy_version, created_at
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s
-                    )
-                    """,
-                    (
-                        proposal.id,
-                        proposal.investigation_id,
-                        proposal.origin.value,
-                        proposal.kind.value,
-                        proposal.target.cluster,
-                        proposal.target.namespace,
-                        proposal.target.kind,
-                        proposal.target.name,
-                        proposal.target.uid,
-                        proposal.target.resource_version,
-                        Jsonb(proposal.parameters),
-                        proposal.evidence_ids,
-                        proposal.idempotency_key,
-                        proposal.reason,
-                        proposal.status.value,
-                        decision.disposition.value,
-                        decision.reasons,
-                        decision.policy_version,
-                        proposal.created_at,
-                    ),
+            await self._insert_proposal(conn, proposal, decision)
+
+    async def save_proposal_with_approval(
+        self, proposal: ActionProposal, decision: RiskDecision, approval: Approval
+    ) -> None:
+        """自动允许时提案与策略授权同一事务写入，崩溃后不留下没有授权的 approved。"""
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await self._insert_proposal(conn, proposal, decision)
+                await self._insert_approval(conn, approval)
+
+    async def _insert_proposal(
+        self, conn: psycopg.AsyncConnection, proposal: ActionProposal, decision: RiskDecision
+    ) -> None:
+        try:
+            await conn.execute(
+                """
+                INSERT INTO action_proposals (
+                    id, investigation_id, origin, kind, cluster, namespace, target_kind,
+                    target_name, target_uid, target_resource_version, parameters,
+                    evidence_ids, idempotency_key, reason, status, risk_disposition,
+                    risk_reasons, policy_version, created_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
-            except psycopg.errors.UniqueViolation as exc:
-                raise DuplicateProposal("同一目标版本已有进行中的提案") from exc
+                """,
+                (
+                    proposal.id,
+                    proposal.investigation_id,
+                    proposal.origin.value,
+                    proposal.kind.value,
+                    proposal.target.cluster,
+                    proposal.target.namespace,
+                    proposal.target.kind,
+                    proposal.target.name,
+                    proposal.target.uid,
+                    proposal.target.resource_version,
+                    Jsonb(proposal.parameters),
+                    proposal.evidence_ids,
+                    proposal.idempotency_key,
+                    proposal.reason,
+                    proposal.status.value,
+                    decision.disposition.value,
+                    decision.reasons,
+                    decision.policy_version,
+                    proposal.created_at,
+                ),
+            )
+        except psycopg.errors.UniqueViolation as exc:
+            raise DuplicateProposal("同一目标版本已有进行中的提案") from exc
+
+    async def latest_proposal_blocks_auto(
+        self,
+        cluster: str,
+        namespace: str,
+        workload: str,
+        replica_set: str = "",
+        *,
+        exclude_proposal: str = "",
+    ) -> bool:
+        """同一集群、同一工作负载最近一次动作为未成功结束时，后续不再自动执行。
+
+        只看已经执行过或仍持有授权的提案：待审批、策略拒绝、人工拒绝和过期都不
+        解除停止状态。已授权未执行、执行中、失败和未知都阻断，只有成功或没有记录
+        才放行。工作负载用 Deployment UID 关联；历史提案没有该字段时退回
+        ReplicaSet 名称或目标 UID（旧的 rollout_undo 只记 target_uid）。
+        """
+        if not workload and not replica_set:
+            return False
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT status
+                  FROM action_proposals
+                 WHERE cluster = %s
+                   AND namespace = %s
+                   AND status NOT IN ('pending_approval', 'denied', 'rejected', 'expired')
+                   AND (
+                        parameters->>'workload' = %s
+                        OR (
+                            NOT (parameters ? 'workload')
+                            AND (
+                                parameters->>'replica_set' = %s
+                                OR target_uid = %s
+                            )
+                        )
+                   )
+                   AND id != %s
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1
+                """,
+                (cluster, namespace, workload, replica_set, workload, exclude_proposal),
+            )
+            row = await cursor.fetchone()
+        return bool(row and row["status"] in ("approved", "executing", "failed", "unknown"))
+
+    async def get_proposal_disposition(self, proposal_id: str) -> str | None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT risk_disposition FROM action_proposals WHERE id = %s", (proposal_id,)
+            )
+            row = await cursor.fetchone()
+        return str(row["risk_disposition"]) if row else None
 
     async def get_proposal(self, proposal_id: str) -> ActionProposal | None:
         async with self._pool.connection() as conn:
@@ -687,24 +754,27 @@ class Store:
 
     async def save_approval(self, approval: Approval) -> None:
         async with self._pool.connection() as conn:
-            await conn.execute(
-                """
-                INSERT INTO approvals (
-                    id, proposal_id, proposal_hash, actor, decision, reason,
-                    decided_at, expires_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    approval.id,
-                    approval.proposal_id,
-                    approval.proposal_hash,
-                    approval.actor,
-                    approval.decision.value,
-                    approval.reason,
-                    approval.decided_at,
-                    approval.expires_at,
-                ),
-            )
+            await self._insert_approval(conn, approval)
+
+    async def _insert_approval(self, conn: psycopg.AsyncConnection, approval: Approval) -> None:
+        await conn.execute(
+            """
+            INSERT INTO approvals (
+                id, proposal_id, proposal_hash, actor, decision, reason,
+                decided_at, expires_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                approval.id,
+                approval.proposal_id,
+                approval.proposal_hash,
+                approval.actor,
+                approval.decision.value,
+                approval.reason,
+                approval.decided_at,
+                approval.expires_at,
+            ),
+        )
 
     async def get_approval(self, proposal_id: str) -> Approval | None:
         async with self._pool.connection() as conn:

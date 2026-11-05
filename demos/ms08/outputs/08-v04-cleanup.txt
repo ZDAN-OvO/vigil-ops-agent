@@ -1,0 +1,10 @@
+$ bash faults/a01-pod-rebuild/repeat.sh cleanup
+2026-11-05T14:32:10Z CLEANUP start pods=1
+2026-11-05T14:32:41Z CLEANED deployment=rebuild-demo service=rebuild-demo pods=0
+2026-11-05T14:32:50Z NAMESPACE_REMOVED namespace=vigil-experiment
+
+$ kubectl get ns vigil-experiment
+Error from server (NotFound): namespaces "vigil-experiment" not found
+
+$ kubectl -n vigil-shop get deploy --no-headers | wc -l
+12

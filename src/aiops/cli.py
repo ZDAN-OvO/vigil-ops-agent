@@ -12,7 +12,7 @@ from typing import Annotated
 import typer
 
 from aiops import __version__
-from aiops.actions.executor import ActionExecutor
+from aiops.actions.executor import ActionExecutor, AutoExecutionError
 from aiops.actions.restart_pod import PodRestartAdapter
 from aiops.actions.rollout_undo import ActionError, RolloutUndoAdapter
 from aiops.config import Settings
@@ -36,7 +36,7 @@ from aiops.tools.prometheus import PrometheusClient
 from aiops.webhook import build_app
 
 app = typer.Typer(
-    help="Vigil AIOps：故障调查与受控修复（当前支持只读调查）。",
+    help="Vigil AIOps：故障调查与受控修复；实验命名空间的可丢弃 Pod 重建会被自动执行。",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -113,7 +113,7 @@ def status(output: OutputFormat = OutputFormat.TEXT) -> None:
     if output == OutputFormat.JSON:
         typer.echo(json.dumps(payload, ensure_ascii=False))
     else:
-        typer.echo(f"Vigil AIOps {__version__} · W0：只读调查与受控回退可用，自动处置尚未实现。")
+        typer.echo(f"Vigil AIOps {__version__} · W0：调查、受控动作与实验命名空间的自动重建可用。")
 
 
 def _print_report(report: Report, output: OutputFormat) -> None:
@@ -155,7 +155,7 @@ def investigate(
     context: Annotated[list[str] | None, typer.Option(help="人工补充的上下文，可重复")] = None,
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
-    """运行一次只读调查；不执行任何集群写操作。"""
+    """运行一次调查；命中自动规则的可丢弃 Pod 重建会立即执行，其余只提案等待审批。"""
     settings = Settings()
     if not settings.model_name:
         typer.echo("未配置 VIGIL_MODEL_NAME，无法调用模型。", err=True)
@@ -527,6 +527,15 @@ def knowledge(
         typer.echo(f"{item.id} v{item.version} {item.title}｜{item.summary}")
 
 
+def act_exit_code(proposal_status: str, attempt_status: str | None) -> int:
+    """act 的退出码：0 成功、1 执行未成功、3 待审批、4 策略拒绝。"""
+    if proposal_status == "denied":
+        return 4
+    if attempt_status is not None:
+        return 0 if attempt_status == "verified" else 1
+    return 3
+
+
 @app.command("act")
 def act(
     kind: str = typer.Option("rollout-undo", help="动作类型：rollout-undo 或 restart-pod"),
@@ -540,7 +549,7 @@ def act(
     actor: str = typer.Option("operator", help="发起人"),
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
-    """提交一个受控动作；支持 rollout-undo 与 restart-pod。只提案，不执行。"""
+    """提交一个受控动作；自动允许的当场执行，其余只提案等待审批。"""
 
     async def run():
         async with Store.open(_require_dsn()) as store:
@@ -549,7 +558,7 @@ def act(
                 if kind == "restart-pod":
                     if not pod or not service:
                         raise ActionError("invalid_argument", "restart-pod 需要 --pod 与 --service")
-                    return await executor.propose_restart_pod(
+                    proposal, decision = await executor.propose_restart_pod(
                         pod=pod,
                         service=service,
                         path=path,
@@ -558,20 +567,27 @@ def act(
                         namespace=namespace,
                         investigation_id=investigation,
                     )
-                if kind != "rollout-undo":
+                elif kind == "rollout-undo":
+                    if not deployment:
+                        raise ActionError("invalid_argument", "rollout-undo 需要 --deployment")
+                    proposal, decision = await executor.propose_rollback(
+                        deployment=deployment,
+                        reason=reason,
+                        actor=actor,
+                        namespace=namespace,
+                        investigation_id=investigation,
+                    )
+                else:
                     raise ActionError("invalid_argument", f"未知动作类型：{kind}")
-                if not deployment:
-                    raise ActionError("invalid_argument", "rollout-undo 需要 --deployment")
-                return await executor.propose_rollback(
-                    deployment=deployment,
-                    reason=reason,
-                    actor=actor,
-                    namespace=namespace,
-                    investigation_id=investigation,
-                )
+                return proposal, decision, await store.get_attempt(proposal.id)
 
     try:
-        proposal, decision = asyncio.run(run())
+        proposal, decision, attempt = asyncio.run(run())
+    except AutoExecutionError as exc:
+        typer.echo(
+            f"提案 {exc.proposal_id} 已保存但执行未完成（{exc.code}）：{exc.message}", err=True
+        )
+        raise typer.Exit(code=1) from exc
     except ActionError as exc:
         typer.echo(f"无法提案（{exc.code}）：{exc.message}", err=True)
         raise typer.Exit(code=1) from exc
@@ -591,6 +607,8 @@ def act(
                         "parameters": proposal.parameters,
                         "disposition": decision.disposition.value,
                         "reasons": decision.reasons,
+                        "attempt_id": attempt.id if attempt else None,
+                        "attempt_status": attempt.status.value if attempt else None,
                     },
                 },
                 ensure_ascii=False,
@@ -612,7 +630,11 @@ def act(
         typer.echo(f"风险判定：{decision.disposition.value}")
         for item in decision.reasons:
             typer.echo(f"  - {item}")
-    raise typer.Exit(code=4 if proposal.status.value == "denied" else 3)
+        if attempt is not None:
+            typer.echo(f"执行 {attempt.id}：{attempt.status.value}")
+            if attempt.verification:
+                typer.echo(f"验证：{json.dumps(attempt.verification, ensure_ascii=False)}")
+    raise typer.Exit(code=act_exit_code(proposal.status.value, attempt and attempt.status.value))
 
 
 @app.command()

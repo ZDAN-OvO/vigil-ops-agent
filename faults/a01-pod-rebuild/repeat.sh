@@ -5,7 +5,8 @@ set -u
 
 export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/vigil-lab.yaml}"
 KUBECTL="${KUBECTL:-kubectl}"
-NS="${NS:-vigil-shop}"
+NS="${NS:-vigil-experiment}"
+NS_OWNER="a01-pod-rebuild"
 DEPLOY="${DEPLOY:-rebuild-demo}"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PF_PORT="${PF_PORT:-8082}"
@@ -106,7 +107,35 @@ read_identity() {
     || fail "Pod 身份字段为空：name=$pod_name uid=$pod_uid restarts=$restarts"
 }
 
+# 命名空间只由本脚本创建和删除；已存在但不属于 A01 时不接管、不清理。
+# 读取失败不能当成“不存在”，否则权限或连接故障会绕过所有权检查。
+OWNER=""
+read_namespace_owner() {
+  local out
+  if out=$("$KUBECTL" get namespace "$NS" \
+    -o jsonpath='{.metadata.annotations.vigil\.io/owner}' 2>&1); then
+    OWNER="$out"
+    return 0
+  fi
+  case "$out" in
+    *NotFound*) OWNER="" ; return 1 ;;
+    *) fail "无法读取命名空间 $NS 的归属：$out" ;;
+  esac
+}
+
+ensure_namespace() {
+  if read_namespace_owner; then
+    [ "$OWNER" = "$NS_OWNER" ] || fail "命名空间 $NS 已存在且不属于 A01（owner=${OWNER:-无}），停止"
+    return 0
+  fi
+  "$KUBECTL" create namespace "$NS" >/dev/null || fail "创建命名空间失败"
+  "$KUBECTL" annotate namespace "$NS" "vigil.io/owner=$NS_OWNER" >/dev/null \
+    || fail "标注命名空间失败"
+  say "NAMESPACE_CREATED namespace=$NS owner=$NS_OWNER"
+}
+
 deploy() {
+  ensure_namespace
   kget get deploy "$DEPLOY" >/dev/null && fail "已存在 $DEPLOY"
   "$KUBECTL" apply -f "$DIR/manifests.yaml" >/dev/null || fail "清单应用失败"
   "$KUBECTL" -n "$NS" rollout status deploy/"$DEPLOY" --timeout=120s >/dev/null || fail "Deployment 未就绪"
@@ -235,14 +264,44 @@ rebuild() {
   say "VERIFIED_REBUILD old_uid=$old_uid new_uid=$new_uid template_unchanged=1 rs_unchanged=1 work=200 elapsed_s=$elapsed"
 }
 
+# 任何删除请求之前先确认命名空间归属；不属于 A01 时连其中的资源也不碰。
+require_owned_namespace() {
+  read_namespace_owner || return 0
+  [ "$OWNER" = "$NS_OWNER" ] || fail "命名空间 $NS 不属于 A01（owner=${OWNER:-无}），拒绝删除其中资源"
+}
+
+delete_namespace_if_owned() {
+  local deadline
+  if ! read_namespace_owner; then
+    say "NAMESPACE_ABSENT namespace=$NS"
+    return 0
+  fi
+  if [ "$OWNER" != "$NS_OWNER" ]; then
+    say "NAMESPACE_KEPT namespace=$NS owner=${OWNER:-无}"
+    return 0
+  fi
+  "$KUBECTL" delete namespace "$NS" --wait=false >/dev/null || fail "删除命名空间失败"
+  deadline=$(( $(date +%s) + WAIT_SECONDS ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if ! "$KUBECTL" get namespace "$NS" >/dev/null 2>&1; then
+      say "NAMESPACE_REMOVED namespace=$NS"
+      return 0
+    fi
+    sleep 1
+  done
+  fail "命名空间删除未完成：$NS"
+}
+
 cleanup() {
   say "CLEANUP start pods=$(pod_count)"
   stop_port_forward
+  require_owned_namespace
   "$KUBECTL" delete -f "$DIR/manifests.yaml" --ignore-not-found >/dev/null || fail "删除清单失败"
   local deadline=$(( $(date +%s) + WAIT_SECONDS ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
     if ! kget get deploy "$DEPLOY" >/dev/null && [ "$(pod_count)" -eq 0 ]; then
       say "CLEANED deployment=$DEPLOY service=$DEPLOY pods=0"
+      delete_namespace_if_owned
       return 0
     fi
     sleep 1
@@ -251,6 +310,8 @@ cleanup() {
 }
 
 trap stop_port_forward EXIT
+# 清单里写死命名空间；允许覆盖 NS 会让所有权检查和实际删除目标不一致。
+[ "$NS" = "vigil-experiment" ] || fail "NS 必须与 manifests.yaml 一致：vigil-experiment"
 case "${1:-}" in
   deploy) deploy ;;
   inject) inject ;;

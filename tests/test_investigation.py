@@ -7,6 +7,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 
+from aiops.actions.executor import AutoExecutionError
 from aiops.config import Settings
 from aiops.contracts import (
     ActionKind,
@@ -607,6 +608,35 @@ def _run_restart_case(ids, tmp_path, proposer, assessment):
     )
 
 
+def test_auto_execution_failure_keeps_the_proposal_id(ids, tmp_path):
+    """提案已落库但执行没完成时，报告不能把它当成“未提案”。"""
+
+    class BusyProposer(FakeProposer):
+        async def propose_restart_pod(self, **kwargs):
+            raise AutoExecutionError("target_busy", "目标已有未完成的执行", "act-persisted-auto")
+
+    report, _, _, _ = _run_restart_case(ids, tmp_path, BusyProposer(), _restart_assessment())
+
+    assert report.proposal_id == "act-persisted-auto"
+
+
+def test_unknown_runbook_aborts_before_any_proposal(ids, tmp_path):
+    """结论先被 runbook 校验拒绝时，不能在 abort 前把动作提出去（自动允许会立即执行）。"""
+    proposer = FakeProposer()
+
+    report, _, _, _ = _run_restart_case(
+        ids,
+        tmp_path,
+        proposer,
+        _restart_assessment(
+            runbook_uses=[RunbookUse(runbook_id="rb-ghost", accepted=True, reason="猜的")]
+        ),
+    )
+
+    assert report.status.value == "aborted"
+    assert proposer.calls == []
+
+
 def test_restart_without_root_cause_is_not_proposed(ids, tmp_path):
     proposer = FakeProposer()
 
@@ -616,6 +646,16 @@ def test_restart_without_root_cause_is_not_proposed(ids, tmp_path):
 
     assert report.proposal_id is None
     assert proposer.calls == []
+
+
+def test_restart_with_empty_conclusion_is_not_proposed(ids, tmp_path):
+    """空结论最终会被判为 inconclusive，不能在这种状态下先执行动作。"""
+    proposer = FakeProposer()
+
+    report, _, _, _ = _run_restart_case(ids, tmp_path, proposer, _restart_assessment(conclusion=""))
+
+    assert proposer.calls == []
+    assert report.proposal_id is None
 
 
 def test_restart_citing_refuting_evidence_is_not_proposed(ids, tmp_path):
