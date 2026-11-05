@@ -1,0 +1,16 @@
+2026-11-05T19:12:45Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild
+2026-11-05T19:12:50Z DEPLOYED pod=rebuild-demo-f4b67fbd9-x7lsg uid=ef3e9c50-ba56-4ab3-ab32-b95cbff67ff2 rs=33f9c3cd-b262-4b96-a313-5ed9d3bea089 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200
+2026-11-05T19:12:50Z ENDPOINTS_READY pod=rebuild-demo-f4b67fbd9-x7lsg
+2026-11-05T19:12:50Z CORRUPTED pod=rebuild-demo-f4b67fbd9-x7lsg state=corrupt
+2026-11-05T19:12:51Z POISON_ON pod=rebuild-demo-f4b67fbd9-x7lsg
+2026-11-05T19:12:51Z RESTART pod=rebuild-demo-f4b67fbd9-x7lsg reason=V06-2 无改善用例
+提案 act-1763896a0404：failed
+目标 Pod vigil-experiment/rebuild-demo-f4b67fbd9-x7lsg：rebuild-demo-f4b67fbd9-x7lsg（rebuild-demo-f4b67fbd9）
+风险判定：auto
+  - 动作 restart_pod 命中自动执行规则
+  - 目标在专用实验命名空间：vigil-experiment
+  - 目标 Pod 可丢弃，删除后由 ReplicaSet 重建
+  - 执行后按 Pod 与 Service 验证恢复
+执行 att-034f25117a33：failed
+验证：{"ok": false, "path": "/work", "post": {"samples": 6, "failure_ratio": 1.0, "failed_samples": 6}, "new_pod": "rebuild-demo-f4b67fbd9-crw8k", "new_uid": "73fb7126-8c21-403a-82a1-6189f2373b9a", "old_uid": "ef3e9c50-ba56-4ab3-ab32-b95cbff67ff2", "outcome": "no_improvement", "samples": 6, "service": "rebuild-demo", "baseline": {"samples": 3, "failure_ratio": 1.0, "failed_samples": 3}, "pod_ready": true, "post_tail": {"samples": 3, "failure_ratio": 1.0, "failed_samples": 3}, "pod_restarts": 0, "tail_samples": 3, "tail_failures": 3, "failed_samples": 6, "outcome_reason": "动作后仍有失败，失败率没有明显下降", "window_seconds": 90, "service_addresses": ["10.42.0.13"], "template_unchanged": true, "tail_failed_samples": 3, "unavailable_samples": 0, "service_selects_new_pod": true, "tail_unavailable_samples": 0}
+待办 fol-7d506f6330fe：no_improvement，动作后仍有失败，失败率没有明显下降

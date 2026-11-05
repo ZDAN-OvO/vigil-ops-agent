@@ -1,0 +1,5 @@
+== verify cleanup 2026-11-05T20:04:50Z
+Error from server (NotFound): namespaces "vigil-experiment" not found
+vigil-shop_deployments=12
+     12 Running
+open_followups=4

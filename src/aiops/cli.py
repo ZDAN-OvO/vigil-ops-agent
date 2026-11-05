@@ -19,6 +19,7 @@ from aiops.config import Settings
 from aiops.contracts import (
     AuditEvent,
     Budget,
+    FollowupStatus,
     Incident,
     Investigation,
     InvestigationStatus,
@@ -579,10 +580,16 @@ def act(
                     )
                 else:
                     raise ActionError("invalid_argument", f"未知动作类型：{kind}")
-                return proposal, decision, await store.get_attempt(proposal.id)
+                followups = await store.list_followups(proposal_id=proposal.id, limit=1)
+                return (
+                    proposal,
+                    decision,
+                    await store.get_attempt(proposal.id),
+                    followups[0] if followups else None,
+                )
 
     try:
-        proposal, decision, attempt = asyncio.run(run())
+        proposal, decision, attempt, followup = asyncio.run(run())
     except AutoExecutionError as exc:
         typer.echo(
             f"提案 {exc.proposal_id} 已保存但执行未完成（{exc.code}）：{exc.message}", err=True
@@ -609,6 +616,12 @@ def act(
                         "reasons": decision.reasons,
                         "attempt_id": attempt.id if attempt else None,
                         "attempt_status": attempt.status.value if attempt else None,
+                        "outcome": (
+                            attempt.verification.get("outcome")
+                            if attempt and attempt.verification
+                            else None
+                        ),
+                        "followup_id": followup.id if followup else None,
                     },
                 },
                 ensure_ascii=False,
@@ -634,6 +647,8 @@ def act(
             typer.echo(f"执行 {attempt.id}：{attempt.status.value}")
             if attempt.verification:
                 typer.echo(f"验证：{json.dumps(attempt.verification, ensure_ascii=False)}")
+        if followup is not None:
+            typer.echo(f"待办 {followup.id}：{followup.outcome.value}，{followup.reason}")
     raise typer.Exit(code=act_exit_code(proposal.status.value, attempt and attempt.status.value))
 
 
@@ -685,6 +700,101 @@ def approvals(
         typer.echo(
             f"{item.id} {item.kind.value} {item.target.namespace}/{item.target.name} "
             f"[{item.status.value}] 已等待 {_duration(item.created_at)} {item.reason}"
+        )
+
+
+@app.command()
+def followups(
+    status: str = typer.Option("open", help="按状态过滤：open 或 resolved"),
+    limit: int = typer.Option(20, min=1, max=200),
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """列出异常执行留下的人工待办。"""
+    try:
+        wanted = FollowupStatus(status)
+    except ValueError as exc:
+        typer.echo(f"未知状态：{status}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    async def run():
+        async with Store.open(_require_dsn()) as store:
+            return await store.list_followups(status=wanted, limit=limit)
+
+    try:
+        items = asyncio.run(run())
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    if output == OutputFormat.JSON:
+        typer.echo(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "data": [item.model_dump(mode="json") for item in items],
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    if not items:
+        typer.echo("没有待办")
+        return
+    for item in items:
+        typer.echo(
+            f"{item.id} {item.outcome.value} {item.namespace}/{item.target_name} "
+            f"[{item.status.value}] 提案 {item.proposal_id} "
+            f"执行 {item.attempt_id or '无'} {item.reason}"
+        )
+
+
+@app.command()
+def followup(
+    followup_id: str,
+    resolve: bool = typer.Option(False, "--resolve", help="标记为解决"),
+    actor: str = typer.Option("operator", help="解决人"),
+    note: str = typer.Option("", help="解决说明"),
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """查看或解决一条人工待办。"""
+    if resolve and not note.strip():
+        typer.echo("--resolve 需要非空 --note", err=True)
+        raise typer.Exit(code=2)
+    if resolve and not actor.strip():
+        typer.echo("--resolve 需要非空 --actor", err=True)
+        raise typer.Exit(code=2)
+
+    async def run():
+        async with Store.open(_require_dsn()) as store:
+            if resolve:
+                return await store.resolve_followup(followup_id, actor=actor, note=note)
+            return await store.get_followup(followup_id)
+
+    try:
+        item = asyncio.run(run())
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    if item is None:
+        typer.echo(f"待办不存在或已经解决：{followup_id}", err=True)
+        raise typer.Exit(code=1)
+    if output == OutputFormat.JSON:
+        typer.echo(
+            json.dumps(
+                {"schema_version": "1", "data": item.model_dump(mode="json")},
+                ensure_ascii=False,
+            )
+        )
+        return
+    typer.echo(
+        f"{item.id} {item.outcome.value} {item.namespace}/{item.target_name} [{item.status.value}]"
+    )
+    typer.echo(f"原因：{item.reason}")
+    if item.resolved_at is not None:
+        typer.echo(
+            f"解决：{item.resolved_by} at {item.resolved_at.isoformat()} "
+            f"{item.resolution or ''}".rstrip()
         )
 
 
@@ -761,10 +871,11 @@ def show_proposal(
             approval = await store.get_approval(proposal_id)
             attempt = await store.get_attempt(proposal_id)
             audit = await store.list_audit(proposal_id)
-            return proposal, approval, attempt, audit
+            followups = await store.list_followups(proposal_id=proposal_id)
+            return proposal, approval, attempt, audit, followups
 
     try:
-        proposal, approval, attempt, audit = asyncio.run(run())
+        proposal, approval, attempt, audit, followups = asyncio.run(run())
     except StoreUnavailable as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
@@ -782,6 +893,7 @@ def show_proposal(
                         "approval": approval.model_dump(mode="json") if approval else None,
                         "attempt": attempt.model_dump(mode="json") if attempt else None,
                         "audit": [event.model_dump(mode="json") for event in audit],
+                        "followups": [item.model_dump(mode="json") for item in followups],
                     },
                 },
                 ensure_ascii=False,
@@ -818,6 +930,8 @@ def show_proposal(
     else:
         typer.echo(f"执行：{attempt.id} {attempt.status.value}")
         typer.echo(f"验证：{json.dumps(attempt.verification, ensure_ascii=False)}")
+    for item in followups:
+        typer.echo(f"待办：{item.id} {item.outcome.value} [{item.status.value}] {item.reason}")
     for event in audit:
         typer.echo(f"  {event.occurred_at.isoformat()} {event.actor} {event.event}")
 

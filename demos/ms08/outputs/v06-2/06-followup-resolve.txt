@@ -1,0 +1,3 @@
+fol-4d2d254ff8e7 no_improvement vigil-experiment/rebuild-demo-f4b67fbd9-drsvz [resolved]
+原因：动作后仍有失败，失败率没有明显下降
+解决：v06-reviewer at 2026-11-05T20:11:19.002303+00:00 已核对停止门与证据

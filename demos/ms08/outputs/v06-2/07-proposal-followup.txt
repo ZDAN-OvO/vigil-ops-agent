@@ -1,0 +1,11 @@
+act-e0326b3a7130 restart_pod vigil-experiment/rebuild-demo-f4b67fbd9-drsvz [failed]
+目标 Pod rebuild-demo-f4b67fbd9-drsvz，ReplicaSet rebuild-demo-f4b67fbd9，uid 97232e16-5678-4587-bf4d-1d49572413b8
+创建于 2026-11-05T20:09:07.054982+00:00，已等待 2m13s
+审批：approved by policy:mvp-policy-2 at 2026-11-05T20:09:07.057636+00:00，有效期至 2026-11-05T20:24:07.057636+00:00
+执行：att-3e01dd517611 failed
+验证：{"ok": false, "path": "/work", "post": {"samples": 6, "failure_ratio": 1.0, "failed_samples": 6}, "new_pod": "rebuild-demo-f4b67fbd9-t42f9", "new_uid": "573ecc6b-a470-4b4c-a65e-dd4fdc5ff781", "old_uid": "97232e16-5678-4587-bf4d-1d49572413b8", "outcome": "no_improvement", "samples": 6, "service": "rebuild-demo", "baseline": {"samples": 3, "failure_ratio": 1.0, "failed_samples": 3}, "pod_ready": true, "post_tail": {"samples": 3, "failure_ratio": 1.0, "failed_samples": 3}, "pod_restarts": 0, "tail_samples": 3, "tail_failures": 3, "failed_samples": 6, "outcome_reason": "动作后仍有失败，失败率没有明显下降", "window_seconds": 90, "service_addresses": ["10.42.0.23"], "template_unchanged": true, "tail_failed_samples": 3, "unavailable_samples": 0, "service_selects_new_pod": true, "tail_unavailable_samples": 0}
+待办：fol-4d2d254ff8e7 no_improvement [resolved] 动作后仍有失败，失败率没有明显下降
+  2026-11-05T20:09:07.060950+00:00 operator action.proposed
+  2026-11-05T20:09:07.062620+00:00 policy:mvp-policy-2 action.auto_approved
+  2026-11-05T20:11:17.079273+00:00 action-executor action.failed
+  2026-11-05T20:11:19.004505+00:00 v06-reviewer action.followup_resolved

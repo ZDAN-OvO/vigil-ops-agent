@@ -20,6 +20,7 @@ from aiops.actions.restart_pod import PodPlan, PodRestartAdapter
 from aiops.actions.rollout_undo import ActionError, RolloutUndoAdapter
 from aiops.contracts import (
     ActionAttempt,
+    ActionFollowup,
     ActionKind,
     ActionOrigin,
     ActionProposal,
@@ -68,6 +69,49 @@ def _summarise_pod_samples(samples: list[dict[str, Any]]) -> tuple[SampleSummary
     valid = [item for item in samples if _business_response(item)]
     failed = [item for item in valid if not (item.get("ok") and item.get("status") == 200)]
     return SampleSummary(samples=len(valid), failed=len(failed)), len(samples) - len(valid)
+
+
+FOLLOWUP_OUTCOMES = frozenset(
+    {AttemptOutcome.NO_IMPROVEMENT, AttemptOutcome.WORSENED, AttemptOutcome.UNKNOWN}
+)
+
+
+def _followup_for(
+    attempt: ActionAttempt,
+    proposal: ActionProposal,
+    status: AttemptStatus,
+    proposal_status: ProposalStatus,
+    verification: dict[str, Any] | None,
+    result: dict[str, Any] | None,
+    created_at: datetime,
+) -> ActionFollowup | None:
+    """只有异常执行结果才需要人工待办；写前失败不建执行记录也不建待办。"""
+    if proposal_status is ProposalStatus.EXPIRED:
+        return None
+    if status not in (AttemptStatus.FAILED, AttemptStatus.UNKNOWN):
+        return None
+    payload = verification or result or {}
+    raw = payload.get("outcome")
+    try:
+        outcome = AttemptOutcome(raw) if raw else None
+    except ValueError:
+        return None
+    if outcome not in FOLLOWUP_OUTCOMES:
+        return None
+    reason = str(payload.get("outcome_reason") or f"执行结果为 {outcome.value}，需要人工跟进")
+    return ActionFollowup(
+        id=f"fol-{uuid.uuid4().hex[:12]}",
+        proposal_id=proposal.id,
+        attempt_id=attempt.id,
+        cluster=proposal.target.cluster,
+        namespace=proposal.target.namespace,
+        target_kind=proposal.target.kind,
+        target_name=proposal.target.name,
+        outcome=outcome,
+        reason=reason,
+        evidence=payload,
+        created_at=created_at,
+    )
 
 
 def _unknown_verification(baseline: SampleSummary, reason: str) -> dict[str, Any]:
@@ -1116,14 +1160,22 @@ class ActionExecutor:
         verification: dict[str, Any] | None = None,
     ) -> ActionAttempt:
         finished_at = datetime.now(UTC)
-        await self._store.update_attempt(
+        proposal = await self._store.get_proposal(attempt.proposal_id)
+        if proposal is None:
+            raise LookupError(f"提案不存在：{attempt.proposal_id}")
+        followup = _followup_for(
+            attempt, proposal, status, proposal_status, verification, result, finished_at
+        )
+        await self._store.finish_attempt(
             attempt.id,
+            proposal_id=proposal.id,
+            proposal_status=proposal_status,
             status=status,
             result=result,
             verification=verification,
             finished_at=finished_at,
+            followup=followup,
         )
-        await self._store.set_proposal_status(attempt.proposal_id, proposal_status)
         await self._audit(
             attempt.proposal_id,
             "action-executor",
@@ -1132,6 +1184,7 @@ class ActionExecutor:
                 "attempt_id": attempt.id,
                 "attempt_status": status.value,
                 "verification": verification,
+                "followup_id": followup.id if followup else None,
             },
         )
         updated = await self._store.get_attempt(attempt.proposal_id)

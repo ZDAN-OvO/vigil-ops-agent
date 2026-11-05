@@ -267,6 +267,31 @@ class ActionAttempt(Contract):
     finished_at: AwareDatetime | None = None
 
 
+class FollowupStatus(StrEnum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+
+class ActionFollowup(Contract):
+    """异常执行留下的人工待办；解决状态与执行记录分开。"""
+
+    id: str
+    proposal_id: str
+    attempt_id: str | None = None
+    cluster: str
+    namespace: str
+    target_kind: str
+    target_name: str
+    outcome: AttemptOutcome
+    reason: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    status: FollowupStatus = FollowupStatus.OPEN
+    created_at: AwareDatetime
+    resolved_at: AwareDatetime | None = None
+    resolved_by: str | None = None
+    resolution: str | None = None
+
+
 class Approval(Contract):
     id: str
     proposal_id: str

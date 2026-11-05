@@ -1,0 +1,4 @@
+fol-ab1425ba5132 no_improvement vigil-experiment/rebuild-demo-f4b67fbd9-vpnxv [open] 提案 act-b7906299003e 执行 att-6996e2203520 动作后仍有失败，失败率没有明显下降
+fol-90bf66932058 unknown vigil-experiment/rebuild-demo-f4b67fbd9-4nttq [open] 提案 act-f005448a27e5 执行 att-b25fca776ccc 动作后样本不足，无法判断
+fol-7d506f6330fe no_improvement vigil-experiment/rebuild-demo-f4b67fbd9-x7lsg [open] 提案 act-1763896a0404 执行 att-034f25117a33 动作后仍有失败，失败率没有明显下降
+fol-535b800127c7 worsened vigil-experiment/rebuild-demo-f4b67fbd9-szsjg [open] 提案 act-ec1a4ab70beb 执行 att-865bb96a4b70 动作前无失败，动作后出现失败
