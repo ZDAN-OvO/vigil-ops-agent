@@ -1,0 +1,7 @@
+investigation inv-2facf6216bc0
+status completed
+conclusion_md5 1213502ee565b18d2edb6ef27c1541e9
+evidence 10
+tool_calls 12
+proposals 1
+attempts 0
