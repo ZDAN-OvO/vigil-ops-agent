@@ -1,6 +1,6 @@
 # A01 Pod 重建动作的独立验证用例
 
-状态：2026-11-05 在 `vigil-lab` 完成两轮真实实验，验证了机制本身：临时状态故障跨容器重启持续；在已测的容器重启与 Pod 重建之间，只有 Pod 重建能消除它，且重建前后模板与 ReplicaSet 不变。`rollout restart` 与模板变更没有测试，也不满足本用例的判据，理由见第 1 节。这个用例不进入三个核心故障的分母，也不代替 MS05 的 Agent 动作链路；`restart_pod` 的提案、审批、执行和验证尚未实现。运行记录见 [`runs/2026-11-05.md`](runs/2026-11-05.md)。
+状态：2026-11-05 在 `vigil-lab` 完成两轮真实实验，验证了机制本身：临时状态故障跨容器重启持续；在已测的容器重启与 Pod 重建之间，只有 Pod 重建能消除它，且重建前后模板与 ReplicaSet 不变。`rollout restart` 与模板变更没有测试，也不满足本用例的判据，理由见第 1 节。这个用例不进入三个核心故障的分母。同一负载也是 MS05 `restart_pod` 动作链的目标：它带 `vigil.io/discardable=true` 标签，是策略允许重建的条件，动作证据见 [`demos/ms05/`](../../demos/ms05/README.md)。运行记录见 [`runs/2026-11-05.md`](runs/2026-11-05.md)。
 
 ## 1. 场景与真值
 
@@ -51,10 +51,10 @@ k3d image import vigil/pod-rebuild-demo:20261105 -c vigil-lab
 | 目标 | `vigil-shop/rebuild-demo`，单副本 | 专用无状态、数据可丢弃 |
 | 故障写入 | `/state/work_state` 内容 `corrupt` | emptyDir 属于 Pod 生命周期 |
 | 持续判定 | 观察窗内 100% 请求失败，Pod UID 不变，`restartCount` 不增加 | 排除单次偶发和平台自恢复 |
-| 观察窗 | 默认 60 秒，逐秒采样 | 故障轮次实测 59/59、30/30 |
+| 观察窗 | 默认 60 秒，逐秒采样 | 故障轮次实测 60/60、30/30 |
 | 容器重启判定 | 同一 UID，`restartCount` 加 1，之后请求仍全部失败 | 证明 K8s 自恢复无效 |
 | 恢复判定 | 新 Pod UID、所属 ReplicaSet 不变、模板哈希不变、`/work` 回到 200 | 不允许用模板变更或 `rollout restart` 冒充重建；三个字段任一为空直接判失败 |
-| 恢复窗口 | 从删除时刻起 90 秒总时限，超时判失败 | 两轮实测 31 秒、32 秒 |
+| 恢复窗口 | 从删除时刻起 90 秒总时限，超时判失败 | 两轮实测 6 秒、4 秒 |
 | 清理判定 | Deployment 与匹配的 Pod 都消失才算完成 | 只看 Deployment 会在 Pod 仍在时误报已清理 |
 
 ## 5. 操作步骤
@@ -83,7 +83,7 @@ bash faults/a01-pod-rebuild/repeat.sh cleanup           # 删除实验负载
 
 ## 7. 缺口
 
-- `restart_pod` 动作链未实现：提案、审批、dry-run、带 UID 前置条件的删除、执行后验证和审计都在 MS05 后续切片。
+- `restart_pod` 动作链已在 MS05 实现，证据见 [`demos/ms05/`](../../demos/ms05/README.md)。调查侧还不能生成该提案。
 - 实验负载没有接入 Prometheus 采集和告警，两类信号靠 `kubectl` 与宿主请求循环取得。是否需要告警入口由 MS05 的完整链路决定。
 - 真值访问隔离仍未实现。
 - 运行依赖宿主 port-forward 和本地镜像导入，换机器要重新构建镜像。
