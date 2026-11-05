@@ -1,0 +1,65 @@
+{
+  "auto": {
+    "proposal": {
+      "id": "act-744f3f556fd7",
+      "kind": "restart_pod",
+      "namespace": "vigil-experiment",
+      "target_name": "rebuild-demo-58958844c8-jwfrr",
+      "risk_disposition": "auto",
+      "policy_version": "mvp-policy-2",
+      "status": "succeeded",
+      "origin": "operator",
+      "workload": "0f11b765-128d-4afe-afd0-11e1ba942ec5"
+    },
+    "approval": {
+      "id": "apr-a0719f7b9ccc",
+      "actor": "policy:mvp-policy-2",
+      "decision": "approved",
+      "reason": "自动允许：动作 restart_pod 命中自动执行规则；目标在专用实验命名空间：vigil-experiment；目标 Pod 可丢弃，删除后由 ReplicaSet 重建；执行后按 Pod 与 Service 验证恢复"
+    },
+    "attempt": {
+      "id": "att-d264f10a23bd",
+      "status": "verified",
+      "verification": {
+        "ok": true,
+        "path": "/work",
+        "new_pod": "rebuild-demo-58958844c8-c29fh",
+        "new_uid": "e75c6814-0f2d-422c-9884-8b4b9e444756",
+        "old_uid": "4342e162-ef17-43a6-bc21-63673ffeb7f7",
+        "samples": 6,
+        "service": "rebuild-demo",
+        "pod_ready": true,
+        "pod_restarts": 0,
+        "tail_failures": 0,
+        "failed_samples": 0,
+        "window_seconds": 90,
+        "service_addresses": [
+          "10.42.0.172"
+        ],
+        "template_unchanged": true,
+        "service_selects_new_pod": true
+      }
+    },
+    "audit": [
+      {
+        "event": "action.proposed",
+        "actor": "operator"
+      },
+      {
+        "event": "action.auto_approved",
+        "actor": "policy:mvp-policy-2"
+      },
+      {
+        "event": "action.succeeded",
+        "actor": "action-executor"
+      }
+    ]
+  },
+  "denied": {
+    "id": "act-bcd790e376f7",
+    "status": "denied",
+    "risk_disposition": "deny",
+    "policy_version": "mvp-policy-2",
+    "attempts": 0
+  }
+}

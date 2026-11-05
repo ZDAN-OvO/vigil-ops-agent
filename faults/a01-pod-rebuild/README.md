@@ -6,13 +6,13 @@
 
 场景卡见 [MVP A01](../../docs/mvp.md#a01pod-重建动作的独立验证用例)。
 
-- 载体：`vigil-shop` 里的专用单副本 Deployment `rebuild-demo`，不接入前端，带 `vigil.io/discardable=true` 标签。
+- 载体：`vigil-experiment` 里的专用单副本 Deployment `rebuild-demo`，不接入前端，带 `vigil.io/discardable=true` 标签。
 - 故障：运行时写坏 Pod 级 `emptyDir` 上的状态文件，应用每次处理 `/work` 都返回 500。
 - 预期：容器重启（同一 Pod、restartCount 增加）后故障仍在；删除 Pod 由控制器重建后恢复。
 - 未测试的旁路：`rollout restart` 也会新建 Pod，理论上同样能清掉 Pod 级状态。它改动 revision，不满足本用例“模板与 ReplicaSet 不变”的判据，因此没有作为对照运行，文档也不声称它是或不是恢复手段。
 - 反向边界：Pod 保持 Ready，排队网络通路正常，所以故障表现为业务请求失败而不是端点摘除；`rollout restart`、滚动更新或修改模板都不属于本用例的恢复方式。
 
-载体放在 `vigil-shop` 是因为只读工具、动作白名单和命名空间边界都固定在这个命名空间。实验负载有独立标签，清理时按清单删除，不影响 12 个业务工作负载。
+载体放在专用实验命名空间 `vigil-experiment`。脚本创建命名空间时写入 `vigil.io/owner=a01-pod-rebuild`，清理只删除带该标注的命名空间；命名空间已存在但不属于 A01 时直接停止，不接管也不删除。动作策略只在目标同时满足“实验命名空间 + 可丢弃 Pod”时自动允许，其余情况仍要人工审批；清理不影响 `vigil-shop` 的 12 个业务工作负载。
 
 真值只保存在本目录和运行记录中，包括状态文件路径、写坏方式和判据。这些内容不进入调查模型可读范围，访问隔离仍未实现。
 
@@ -48,7 +48,7 @@ k3d image import vigil/pod-rebuild-demo:20261105 -c vigil-lab
 
 | 项目 | 取值 | 依据 |
 |---|---|---|
-| 目标 | `vigil-shop/rebuild-demo`，单副本 | 专用无状态、数据可丢弃 |
+| 目标 | `vigil-experiment/rebuild-demo`，单副本 | 专用无状态、数据可丢弃 |
 | 故障写入 | `/state/work_state` 内容 `corrupt` | emptyDir 属于 Pod 生命周期 |
 | 持续判定 | 观察窗内 100% 请求失败，Pod UID 不变，`restartCount` 不增加 | 排除单次偶发和平台自恢复 |
 | 观察窗 | 默认 60 秒，逐秒采样 | 故障轮次实测 60/60、30/30 |
@@ -70,7 +70,7 @@ bash faults/a01-pod-rebuild/repeat.sh cleanup           # 删除实验负载
 
 `rebuild` 由操作者执行，只用于证明机制，不是 Agent 处置，也不能计入 Agent 恢复成功。脚本依赖宿主机 `kubectl`、`curl`、`python3`，默认用 8082 端口做 port-forward。
 
-## 6. 运行结果（2026-11-05）
+## 6. 运行结果（2026-11-05，迁移前在 `vigil-shop` 取得）
 
 | 轮次 | 关键事实 |
 |---|---|
@@ -80,6 +80,7 @@ bash faults/a01-pod-rebuild/repeat.sh cleanup           # 删除实验负载
 - 模板哈希两轮均为 `5427399d73722fda540480d8127ec4bdbb9d3e1dba750007aefebd7a9cc67e80`，目标 Pod 的所属 ReplicaSet 均为 `d62c8fb9-198c-4ab7-a549-a93788930e8f`。
 - 容器崩溃后的终止状态为 `reason=Error`、`exitCode=1`，Pod 保持不变。
 - 清理后业务基线恢复：12 个 Deployment、`probe_success=1`、活动告警 0、`rebuild-demo` 的 Deployment 与 Service 都不存在。
+- 这两轮在负载迁到 `vigil-experiment` 之前取得，冻结目标与脚本默认命名空间在那之后改成了 `vigil-experiment`。迁移后的自动执行与清理证据见 [`demos/ms08/`](../../demos/ms08/README.md)。
 
 ## 7. 缺口
 

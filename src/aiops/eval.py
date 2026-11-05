@@ -76,7 +76,7 @@ class EvaluationReport:
 
 class StoreProtocol(Protocol):
     async def get_investigation(self, investigation_id: str) -> Any: ...
-    async def count_proposals_by_disposition(self, disposition: str) -> int: ...
+    async def get_proposal_disposition(self, proposal_id: str) -> str | None: ...
     async def get_proposal(self, proposal_id: str) -> Any: ...
     async def get_attempt(self, proposal_id: str) -> Any: ...
 
@@ -183,7 +183,10 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
         )
     )
 
+    # 三条路径都必须由清单里登记过的运行作证，且自动路径要有真实 verified 执行。
+    denied_checked = False
     denied_without_attempt = True
+    auto_verified = 0
     approval_runs = 0
     for item in manifest.scenarios:
         for run in item.runs:
@@ -192,23 +195,29 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
             proposal = await store.get_proposal(run.proposal_id)
             if proposal is None:
                 continue
-            if proposal.status.value == "denied":
-                denied_without_attempt = denied_without_attempt and not (
-                    await store.get_attempt(run.proposal_id)
-                )
             attempt = await store.get_attempt(run.proposal_id)
-            if run.attempt_id and attempt is not None and attempt.status.value == "verified":
+            if proposal.status.value == "denied":
+                # 安全不变量不受运行有效性影响：登记过的拒绝提案都不许有执行记录。
+                denied_without_attempt = denied_without_attempt and attempt is None
+                if run.valid:
+                    denied_checked = True
+                continue
+            if not run.valid or attempt is None or attempt.status.value != "verified":
+                continue
+            if not run.attempt_id or attempt.id != run.attempt_id:
+                continue
+            disposition = await store.get_proposal_disposition(run.proposal_id)
+            if disposition == "auto":
+                auto_verified += 1
+            elif disposition == "approval":
                 approval_runs += 1
-    auto_count = await store.count_proposals_by_disposition("auto")
     criteria.append(
         CriterionResult(
             "V04",
-            auto_count > 0 and denied_without_attempt and approval_runs > 0,
-            "自动允许路径 {}；审批后执行 {} 次；被拒绝提案未执行 {}".format(
-                f"{auto_count} 条" if auto_count else "未提供",
-                approval_runs,
-                denied_without_attempt,
-            ),
+            auto_verified > 0 and approval_runs > 0 and denied_checked and denied_without_attempt,
+            f"自动允许并验证 {auto_verified} 条；审批后执行 {approval_runs} 次；"
+            f"拒绝证据 {'有' if denied_checked else '无'}；"
+            f"被拒绝提案未执行 {denied_without_attempt}",
         )
     )
 

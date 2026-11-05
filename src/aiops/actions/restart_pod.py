@@ -39,6 +39,9 @@ class PodPlan:
     ready: bool
     image: str
     discardable: bool
+    ip: str | None = None
+    workload_name: str | None = None
+    workload_uid: str | None = None
 
 
 def _hash(value: Any) -> str:
@@ -132,6 +135,8 @@ class PodRestartAdapter:
         image = pod.spec.containers[0].image if pod.spec.containers else ""
 
         template_hash = ""
+        workload_name: str | None = None
+        workload_uid: str | None = None
         if owner is not None and owner.kind == "ReplicaSet" and self._apps is not None:
             try:
                 replicaset = self._apps.read_namespaced_replica_set(owner.name, namespace)
@@ -140,6 +145,11 @@ class PodRestartAdapter:
                 )
             except ApiException as exc:
                 raise ActionError("api_error", f"读取 ReplicaSet 失败：HTTP {exc.status}") from exc
+            # Deployment 的 UID 跨 revision 稳定，用来判断“同一工作负载”。
+            for reference in replicaset.metadata.owner_references or []:
+                if reference.controller and reference.kind == "Deployment":
+                    workload_name = reference.name
+                    workload_uid = reference.uid
         siblings: tuple[str, ...] = ()
         if owner is not None and owner.uid:
             try:
@@ -163,6 +173,9 @@ class PodRestartAdapter:
             ready=ready,
             image=image,
             discardable=labels.get(DISCARDABLE_LABEL) == "true",
+            ip=pod.status.pod_ip,
+            workload_name=workload_name,
+            workload_uid=workload_uid,
         )
 
     def _delete_options(self, plan: PodPlan) -> k8s_client.V1DeleteOptions:
@@ -260,21 +273,36 @@ class PodRestartAdapter:
             return {"ok": False, "status": None, "body": exc.__class__.__name__}
         return {"ok": True, "status": 200, "body": body}
 
-    def service_selects(self, namespace: str, service: str, pod_ip: str | None) -> dict[str, Any]:
-        """确认 Service 的后端里有新 Pod，避免出现重建成功但流量仍打不到的情况。"""
+    def service_selects(
+        self, namespace: str, service: str, pod_ip: str | None, *, ready_only: bool = True
+    ) -> dict[str, Any]:
+        """确认 Service 的后端里有目标 Pod。
+
+        删除前只要求选择关系成立（含 NotReady 地址，故障 Pod 通常正在这里）；
+        删除后要求新 Pod 出现在就绪地址里，才能说明流量真的接上了。
+        """
         core = self._api()
         try:
             endpoints = core.read_namespaced_endpoints(service, namespace)
         except ApiException as exc:
             return {"ok": False, "status": exc.status, "pod_ip": pod_ip}
-        addresses = sorted(
+        addresses = {
             address.ip
             for subset in endpoints.subsets or []
-            for address in subset.addresses or []
+            for address in (subset.addresses or [])
             if address.ip
-        )
+        }
+        if not ready_only:
+            addresses |= {
+                address.ip
+                for subset in endpoints.subsets or []
+                for address in (subset.not_ready_addresses or [])
+                if address.ip
+            }
+        ordered = sorted(addresses)
         return {
             "ok": bool(pod_ip) and pod_ip in addresses,
             "pod_ip": pod_ip,
-            "addresses": addresses,
+            "addresses": ordered,
+            "ready_only": ready_only,
         }

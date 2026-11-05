@@ -8,14 +8,14 @@ from aiops.eval import evaluate, load_manifest
 
 
 class FakeStore:
-    def __init__(self, proposals=None, attempts=None, investigations=None, auto_count=0):
+    def __init__(self, proposals=None, attempts=None, investigations=None, dispositions=None):
         self._proposals = proposals or {}
         self._attempts = attempts or {}
         self._investigations = investigations
-        self._auto_count = auto_count
+        self._dispositions = dispositions or {}
 
-    async def count_proposals_by_disposition(self, disposition):
-        return self._auto_count if disposition == "auto" else 0
+    async def get_proposal_disposition(self, proposal_id):
+        return self._dispositions.get(proposal_id, "approval")
 
     async def get_investigation(self, investigation_id):
         if self._investigations is not None:
@@ -111,24 +111,79 @@ def test_non_core_scenario_is_not_counted_in_v02(tmp_path):
     assert next(item for item in report.criteria if item.id == "V02").passed is True
 
 
+def v04_runs():
+    """V04 三条路径各一条登记运行：自动、人工审批、拒绝。"""
+    return [
+        run("auto", proposal="act-auto", attempt="att-auto"),
+        run("manual", proposal="act-manual", attempt="att-manual"),
+        run("denied", proposal="act-denied"),
+    ]
+
+
+def v04_store(**overrides):
+    values = {
+        "proposals": {
+            "act-auto": proposal("restart_pod"),
+            "act-manual": proposal("rollout_undo"),
+            "act-denied": proposal("restart_pod", status="denied"),
+        },
+        "attempts": {
+            "act-auto": attempt("verified", "att-auto"),
+            "act-manual": attempt("verified", "att-manual"),
+        },
+        "dispositions": {"act-auto": "auto", "act-manual": "approval"},
+    }
+    values.update(overrides)
+    return FakeStore(**values)
+
+
+def test_v04_passes_only_with_all_three_registered_paths(tmp_path):
+    path = tmp_path / "m.json"
+    path.write_text(json.dumps(manifest([scenario("f01", v04_runs())]), ensure_ascii=False))
+
+    report = asyncio.run(evaluate(load_manifest(path), v04_store()))
+
+    v04 = next(item for item in report.criteria if item.id == "V04")
+    assert v04.passed is True
+    assert "自动允许并验证 1 条" in v04.detail
+    assert "审批后执行 1 次" in v04.detail
+
+
 def test_missing_auto_path_fails_v04(tmp_path):
     path = tmp_path / "m.json"
-    path.write_text(
-        json.dumps(
-            manifest([scenario("f01", [run("a", proposal="act-1", attempt="att-1")])]),
-            ensure_ascii=False,
-        )
-    )
-    proposals = {
-        "act-1": SimpleNamespace(
-            kind=SimpleNamespace(value="rollout_undo"), status=SimpleNamespace(value="succeeded")
-        )
-    }
-    report = asyncio.run(evaluate(load_manifest(path), FakeStore(proposals)))
+    path.write_text(json.dumps(manifest([scenario("f01", v04_runs())]), ensure_ascii=False))
+    store = v04_store(dispositions={"act-manual": "approval"})
+
+    report = asyncio.run(evaluate(load_manifest(path), store))
 
     v04 = next(item for item in report.criteria if item.id == "V04")
     assert v04.passed is False
-    assert "未提供" in v04.detail
+    assert "自动允许并验证 0 条" in v04.detail
+
+
+def test_auto_evidence_outside_the_manifest_does_not_count(tmp_path):
+    """库里另有自动成功记录，但本次清单没有登记，不能算 V04 通过。"""
+    path = tmp_path / "m.json"
+    runs = [
+        run("manual", proposal="act-manual", attempt="att-manual"),
+        run("denied", proposal="act-denied"),
+    ]
+    path.write_text(json.dumps(manifest([scenario("f01", runs)]), ensure_ascii=False))
+    store = v04_store(
+        proposals={
+            "act-manual": proposal("rollout_undo"),
+            "act-denied": proposal("restart_pod", status="denied"),
+            "act-hidden": proposal("restart_pod"),
+        },
+        attempts={"act-manual": attempt("verified"), "act-hidden": attempt("verified")},
+        dispositions={"act-manual": "approval", "act-hidden": "auto"},
+    )
+
+    report = asyncio.run(evaluate(load_manifest(path), store))
+
+    v04 = next(item for item in report.criteria if item.id == "V04")
+    assert v04.passed is False
+    assert "自动允许并验证 0 条" in v04.detail
 
 
 def test_v05_to_v08_stay_failed_when_not_checked(tmp_path):
@@ -145,8 +200,8 @@ def proposal(kind="rollout_undo", status="succeeded"):
     return SimpleNamespace(kind=SimpleNamespace(value=kind), status=SimpleNamespace(value=status))
 
 
-def attempt(status="verified"):
-    return SimpleNamespace(status=SimpleNamespace(value=status))
+def attempt(status="verified", attempt_id="att-1"):
+    return SimpleNamespace(id=attempt_id, status=SimpleNamespace(value=status))
 
 
 def test_duplicate_run_ids_and_missing_investigations_do_not_count(tmp_path):
@@ -200,25 +255,33 @@ def test_action_recovery_requires_a_verified_attempt(tmp_path):
     assert "r2" in v03.detail
 
 
-def test_v04_needs_an_auto_disposition_in_the_database(tmp_path):
+def test_auto_disposition_without_a_verified_attempt_fails_v04(tmp_path):
+    """策略放行但执行没验证，不能算自动路径可验证。"""
     path = tmp_path / "m.json"
-    runs = [run("r1", proposal="act-1", attempt="att-1")]
-    path.write_text(json.dumps(manifest([scenario("f01", runs)]), ensure_ascii=False))
-    store = FakeStore(
-        proposals={"act-1": proposal("rollout_undo")},
-        attempts={"act-1": attempt("verified")},
-        auto_count=0,
-    )
+    path.write_text(json.dumps(manifest([scenario("f01", v04_runs())]), ensure_ascii=False))
+    store = v04_store(attempts={"act-auto": attempt("failed"), "act-manual": attempt("verified")})
 
     report = asyncio.run(evaluate(load_manifest(path), store))
 
     v04 = next(item for item in report.criteria if item.id == "V04")
     assert v04.passed is False
-    assert "未提供" in v04.detail
+    assert "自动允许并验证 0 条" in v04.detail
 
-    store._auto_count = 1
-    report = asyncio.run(evaluate(load_manifest(path), store))
-    assert next(item for item in report.criteria if item.id == "V04").passed is True
+
+def test_v04_needs_registered_denied_evidence(tmp_path):
+    """没有登记过拒绝提案时，空口声称“被拒绝提案未执行”不算证据。"""
+    path = tmp_path / "m.json"
+    runs = [
+        run("auto", proposal="act-auto", attempt="att-auto"),
+        run("manual", proposal="act-manual", attempt="att-manual"),
+    ]
+    path.write_text(json.dumps(manifest([scenario("f01", runs)]), ensure_ascii=False))
+
+    report = asyncio.run(evaluate(load_manifest(path), v04_store()))
+
+    v04 = next(item for item in report.criteria if item.id == "V04")
+    assert v04.passed is False
+    assert "拒绝证据 无" in v04.detail
 
 
 def test_empty_manifest_cannot_pass(tmp_path):
@@ -284,16 +347,53 @@ def test_verified_attempt_without_recovered_flag_is_not_a_recovery(tmp_path):
     assert "restart_pod" not in v03.detail
 
 
-def test_denied_proposal_with_an_attempt_fails_v04(tmp_path):
+def test_invalid_denied_run_with_an_attempt_still_fails_v04(tmp_path):
+    """被拒绝提案不得执行是安全不变量，不因运行被标为无效而跳过。"""
     path = tmp_path / "m.json"
-    runs = [run("r1", proposal="act-1", attempt="att-1")]
+    runs = v04_runs()
+    runs[2]["valid"] = False
     path.write_text(json.dumps(manifest([scenario("f01", runs)]), ensure_ascii=False))
-    store = FakeStore(
-        proposals={"act-1": proposal("rollout_undo", status="denied")},
-        attempts={"act-1": attempt("verified")},
-        auto_count=1,
+    store = v04_store(
+        attempts={
+            "act-auto": attempt("verified", "att-auto"),
+            "act-manual": attempt("verified", "att-manual"),
+            "act-denied": attempt("verified", "att-denied"),
+        }
     )
 
     report = asyncio.run(evaluate(load_manifest(path), store))
 
-    assert next(item for item in report.criteria if item.id == "V04").passed is False
+    v04 = next(item for item in report.criteria if item.id == "V04")
+    assert v04.passed is False
+    assert "被拒绝提案未执行 False" in v04.detail
+
+
+def test_v04_requires_the_registered_attempt_id(tmp_path):
+    path = tmp_path / "m.json"
+    runs = v04_runs()
+    runs[0]["attempt_id"] = "att-other"
+    path.write_text(json.dumps(manifest([scenario("f01", runs)]), ensure_ascii=False))
+
+    report = asyncio.run(evaluate(load_manifest(path), v04_store()))
+
+    v04 = next(item for item in report.criteria if item.id == "V04")
+    assert v04.passed is False
+    assert "自动允许并验证 0 条" in v04.detail
+
+
+def test_denied_proposal_with_an_attempt_fails_v04(tmp_path):
+    path = tmp_path / "m.json"
+    path.write_text(json.dumps(manifest([scenario("f01", v04_runs())]), ensure_ascii=False))
+    store = v04_store(
+        attempts={
+            "act-auto": attempt("verified"),
+            "act-manual": attempt("verified"),
+            "act-denied": attempt("verified"),
+        }
+    )
+
+    report = asyncio.run(evaluate(load_manifest(path), store))
+
+    v04 = next(item for item in report.criteria if item.id == "V04")
+    assert v04.passed is False
+    assert "被拒绝提案未执行 False" in v04.detail

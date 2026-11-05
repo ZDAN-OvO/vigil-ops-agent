@@ -4,7 +4,7 @@ import json
 
 from typer.testing import CliRunner
 
-from aiops.cli import app
+from aiops.cli import act_exit_code, app
 
 runner = CliRunner()
 
@@ -28,3 +28,11 @@ def test_status_json_reports_only_implemented_capabilities():
 def test_unimplemented_action_is_not_a_successful_noop():
     result = runner.invoke(app, ["act"])
     assert result.exit_code != 0
+
+
+def test_act_exit_codes_follow_the_contract():
+    assert act_exit_code("denied", None) == 4
+    assert act_exit_code("pending_approval", None) == 3
+    assert act_exit_code("succeeded", "verified") == 0
+    assert act_exit_code("failed", "failed") == 1
+    assert act_exit_code("unknown", "unknown") == 1

@@ -13,6 +13,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
+from aiops.actions.executor import AutoExecutionError
 from aiops.actions.rollout_undo import ActionError
 from aiops.contracts import (
     ActionOrigin,
@@ -38,7 +39,7 @@ from aiops.tools.base import ToolContext
 
 
 class ActionProposer(Protocol):
-    """把调查结论转成提案；只提案，不执行。"""
+    """把调查结论转成提案；策略判为自动允许时由执行器立即执行并验证。"""
 
     async def propose_rollback(
         self,
@@ -423,26 +424,6 @@ class InvestigationRuntime:
             item["relation"] == "supporting" and item["source"] != "knowledge" for item in evidence
         )
 
-        proposal_id = ""
-        if assessment.finish and assessment.action_kind != "none" and not knowledge_only:
-            if not assessment.root_cause:
-                # 没有根因候选时不允许提案；否则自相矛盾的输出也能进入审批。
-                await self._note_action(
-                    "no_root_cause", assessment.action_pod or assessment.action_deployment or None
-                )
-            else:
-                supporting = []
-                for index in assessment.action_evidence:
-                    if (
-                        0 <= index < len(evidence)
-                        and evidence[index]["relation"] == "supporting"
-                        and evidence[index]["source"] != "knowledge"
-                    ):
-                        evidence_id = evidence[index]["id"]
-                        if evidence_id not in supporting:
-                            supporting.append(evidence_id)
-                proposal_id = await self._propose_action(assessment, supporting) or ""
-
         runbook_uses = list(state.get("runbook_uses") or [])
         unknown = sorted(
             {use.runbook_id for use in assessment.runbook_uses if use.runbook_id not in runbook_ids}
@@ -474,6 +455,33 @@ class InvestigationRuntime:
                     "aborted": True,
                     "termination": f"未判定已查询的 runbook：{','.join(missing)}",
                 }
+        # 提案放在所有结论合法性检查之后：自动允许会立即写集群，不能先执行再中止调查。
+        proposal_id = ""
+        if assessment.finish and assessment.action_kind != "none" and not knowledge_only:
+            if not assessment.root_cause:
+                # 没有根因候选时不允许提案；否则自相矛盾的输出也能进入审批。
+                await self._note_action(
+                    "no_root_cause", assessment.action_pod or assessment.action_deployment or None
+                )
+            elif not assessment.conclusion.strip():
+                # 空结论会被最终状态判成 inconclusive，不能在这种状态之前执行动作。
+                await self._note_action(
+                    "empty_conclusion",
+                    assessment.action_pod or assessment.action_deployment or None,
+                )
+            else:
+                supporting = []
+                for index in assessment.action_evidence:
+                    if (
+                        0 <= index < len(evidence)
+                        and evidence[index]["relation"] == "supporting"
+                        and evidence[index]["source"] != "knowledge"
+                    ):
+                        evidence_id = evidence[index]["id"]
+                        if evidence_id not in supporting:
+                            supporting.append(evidence_id)
+                proposal_id = await self._propose_action(assessment, supporting) or ""
+
         if knowledge_only:
             # 只有 runbook 参考、没有集群证据时不能确认根因。
             await self._store.append_audit(
@@ -517,7 +525,7 @@ class InvestigationRuntime:
         )
 
     async def _propose_action(self, assessment: Assessment, supporting: list[str]) -> str | None:
-        """模型只能提案；规则仍会判定，执行仍要审批。提案失败不影响结论。"""
+        """模型只给出意图；规则判定后，实验命名空间的可丢弃 Pod 重建会立即执行。"""
         target = (
             assessment.action_pod
             if assessment.action_kind == "restart_pod"
@@ -559,6 +567,21 @@ class InvestigationRuntime:
                     origin=ActionOrigin.MODEL,
                     evidence_ids=supporting,
                 )
+        except AutoExecutionError as exc:
+            # 提案与授权已落库，只是执行没完成；保留 proposal_id，不能当成“未提案”。
+            await self._store.append_audit(
+                [
+                    AuditEvent(
+                        id=f"audit-{uuid.uuid4().hex[:12]}",
+                        correlation_id=self._investigation_id,
+                        actor="investigation-runtime",
+                        event="action.proposed_but_not_executed",
+                        occurred_at=datetime.now(UTC),
+                        payload={"proposal_id": exc.proposal_id, "code": exc.code},
+                    )
+                ]
+            )
+            return exc.proposal_id
         except ActionError as exc:
             await self._note_action(exc.code, target)
             return None

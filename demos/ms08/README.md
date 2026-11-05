@@ -1,6 +1,6 @@
 # MS08 证据：重复评估与规则基线（第一切片）
 
-2026-11-05 首次执行。这一片交付评估工具与第一版 V 矩阵，**没有达到完整 MVP 门槛**：V04、V05–V08、V09 未通过，原因逐条写在下面。
+2026-11-05 首次执行，同日补齐 V04 自动允许路径。这一片交付评估工具与第一版 V 矩阵，**没有达到完整 MVP 门槛**：V05–V08、V09 未通过，原因逐条写在下面。
 
 ## 清单与工具
 
@@ -12,14 +12,14 @@ aiops eval --manifest-path eval/scenarios.json
 
 评分只核对已登记的事实：调查从数据库确认，动作类型与结果从提案和执行记录读取，规则不读取注入真值去选择动作。
 
-## 第一版矩阵（`outputs/03-eval.txt`）
+## 当前矩阵（`outputs/07-eval-v04.txt`；第一版见 `outputs/03-eval.txt`）
 
 | 断言 | 结果 | 依据 |
 |---|---|---|
 | V01 | 通过 | 四个场景都有卡片与两类信号；三个核心场景都有真实运行 |
 | V02 | 通过 | F01 8 次、F02 4 次、F03 3 次有效运行，每个场景都有正确调查 |
 | V03 | 通过 | `rollout_undo` 与 `restart_pod` 各有真实业务恢复 |
-| V04 | 未通过 | 策略只有审批与拒绝，没有自动允许路径 |
+| V04 | 通过 | 清单登记的自动允许 1 条并已验证；人工审批 6 次；登记的拒绝提案没有执行记录 |
 | V05–V08 | 未自动核对 | 见下方人工对照；工具还没有对应断言 |
 | V09 | 未通过 | 规则基线尚未实现，清单里 `baseline` 为空 |
 | V10 | 通过 | 七个证据包目录存在 |
@@ -30,6 +30,22 @@ V05–V08 的人工对照（不是自动断言，也没有计入通过）：
 - V06 证据不足与停止：`demos/ms03/` 的重建不适用判断，`demos/ms04/` 的无动作结论。
 - V07 重复请求不重复写：MS02 的并发批准只有一个进程成功；告警去重见 `demos/ms01/`。
 - V08 Context、runbook 与 Explain：`demos/ms06/`、`demos/ms07/`。
+
+## V04 自动允许路径（`outputs/05-v04-auto-path.txt`、`outputs/06-v04-db.json`）
+
+策略版本升到 `mvp-policy-2`，唯一的自动允许规则是：`restart_pod` 的目标在 `vigil-experiment` 命名空间、Pod 带 `vigil.io/discardable=true`、有 ReplicaSet 归属和验证 Service。硬约束不满足仍然拒绝；其他动作和其他命名空间仍然人工审批。模型提案同样适用，但必须先通过结论与 runbook 校验并带支撑证据。
+
+实机（`screenshots/01-auto-execution.png`）：
+
+1. A01 负载部署到 `vigil-experiment`。先建一个临时 Deployment `deny-probe`（不带可丢弃标签）验证拒绝路径：提案 `act-bcd790e376f7` 判 `deny`、退出码 4、没有执行记录，随后删除该 Deployment。再注入 Pod 级状态故障，观察窗内 14 次请求全部 500，`restartCount=0`。
+2. 操作者提交 `restart_pod`（`act-744f3f556fd7`）。策略直接判 `auto`，授权记录 actor 为 `policy:mvp-policy-2`，没有人工批准。
+3. 同一执行链完成锁、执行前复查、Service 选中检查、dry-run、删除和验证：旧 UID `4342e162…` 换成新 UID `e75c6814…`，模板不变，Service 端点包含新 Pod，`/work` 6 个样本全部 200（`att-d264f10a23bd`）。
+4. 独立 port-forward 复核 `/work=200`；审计里 `action.proposed`、`action.auto_approved`、`action.succeeded` 三条齐全（`screenshots/02-auto-audit.png`）。
+5. 清理后命名空间不存在，`vigil-shop` 仍是 12 个 Deployment（`screenshots/04-cleanup.png`）。脚本只删除带 `vigil.io/owner=a01-pod-rebuild` 标注的命名空间。
+
+评估器现在只核对清单里登记过的运行：自动路径要有 `risk_disposition='auto'` 且执行 `verified` 并与登记的 `attempt_id` 一致，人工路径要有 `approval` 的 `verified` 执行，拒绝路径要登记真实拒绝提案并确认没有执行记录（这条不受运行有效性豁免）。清单已补 `a01-v04-auto` 与 `a01-v04-deny` 两条，后者是 `mvp-policy-2` 下实验命名空间的真实拒绝。
+
+范围与停止规则由单测覆盖：同一命名空间的 `rollout_undo`、其他命名空间的 `restart_pod` 仍判人工审批；实验命名空间的不可丢弃、无控制器、无 Service、目标忙仍判拒绝；同一工作负载最近一次执行失败或未知后，后续提案也转人工；Service 未选中目标 Pod 时删除前停止；runbook 校验失败在提案之前中止调查。
 
 ## F03 补跑（`outputs/01-f03-run2.txt`、`outputs/02-f03-run3.txt`）
 
@@ -46,7 +62,6 @@ F03 原来只有一次有效运行，这次补两次，均先核验延迟再清�
 
 ## 缺口与下一步
 
-- V04 需要的自动允许路径还没有规则与用例。要么去掉这条断言，要么实现一条明确的自动执行规则；这属于功能范围，需要确认。
 - V09 需要固定规则基线与 Agent 在同一场景、同一工具和授权边界下对照运行，本切片没有做。
 - V05–V08 需要把人工证据转成工具可核对的断言，目前只有目录引用。
 - 清单由人工登记，运行与场景的对应关系仍然靠人维护，没有自动归属。
