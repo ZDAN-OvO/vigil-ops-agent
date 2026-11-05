@@ -263,19 +263,25 @@ def test_baseline_needs_a_real_investigation(tmp_path):
 
 
 def test_verified_attempt_without_recovered_flag_is_not_a_recovery(tmp_path):
+    """另一动作确实恢复了，缺 recovered 标记的那个不能被算进去。"""
     path = tmp_path / "m.json"
-    runs = [run("r1", proposal="act-1", attempt="att-1", recovered=False)]
+    runs = [
+        run("r1", proposal="act-1", attempt="att-1", recovered=True),
+        run("r2", proposal="act-2", attempt="att-2", recovered=False),
+    ]
     payload = manifest([scenario("f01", runs)])
-    payload["scenarios"][0]["allowed_actions"] = ["rollout_undo"]
+    payload["scenarios"][0]["allowed_actions"] = ["rollout_undo", "restart_pod"]
     path.write_text(json.dumps(payload, ensure_ascii=False))
     store = FakeStore(
-        proposals={"act-1": proposal("rollout_undo")},
-        attempts={"act-1": attempt("verified")},
+        proposals={"act-1": proposal("rollout_undo"), "act-2": proposal("restart_pod")},
+        attempts={"act-1": attempt("verified"), "act-2": attempt("verified")},
     )
 
     report = asyncio.run(evaluate(load_manifest(path), store))
 
-    assert next(item for item in report.criteria if item.id == "V03").passed is False
+    v03 = next(item for item in report.criteria if item.id == "V03")
+    assert v03.passed is False
+    assert "restart_pod" not in v03.detail
 
 
 def test_denied_proposal_with_an_attempt_fails_v04(tmp_path):
