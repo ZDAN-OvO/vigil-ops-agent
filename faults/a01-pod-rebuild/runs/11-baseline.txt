@@ -1,0 +1,18 @@
+### 2026-11-05T03:22:43Z baseline after cleanup
+12
+adservice 1/1 1 1
+cartservice 1/1 1 1
+checkoutservice 1/1 1 1
+currencyservice 1/1 1 1
+emailservice 1/1 1 1
+frontend 1/1 1 1
+loadgenerator 1/1 1 1
+paymentservice 1/1 1 1
+productcatalogservice 1/1 1 1
+recommendationservice 1/1 1 1
+redis-cart 1/1 1 1
+shippingservice 1/1 1 1
+probe_success=1
+alerts=0
+svc rebuild-demo absent
+pods= 0

@@ -1,0 +1,2 @@
+2026-11-05T03:19:53Z OBSERVE seconds=60 ok=0 fail=60 other=0 uid=7976e2fe-0209-4389-9eb2-04cc335ee967 restarts=0
+2026-11-05T03:19:53Z VERIFIED_FAULT uid=7976e2fe-0209-4389-9eb2-04cc335ee967 restarts=0 work=500
