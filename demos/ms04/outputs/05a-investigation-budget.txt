@@ -1,0 +1,6 @@
+调查 inv-cb813652ade4：aborted
+终止原因：预算耗尽：tool_calls
+证据 12 条，工具调用 12 次
+  - [inconclusive] 延迟来自依赖服务（如 cart/backend）而非 frontend 自身：依赖侧出现重启、OOM 或资源规格变化，导致 frontend 端到端耗时从 10ms 升至 1-2s，而 frontend 探针与错误率保持正常。
+  - [supported] 调用链被改变：Service 选择器/端口或中间代理层变更，使 frontend 请求被转发到额外跳数或错误后端，造成 1-2s 的固定量级延迟而非报错。
+  - [inconclusive] 近期发布把某个工作负载的资源规格（CPU/内存限额）改小或镜像变更，导致性能退化但尚未触发 OOM 或错误。

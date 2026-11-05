@@ -38,10 +38,11 @@ class Settings(BaseSettings):
     model_max_retries: int = 2
 
     # 调查预算同样是临时默认值，等实验后冻结。
-    investigation_budget_tool_calls: int = 8
-    investigation_budget_model_calls: int = 6
-    investigation_budget_seconds: int = 300
-    investigation_max_observation_chars: int = 4000
+    # MS03 起工具预算放宽到 16：入口告警需要排除入口自身、检查依赖并读取日志。
+    investigation_budget_tool_calls: int = 16
+    investigation_budget_model_calls: int = 8
+    investigation_budget_seconds: int = 480
+    investigation_max_observation_chars: int = 8000
 
     # 告警入口。token 未配置时服务拒绝启动，避免裸奔的 webhook。
     cluster: str = "vigil-lab"

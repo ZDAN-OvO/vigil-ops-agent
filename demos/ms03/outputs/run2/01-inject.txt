@@ -1,0 +1,3 @@
+2026-11-04T17:18:13Z BASELINE revision=5 limit=128Mi probe=1 alerts=none restarts=0
+2026-11-04T17:18:13Z INJECT patch limit=16Mi request=8Mi
+2026-11-04T17:18:20Z INJECTED revision=6 limit=16Mi

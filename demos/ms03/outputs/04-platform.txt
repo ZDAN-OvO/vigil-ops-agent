@@ -1,0 +1,50 @@
+MS03 platform evidence
+2026-11-04T17:04:00Z
+deployment: revision=4 limit=16Mi request=8Mi
+pod: currencyservice-f6d9b8f46-5q4zl
+{
+ "phase": "Running",
+ "restartCount": 4,
+ "ready": false,
+ "state": {
+  "waiting": {
+   "message": "back-off 1m20s restarting failed container=server pod=currencyservice-f6d9b8f46-5q4zl_vigil-shop(1de7660d-60cf-474c-9568-ac9273d25ac2)",
+   "reason": "CrashLoopBackOff"
+  }
+ },
+ "lastState": {
+  "terminated": {
+   "containerID": "containerd://9e35b873fbe2ddc4d1732a55560fd5dac9356f67fcc0396eda86d1c27e5fd451",
+   "exitCode": 137,
+   "finishedAt": "2026-11-04T17:02:51Z",
+   "reason": "OOMKilled",
+   "startedAt": "2026-11-04T17:02:50Z"
+  }
+ },
+ "limits": {
+  "cpu": "200m",
+  "memory": "16Mi"
+ },
+ "requests": {
+  "cpu": "100m",
+  "memory": "8Mi"
+ }
+}
+replicasets:
+NAME                         REV   DESIRED   READY    MEMLIM
+currencyservice-567db8cb65   3     0         <none>   128Mi
+currencyservice-f6d9b8f46    4     1         <none>   16Mi
+events:
+TIME                   TYPE      REASON      MESSAGE
+<nil>                  Normal    Scheduled   Successfully assigned vigil-shop/currencyservice-f6d9b8f46-5q4zl to k3d-vigil-lab-server-0
+2026-11-04T17:02:06Z   Warning   Unhealthy   Readiness probe failed: timeout: failed to connect service "10.42.0.83:7000" within 1s: context deadline exceeded
+2026-11-04T17:02:50Z   Normal    Pulled      Container image "gcr.io/google-samples/microservices-demo/currencyservice@sha256:16d16968f90aff24d4170ca7c4c0ff97303612b98c509052d5c3618f6e75937a" already present on machine and can be accessed by the pod
+2026-11-04T17:02:50Z   Normal    Created     Container created
+2026-11-04T17:02:50Z   Normal    Started     Container started
+2026-11-04T17:02:56Z   Warning   BackOff     Back-off restarting failed container server in pod currencyservice-f6d9b8f46-5q4zl_vigil-shop(1de7660d-60cf-474c-9568-ac9273d25ac2)
+prometheus ksm:
+[('OOMKilled', '1')]
+[('restarts', '4')]
+[('memory', '16777216')]
+alertmanager:
+[('FrontendProbeFailed', 'active')]

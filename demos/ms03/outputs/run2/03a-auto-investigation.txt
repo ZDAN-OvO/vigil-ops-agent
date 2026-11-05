@@ -1,0 +1,6 @@
+调查 inv-aad3b4e73654：inconclusive
+终止原因：证据不足，未形成根因候选
+证据 8 条，工具调用 8 次
+  - [refuted] Frontend Pod 实例不可用或反复重启（CrashLoopBackOff/OOMKilled），导致 blackbox 探测失败。
+  - [refuted] Frontend 工作负载处于不可用状态（就绪副本为 0），例如滚动发布卡住、镜像拉取失败或调度失败。
+  - [inconclusive] Frontend 进程本身存活，但依赖链路（上游服务）延迟或错误导致探测超时/非 2xx 响应。

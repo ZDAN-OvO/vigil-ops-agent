@@ -109,6 +109,8 @@ class ActionExecutor:
                 "from_revision": plan.current_revision,
                 "to_revision": plan.target_revision,
                 "target_image": plan.target_image,
+                "from_memory_limit": plan.current_memory_limit,
+                "to_memory_limit": plan.target_memory_limit,
             },
             idempotency_key=f"{plan.deployment_uid}:{plan.current_revision}",
             reason=reason,
@@ -336,7 +338,28 @@ class ActionExecutor:
             recovered_from = datetime.now(UTC)
             await asyncio.sleep(self._verify_delay)
             verification = await self._verify_business(recovered_from)
-            ok = rolled_out and verification.get("ok") is True
+            runtime = await self._runtime_state(proposal)
+            ready = [pod for pod in runtime.get("pods", []) if pod.get("ready")]
+            restarts = sum(int(pod.get("restarts") or 0) for pod in ready)
+            # 无内存限额目标时跳过该检查；有目标就必须在窗口内回到目标规格且无重启。
+            limit_ok = (
+                plan.target_memory_limit is None
+                or runtime.get("memory_limit") == plan.target_memory_limit
+            )
+            ok = (
+                rolled_out
+                and verification.get("ok") is True
+                and limit_ok
+                and bool(ready)
+                and restarts == 0
+            )
+            verification = {
+                **verification,
+                "runtime": runtime,
+                "memory_limit_restored": limit_ok,
+                "ready_pods": len(ready),
+                "pod_restarts": restarts,
+            }
             return await self._finish(
                 attempt,
                 AttemptStatus.VERIFIED if ok else AttemptStatus.FAILED,
@@ -346,6 +369,14 @@ class ActionExecutor:
             )
         finally:
             await self._store.release_lock(key, proposal.id)
+
+    async def _runtime_state(self, proposal: ActionProposal) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                self._adapter.state, proposal.target.namespace, proposal.target.name
+            )
+        except Exception as exc:  # noqa: BLE001 - 读不到运行态时按未验证处理
+            return {"error": exc.__class__.__name__}
 
     async def _verify_business(self, since: datetime) -> dict[str, Any]:
         """只看执行之后的样本；故障窗口内的失败不能算作恢复，也不能算成功。"""

@@ -1,0 +1,11 @@
+MS03 F02 baseline
+2026-11-04T17:01:08Z
+webhook: {"status":"ok"}
+deploy: revision=3 limit=128Mi request=64Mi
+NAME                               RESTARTS   READY   LAST     LIMIT
+currencyservice-567db8cb65-zjfjh   0          true    <none>   128Mi
+home: 200
+probe: ['1']
+alerts: none
+NAME                               CPU(cores)   MEMORY(bytes)   
+currencyservice-567db8cb65-zjfjh   30m          63Mi            

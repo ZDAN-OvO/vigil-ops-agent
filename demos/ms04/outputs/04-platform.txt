@@ -1,0 +1,30 @@
+MS04 platform evidence
+2026-11-04T17:43:49Z
+services:
+NAME                SELECTOR                      CLUSTERIP
+redis-cart          map[app:redis-access-proxy]   10.43.105.174
+redis-cart-direct   map[app:redis-cart]           10.43.209.214
+endpoints redis-cart: 10.42.0.87
+pods:
+NAME                                 APP                  RESTARTS   READY
+cartservice-d8584dd58-qndxd          cartservice          0          true
+frontend-7797c7cd78-rrgzw            frontend             0          true
+redis-access-proxy-8466cb447-7xpmd   redis-access-proxy   0          true
+redis-cart-dd5d68467-g7d42           redis-cart           0          true
+deployments:
+NAME                 REV   IMAGE
+cartservice          1     gcr.io/google-samples/microservices-demo/cartservice@sha256:b0cf3662e60750e9a449fe14f5bc29f9150db0c553e52795569c477ec783974b
+redis-cart           1     redis@sha256:21090af93f8324db2f0f0f4f38a7c60369d47d917e000c3423d89d2ae2883537
+redis-access-proxy   1     vigil/redis-access-proxy:20261105
+probe duration series (5m):
+query_range failed
+frontend /cart log sample:
+{"http.req.id":"7a76df3d-7b50-4c73-9f77-217ca471f51e","http.req.method":"POST","http.req.path":"/cart","http.resp.bytes":0,"http.resp.status":302,"http.resp.took_ms":2005,"message":"request complete","session":"543b6475-0bea-460d-b1b4-5d275c1fcdf8","severity":"debug","timestamp":"2026-11-04T17:43:49.216234989Z"}
+{"http.req.id":"d7903d6e-de00-4111-a88c-dbf3fef06632","http.req.method":"GET","http.req.path":"/cart","message":"request started","session":"543b6475-0bea-460d-b1b4-5d275c1fcdf8","severity":"debug","timestamp":"2026-11-04T17:43:49.217201289Z"}
+{"http.req.id":"d7903d6e-de00-4111-a88c-dbf3fef06632","http.req.method":"GET","http.req.path":"/cart","message":"view user cart","session":"543b6475-0bea-460d-b1b4-5d275c1fcdf8","severity":"debug","timestamp":"2026-11-04T17:43:49.217219059Z"}
+cartservice log sample:
+GetCartAsync called with userId=543b6475-0bea-460d-b1b4-5d275c1fcdf8
+AddItemAsync called with userId=543b6475-0bea-460d-b1b4-5d275c1fcdf8, productId=OLJCESPC7Z, quantity=1
+GetCartAsync called with userId=197f75c5-93fb-47a9-85e5-af599fc07612
+GetCartAsync called with userId=543b6475-0bea-460d-b1b4-5d275c1fcdf8
+GetCartAsync called with userId=dbecb3e0-26c9-4500-9c7a-225c72c3491a

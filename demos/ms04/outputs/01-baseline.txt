@@ -1,0 +1,8 @@
+MS04 F03 baseline
+2026-11-04T17:36:45Z
+service: redis-cart selector=redis-cart
+pods: cartservice=0 redis=0
+home: 200 0.028652s
+cart: 200 0.006346s
+probe_duration_2m_s: 0.01202856375
+probe_success: 1

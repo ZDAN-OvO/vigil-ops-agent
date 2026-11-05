@@ -34,6 +34,17 @@ class RolloutPlan:
     template: dict[str, Any]
     deployment_uid: str
     resource_version: str
+    current_memory_limit: str | None = None
+    target_memory_limit: str | None = None
+    current_memory_request: str | None = None
+    target_memory_request: str | None = None
+
+
+def _container_memory(container: Any) -> tuple[str | None, str | None]:
+    resources = container.resources or {}
+    limits = resources.limits or {}
+    requests = resources.requests or {}
+    return limits.get("memory"), requests.get("memory")
 
 
 def _clean_template(template: dict[str, Any]) -> dict[str, Any]:
@@ -70,6 +81,7 @@ class RolloutUndoAdapter:
         self._lock = Lock()
         self._client: k8s_client.ApiClient | None = None
         self._apps: k8s_client.AppsV1Api | None = None
+        self._core: k8s_client.CoreV1Api | None = None
 
     def _api(self) -> k8s_client.AppsV1Api:
         with self._lock:
@@ -85,10 +97,17 @@ class RolloutUndoAdapter:
                         k8s_config.load_kube_config(context=self._context_name)
                 self._client = k8s_client.ApiClient()
                 self._apps = k8s_client.AppsV1Api(self._client)
+                self._core = k8s_client.CoreV1Api(self._client)
                 self._loaded = True
         if self._apps is None or self._client is None:
             raise ActionError("client_error", "Kubernetes 客户端初始化失败")
         return self._apps
+
+    def _core_api(self) -> k8s_client.CoreV1Api:
+        self._api()
+        if self._core is None:
+            raise ActionError("client_error", "Kubernetes 客户端初始化失败")
+        return self._core
 
     def plan(self, namespace: str, name: str) -> RolloutPlan:
         """计算回退目标；任何不满足前置条件的组合都拒绝。"""
@@ -123,11 +142,21 @@ class RolloutUndoAdapter:
         target_revision = max(older)
         replicaset = by_revision[target_revision]
 
-        current_image = deployment.spec.template.spec.containers[0].image
-        target_image = replicaset.spec.template.spec.containers[0].image
-        if target_image == current_image:
-            raise ActionError("same_template", "上一 revision 的镜像与当前相同，回退没有意义")
+        current_container = deployment.spec.template.spec.containers[0]
+        target_container = replicaset.spec.template.spec.containers[0]
+        current_image = current_container.image
+        target_image = target_container.image
+        current_template = _clean_template(
+            self._client.sanitize_for_serialization(deployment.spec.template)
+        )
+        target_template = _clean_template(
+            self._client.sanitize_for_serialization(replicaset.spec.template)
+        )
+        if current_template == target_template:
+            raise ActionError("same_template", "上一 revision 的 Pod 模板与当前相同，回退没有意义")
 
+        current_memory_limit, current_memory_request = _container_memory(current_container)
+        target_memory_limit, target_memory_request = _container_memory(target_container)
         return RolloutPlan(
             namespace=namespace,
             name=name,
@@ -135,11 +164,13 @@ class RolloutUndoAdapter:
             target_revision=target_revision,
             current_image=current_image,
             target_image=target_image,
-            template=_clean_template(
-                self._client.sanitize_for_serialization(replicaset.spec.template)
-            ),
+            template=target_template,
             deployment_uid=deployment.metadata.uid,
             resource_version=deployment.metadata.resource_version,
+            current_memory_limit=current_memory_limit,
+            target_memory_limit=target_memory_limit,
+            current_memory_request=current_memory_request,
+            target_memory_request=target_memory_request,
         )
 
     def apply(self, plan: RolloutPlan, *, dry_run: bool, proposal_id: str) -> dict[str, Any]:
@@ -182,13 +213,42 @@ class RolloutUndoAdapter:
 
     def state(self, namespace: str, name: str) -> dict[str, Any]:
         apps = self._api()
+        core = self._core_api()
         deployment = apps.read_namespaced_deployment(name, namespace)
         annotations = deployment.metadata.annotations or {}
+        container = deployment.spec.template.spec.containers[0]
+        memory_limit, memory_request = _container_memory(container)
+        selector = ",".join(
+            f"{key}={value}"
+            for key, value in sorted((deployment.spec.selector.match_labels or {}).items())
+        )
+        try:
+            pods = core.list_namespaced_pod(namespace, label_selector=selector).items
+        except ApiException as exc:
+            raise ActionError("api_error", f"读取 Pod 失败：HTTP {exc.status}") from exc
+        pod_states = []
+        for pod in pods:
+            for status in pod.status.container_statuses or []:
+                last = status.last_state.terminated if status.last_state else None
+                pod_states.append(
+                    {
+                        "name": pod.metadata.name,
+                        "uid": pod.metadata.uid,
+                        "phase": pod.status.phase,
+                        "ready": bool(status.ready),
+                        "restarts": status.restart_count or 0,
+                        "last_terminated_reason": last.reason if last else None,
+                        "last_terminated_exit_code": last.exit_code if last else None,
+                    }
+                )
         return {
             "uid": deployment.metadata.uid,
             "resource_version": deployment.metadata.resource_version,
             "revision": int(annotations.get(REVISION_ANNOTATION, "1")),
-            "image": deployment.spec.template.spec.containers[0].image,
+            "image": container.image,
+            "memory_limit": memory_limit,
+            "memory_request": memory_request,
             "replicas": deployment.spec.replicas,
             "available_replicas": deployment.status.available_replicas,
+            "pods": pod_states,
         }

@@ -97,9 +97,10 @@ def test_proposal_hash_changes_with_target():
 
 
 class FakeAdapter:
-    def __init__(self, plan, *, fail_on_apply=False):
+    def __init__(self, plan, *, fail_on_apply=False, runtime=None):
         self._plan = plan
         self._fail_on_apply = fail_on_apply
+        self._runtime = runtime
         self.calls = []
 
     def plan(self, namespace, name):
@@ -113,6 +114,14 @@ class FakeAdapter:
 
     def wait_rolled_out(self, plan, timeout_seconds):
         return True
+
+    def state(self, namespace, name):
+        if self._runtime is not None:
+            return self._runtime
+        return {
+            "memory_limit": self._plan.target_memory_limit,
+            "pods": [{"name": "pod-new", "ready": True, "restarts": 0}],
+        }
 
 
 class FakePrometheus:
@@ -140,7 +149,7 @@ class FakePrometheus:
         )
 
 
-def rollout_plan():
+def rollout_plan(*, current_memory_limit=None, target_memory_limit=None):
     return RolloutPlan(
         namespace="vigil-shop",
         name="productcatalogservice",
@@ -151,6 +160,8 @@ def rollout_plan():
         template={"metadata": {}, "spec": {"containers": [{"name": "server"}]}},
         deployment_uid="uid-1",
         resource_version="10",
+        current_memory_limit=current_memory_limit,
+        target_memory_limit=target_memory_limit,
     )
 
 
@@ -485,3 +496,67 @@ def test_concurrent_approvals_only_one_wins(tmp_path, cleanup):
     errors = [item for item in results if isinstance(item, ActionError)]
     assert len(errors) == 1 and errors[0].code == "not_pending"
     assert count == 1
+
+
+def test_memory_limit_restored_is_part_of_verification(tmp_path, cleanup):
+    adapter = FakeAdapter(rollout_plan(target_memory_limit="128Mi"))
+
+    _, _, attempt, saved, _ = asyncio.run(
+        propose_and_approve(adapter, FakePrometheus([1.0, 1.0, 1.0, 1.0]), tmp_path, cleanup)
+    )
+
+    assert attempt.status.value == "verified"
+    assert attempt.verification["memory_limit_restored"] is True
+    assert attempt.verification["runtime"]["memory_limit"] == "128Mi"
+    assert saved.status is ProposalStatus.SUCCEEDED
+
+
+def test_unrestored_memory_limit_is_not_recovery(tmp_path, cleanup):
+    adapter = FakeAdapter(
+        rollout_plan(target_memory_limit="128Mi"),
+        runtime={"memory_limit": "16Mi", "pods": [{"ready": True, "restarts": 0}]},
+    )
+
+    _, _, attempt, saved, _ = asyncio.run(
+        propose_and_approve(adapter, FakePrometheus([1.0, 1.0, 1.0, 1.0]), tmp_path, cleanup)
+    )
+
+    assert attempt.status.value == "failed"
+    assert attempt.verification["ok"] is True
+    assert attempt.verification["memory_limit_restored"] is False
+    assert saved.status is ProposalStatus.FAILED
+
+
+def test_pod_restarts_in_window_are_not_recovery(tmp_path, cleanup):
+    adapter = FakeAdapter(
+        rollout_plan(target_memory_limit="128Mi"),
+        runtime={"memory_limit": "128Mi", "pods": [{"ready": True, "restarts": 2}]},
+    )
+
+    _, _, attempt, saved, _ = asyncio.run(
+        propose_and_approve(adapter, FakePrometheus([1.0, 1.0, 1.0, 1.0]), tmp_path, cleanup)
+    )
+
+    assert attempt.status.value == "failed"
+    assert attempt.verification["pod_restarts"] == 2
+    assert saved.status is ProposalStatus.FAILED
+
+
+def test_proposal_binds_memory_limits(tmp_path, cleanup):
+    adapter = FakeAdapter(rollout_plan(current_memory_limit="16Mi", target_memory_limit="128Mi"))
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            proposal, _ = await executor.propose_rollback(
+                deployment="productcatalogservice", reason="内存限额不足", actor="tester"
+            )
+            cleanup.append(proposal.id)
+            saved = await store.get_proposal(proposal.id)
+        return saved
+
+    saved = asyncio.run(scenario())
+    assert saved is not None
+    assert saved.parameters["from_memory_limit"] == "16Mi"
+    assert saved.parameters["to_memory_limit"] == "128Mi"

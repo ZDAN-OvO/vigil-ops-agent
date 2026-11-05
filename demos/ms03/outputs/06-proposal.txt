@@ -1,0 +1,6 @@
+act-a5175e380402 rollout_undo vigil-shop/currencyservice [pending_approval]
+目标版本 revision 4 → 3，uid f53f30e5-f4ad-4d72-a493-d2f417b3bf3d，resourceVersion 12648
+创建于 2026-11-04T17:09:44.177075+00:00，已等待 27s
+审批：无
+执行：尚未开始
+  2026-11-04T17:09:44.182371+00:00 investigation-runtime action.proposed

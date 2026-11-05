@@ -1,0 +1,6 @@
+调查 inv-53b156c56eb4：inconclusive
+终止原因：证据不足，未形成根因候选
+证据 5 条，工具调用 7 次
+  - [refuted] frontend Pod 不健康（崩溃/重启循环/OOMKilled），导致 blackbox 探针无法得到成功响应。
+  - [refuted] frontend Deployment 近期发布的新 revision 引入了坏变更（镜像/配置/资源规格），使新 Pod 无法正常提供 HTTP 响应。
+  - [inconclusive] frontend 自身进程存活但依赖链路（后端服务）延迟或错误升高，导致探针请求超时/5xx。

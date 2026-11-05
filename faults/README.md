@@ -2,7 +2,7 @@
 
 完整目标为资源、依赖、配置发布、网络四类共 12 个可复现场景，每个场景提供 `inject/verify/cleanup`。机制和验收以 [MVP 场景卡](../docs/mvp.md#5-场景卡)为准。
 
-当前状态：F01 坏发布已完成实验级验证，场景、实验镜像改法、冻结参数、操作步骤和四次有效运行记录在 [`f01-bad-release/`](f01-bad-release/README.md)。实验镜像已改为中性标签和中性错误文本，业务响应与日志不再包含场景名。仓库内只有实验驱动脚本 `f01-bad-release/repeat.sh`，统一的 `inject/verify/cleanup` 接口、真值访问隔离和清理 actor 记录仍待实现。F02、F03、A01 尚未开始。
+当前状态：F01 坏发布、F02 持续 OOM 和 F03 Redis 访问链路延迟已完成实验级验证。F01 的场景、实验镜像改法、冻结参数、操作步骤和四次有效运行记录在 [`f01-bad-release/`](f01-bad-release/README.md)；F02 的目标、限额、脚本和两轮运行结果在 [`f02-memory-limit-oom/`](f02-memory-limit-oom/README.md)，对应 Agent 证据见 [`demos/ms03/`](../demos/ms03/README.md)；F03 的代理、Service 路由、脚本和一次运行结果在 [`f03-redis-latency/`](f03-redis-latency/README.md)，对应 Agent 证据见 [`demos/ms04/`](../demos/ms04/README.md)。实验镜像已改为中性标签和中性错误文本，业务响应与日志不再包含场景名。仓库内只有实验驱动脚本 `repeat.sh`，统一的 `inject/verify/cleanup` 接口、真值访问隔离和清理 actor 记录仍待实现。A01 尚未开始。
 
 首个切片为 F01 坏发布：实验镜像能启动但关键业务请求失败，经调查和受控回退验证真实业务恢复。F02 为持续内存限额不足的 OOM，必须正确判断 Pod 重建无法改变故障规格。F03 为实验代理保持的 Redis 访问链路延迟，不称为 Redis 内部阻塞；现有动作不适用时停止。
 
