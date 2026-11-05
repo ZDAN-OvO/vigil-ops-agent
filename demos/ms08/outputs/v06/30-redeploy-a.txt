@@ -1,0 +1,3 @@
+2026-11-05T18:29:43Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild
+2026-11-05T18:29:48Z DEPLOYED pod=rebuild-demo-f4b67fbd9-tsdmt uid=c378bfc2-8228-4129-9f31-8b45c123d321 rs=0a7837cd-8cd0-45c6-a7cf-f0a6ce4ad52b template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200
+2026-11-05T18:29:48Z ENDPOINTS_READY pod=rebuild-demo-f4b67fbd9-tsdmt

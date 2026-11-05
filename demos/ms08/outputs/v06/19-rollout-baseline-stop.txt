@@ -1,0 +1,22 @@
+== reinject 2026-11-05T18:46:54Z
+deployment.apps/productcatalogservice image updated
+Waiting for deployment "productcatalogservice" rollout to finish: 0 out of 1 new replicas have been updated...
+Waiting for deployment "productcatalogservice" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "productcatalogservice" rollout to finish: 1 old replicas are pending termination...
+deployment "productcatalogservice" successfully rolled out
+probe_success=0
+revision_before=46
+== propose 2026-11-05T18:47:15Z
+提案 act-e777d677f14a：pending_approval
+目标 Deployment vigil-shop/productcatalogservice：revision 46 → 45
+风险判定：approval
+  - 动作 rollout_undo
+  - 目标在实验命名空间
+  - 首次执行需人工审批
+  - 人工发起
+proposal_id=act-e777d677f14a
+== approve with unreachable prometheus 2026-11-05T18:47:17Z
+未执行（baseline_unavailable）：动作前查询失败：unavailable
+revision_after=46
+act-e777d677f14a proposal_status=failed attempt=None
+act-a6afd326518d proposal_status=succeeded attempt=('att-71320a297b50', 'verified')

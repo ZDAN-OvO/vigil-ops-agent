@@ -1,0 +1,7 @@
+== docker inspect 2026-11-05T17:30:38Z
+sha256:dc96a26602e5b67b8a03bbf9bf82ee8a34455276c84bb3ce53350464245e4e97 [vigil/pod-rebuild-demo@sha256:dc96a26602e5b67b8a03bbf9bf82ee8a34455276c84bb3ce53350464245e4e97]
+vigil/pod-rebuild-demo:v06-proto 518722a214da 177MB
+vigil/pod-rebuild-demo:20261105-v06 dc96a26602e5 177MB
+vigil/pod-rebuild-demo:20261105 e5cba3e138b9 177MB
+== k3d image list
+== running image

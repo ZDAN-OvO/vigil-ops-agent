@@ -1,0 +1,7 @@
+2026-11-05T18:42:25Z CLEANUP start pods=1
+2026-11-05T18:42:56Z CLEANED deployment=rebuild-demo service=rebuild-demo pods=0
+2026-11-05T18:43:06Z NAMESPACE_REMOVED namespace=vigil-experiment
+== verify cleanup 2026-11-05T18:49:27Z
+Error from server (NotFound): namespaces "vigil-experiment" not found
+vigil-shop_deployments=12
+     12 Running

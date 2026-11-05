@@ -1,0 +1,10 @@
+2026-11-05T18:32:01Z RESTART pod=rebuild-demo-f4b67fbd9-xf9tx reason=V06 恶化用例
+提案 act-055bac90e7aa：failed
+目标 Pod vigil-experiment/rebuild-demo-f4b67fbd9-xf9tx：rebuild-demo-f4b67fbd9-xf9tx（rebuild-demo-f4b67fbd9）
+风险判定：auto
+  - 动作 restart_pod 命中自动执行规则
+  - 目标在专用实验命名空间：vigil-experiment
+  - 目标 Pod 可丢弃，删除后由 ReplicaSet 重建
+  - 执行后按 Pod 与 Service 验证恢复
+执行 att-5f7d8ad9bf90：failed
+验证：{"ok": false, "path": "/work", "post": {"samples": 6, "failure_ratio": 1.0, "failed_samples": 6}, "new_pod": "rebuild-demo-f4b67fbd9-wb5p7", "new_uid": "87a53c9b-0e74-459b-9de7-01b4dca3218a", "old_uid": "13c79d1b-f387-4e6c-93cb-5bbc4e04f293", "outcome": "worsened", "samples": 6, "service": "rebuild-demo", "baseline": {"samples": 3, "failure_ratio": 0.0, "failed_samples": 0}, "pod_ready": true, "post_tail": {"samples": 3, "failure_ratio": 1.0, "failed_samples": 3}, "pod_restarts": 0, "tail_samples": 3, "tail_failures": 3, "failed_samples": 6, "outcome_reason": "动作前无失败，动作后出现失败", "window_seconds": 90, "service_addresses": ["10.42.0.250"], "template_unchanged": true, "tail_failed_samples": 3, "unavailable_samples": 0, "service_selects_new_pod": true, "tail_unavailable_samples": 0}

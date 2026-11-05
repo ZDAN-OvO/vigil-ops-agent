@@ -1,0 +1,14 @@
+=== 第二次提案输出
+2026-11-05T18:37:14Z RESTART pod=rebuild-demo-f4b67fbd9-gn59h reason=V06 停止门用例
+提案 act-582a96b10747：pending_approval
+目标 Pod vigil-experiment/rebuild-demo-f4b67fbd9-gn59h：rebuild-demo-f4b67fbd9-gn59h（rebuild-demo-f4b67fbd9）
+风险判定：approval
+  - 动作 restart_pod
+  - 目标在实验命名空间
+  - 首次执行需人工审批
+  - 同一工作负载上一次执行失败或结果未知，本次转人工审批
+  - 人工发起
+=== 同一工作负载的提案与执行记录
+workload=29791d54-9730-4091-a666-39f01170d2d8 name=rebuild-demo
+act-db287d8e3622 status=failed attempts=1 created=2026-11-05T18:35:03.996863+00:00
+act-582a96b10747 status=pending_approval attempts=0 created=2026-11-05T18:37:16.946905+00:00

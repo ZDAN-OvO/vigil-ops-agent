@@ -1,0 +1,2 @@
+att-2c3eaad8d02b V06 回归 trunk attempt=99.2s end_to_end=99.3s
+att-1c3d35ef1adb V06 回归 head attempt=97.3s end_to_end=127.5s
