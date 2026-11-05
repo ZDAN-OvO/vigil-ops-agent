@@ -26,9 +26,11 @@ from aiops.contracts import (
     TimeRange,
 )
 from aiops.db import Store, StoreUnavailable
+from aiops.investigation.explain import ExplainError, ExplainService
 from aiops.investigation.factory import open_runtime
 from aiops.investigation.runtime import Report
 from aiops.knowledge import load_runbooks
+from aiops.model import ModelClient
 from aiops.tools.prometheus import PrometheusClient
 from aiops.webhook import build_app
 
@@ -376,6 +378,66 @@ def _duration(since: datetime) -> str:
     if seconds < 3600:
         return f"{seconds // 60}m{seconds % 60:02d}s"
     return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+
+@app.command()
+def explain(
+    investigation_id: str = typer.Argument(..., help="已完成调查的 ID"),
+    question: str = typer.Argument(..., help="追问内容"),
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """只读追问已有调查：只用已存记录回答，不新增查询，也不执行动作。"""
+    settings = Settings()
+    if not settings.model_name:
+        typer.echo("未配置 VIGIL_MODEL_NAME，无法调用模型。", err=True)
+        raise typer.Exit(code=2)
+
+    async def run():
+        async with Store.open(_require_dsn()) as store:
+            async with ModelClient.connect(
+                settings.model_base_url,
+                model=settings.model_name,
+                api_key=settings.model_api_key,
+                timeout_seconds=settings.model_timeout_seconds,
+                max_retries=settings.model_max_retries,
+            ) as model:
+                return await ExplainService(store=store, model=model).answer(
+                    investigation_id, question
+                )
+
+    try:
+        result = asyncio.run(run())
+    except ExplainError as exc:
+        typer.echo(f"无法回答（{exc.code}）：{exc.message}", err=True)
+        raise typer.Exit(code=1) from exc
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    if output == OutputFormat.JSON:
+        typer.echo(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "status": "answered",
+                    "investigation_id": result.investigation_id,
+                    "data": {
+                        "answer": result.answer,
+                        "citations": result.citations,
+                        "missing": result.missing,
+                        "needs_new_query": result.needs_new_query,
+                    },
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    typer.echo(result.answer)
+    typer.echo(f"引用：{', '.join(result.citations) if result.citations else '无'}")
+    if result.missing:
+        typer.echo(f"缺少：{'；'.join(result.missing)}")
+    if result.needs_new_query:
+        typer.echo("需要新的取证才能回答；本次没有发出任何查询或动作。")
 
 
 @app.command("knowledge")

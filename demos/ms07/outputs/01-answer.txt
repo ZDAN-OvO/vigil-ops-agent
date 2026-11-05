@@ -1,0 +1,7 @@
+判断为内存限额不足而不是节点磁盘写满，核心依据是正向证据直接指向内存：currencyservice 的 Pod 容器处于 CrashLoopBackOff，restart_count=4，last_terminated.reason=OOMKilled、exit_code=137，同时 limits.memory=16Mi、requests.memory=8Mi（ev-d3430f3a0d05）。OOMKilled/137 是容器因内存超限被杀的记录，能直接解释反复重启。
+
+磁盘写满假设缺少事件层面支持：提供的 currencyservice 事件是 Scheduled、Pulled、Created、Started 以及 ReplicaSet 扩缩容（ev-54ab79bfac54、ev-f920a41eee84），没有出现 Evicted、DiskPressure、FailedMount 这类磁盘/驱逐相关事件。frontend 日志则显示调用 10.43.42.101:7000 时 connection refused 并返回 500（ev-62608f2d6bfb），而 currencyservice Service 的 cluster_ip 为 10.43.42.101、selector 为 app=currencyservice（ev-a2b098be55f5），与“currencyservice 不可用导致 frontend 下游失败”的链路一致。
+
+需要说明证据边界：节点磁盘指标因 Prometheus 不可用未获取，所以磁盘耗尽不是被指标正面排除，而是没有事件层面的支持证据；当前判断主要建立在 OOMKilled 与 16Mi 内存限额这一直接证据上。
+引用：ev-d3430f3a0d05, ev-54ab79bfac54, ev-f920a41eee84, ev-62608f2d6bfb, ev-a2b098be55f5
+缺少：节点磁盘可用空间及 DiskPressure 指标因 Prometheus ConnectError 未获取，无法用指标正面排除磁盘耗尽；只能确认事件层面没有磁盘/驱逐证据。
