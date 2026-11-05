@@ -20,12 +20,16 @@ from aiops.actions.restart_pod import PodPlan, PodRestartAdapter
 from aiops.actions.rollout_undo import ActionError, RolloutPlan
 from aiops.config import Settings
 from aiops.contracts import (
+    ActionAttempt,
+    ActionFollowup,
     ActionKind,
     ActionOrigin,
     ActionProposal,
     ActionTarget,
     Approval,
     ApprovalDecision,
+    AttemptOutcome,
+    AttemptStatus,
     ProposalStatus,
     RiskDecision,
     RiskDisposition,
@@ -198,6 +202,7 @@ def cleanup():
             ("vigil-experiment", started_at, TEST_REASON),
         ).fetchall()
         for proposal_id in {row[0] for row in rows} | set(ids):
+            conn.execute("DELETE FROM action_followups WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM action_locks WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM action_attempts WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM approvals WHERE proposal_id = %s", (proposal_id,))
@@ -382,6 +387,7 @@ def test_rollout_expiry_during_intent_write_stops_before_apply(monkeypatch, tmp_
     assert attempt is not None
     assert attempt.status.value == "failed"
     assert adapter.calls == [True]
+    assert read_followup(attempt.id) is None
 
 
 def test_rollout_wait_exception_is_unknown(tmp_path, cleanup):
@@ -415,6 +421,9 @@ def test_rollout_tail_with_non_finite_values_is_unknown(tmp_path, cleanup):
     assert attempt.verification["outcome"] == "unknown"
     assert attempt.verification["tail_unavailable_samples"] >= 1
     assert saved.status is ProposalStatus.UNKNOWN
+    followup = read_followup(attempt.id)
+    assert followup is not None
+    assert followup.outcome.value == "unknown"
 
 
 def test_rollout_resource_failure_with_missing_post_data_is_failed(tmp_path, cleanup):
@@ -1138,6 +1147,83 @@ def test_restart_dry_run_does_not_delete_the_pod(monkeypatch):
     assert calls == []
 
 
+def read_followup(attempt_id):
+    async def run():
+        async with Store.open(DSN) as store:
+            return await store.get_followup_by_attempt(attempt_id)
+
+    return asyncio.run(run())
+
+
+def test_finish_attempt_rolls_back_when_followup_insert_fails(monkeypatch, cleanup):
+    suffix = uuid4().hex[:8]
+    proposal = make_proposal(
+        id=f"act-atomic-{suffix}",
+        idempotency_key=f"atomic-{suffix}",
+        reason=TEST_REASON,
+    )
+    attempt = ActionAttempt(
+        id=f"att-atomic-{suffix}",
+        proposal_id=proposal.id,
+        status=AttemptStatus.EXECUTING,
+        idempotency_key=proposal.idempotency_key,
+        snapshot={},
+        request={},
+        started_at=datetime.now(UTC),
+    )
+    followup = ActionFollowup(
+        id=f"fol-atomic-{suffix}",
+        proposal_id=proposal.id,
+        attempt_id=attempt.id,
+        cluster="vigil-lab",
+        namespace="vigil-shop",
+        target_kind="Deployment",
+        target_name="productcatalogservice",
+        outcome=AttemptOutcome.WORSENED,
+        reason="测试",
+        evidence={},
+        created_at=datetime.now(UTC),
+    )
+
+    async def boom(self, conn, item):
+        raise RuntimeError("forced")
+
+    monkeypatch.setattr(Store, "_insert_followup", boom)
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            decision = RiskDecision(
+                proposal_id=proposal.id,
+                disposition=RiskDisposition.APPROVAL,
+                policy_version="test",
+                reasons=["测试"],
+                requires_compensation=False,
+            )
+            await store.save_proposal(proposal, decision)
+            cleanup.append(proposal.id)
+            await store.save_attempt(attempt)
+            with pytest.raises(RuntimeError):
+                await store.finish_attempt(
+                    attempt.id,
+                    proposal_id=proposal.id,
+                    proposal_status=ProposalStatus.FAILED,
+                    status=AttemptStatus.FAILED,
+                    result={"stage": "test"},
+                    verification={"outcome": "worsened"},
+                    finished_at=datetime.now(UTC),
+                    followup=followup,
+                )
+            saved_attempt = await store.get_attempt(proposal.id)
+            saved_proposal = await store.get_proposal(proposal.id)
+        return saved_attempt, saved_proposal
+
+    saved_attempt, saved_proposal = asyncio.run(scenario())
+    assert saved_attempt is not None and saved_attempt.status is AttemptStatus.EXECUTING
+    assert saved_proposal is not None
+    assert saved_proposal.status is ProposalStatus.PENDING_APPROVAL
+
+
 def test_restart_worsened_when_baseline_was_healthy(tmp_path, cleanup):
     adapter = FakeRestartAdapter(
         pod_plan(namespace="vigil-experiment"), statuses=[200, 200] + [500] * 8
@@ -1151,6 +1237,21 @@ def test_restart_worsened_when_baseline_was_healthy(tmp_path, cleanup):
     assert attempt.verification["outcome"] == "worsened"
     assert attempt.verification["baseline"]["failure_ratio"] == 0.0
     assert saved.status is ProposalStatus.FAILED
+    followup = read_followup(attempt.id)
+    assert followup is not None
+    assert followup.outcome.value == "worsened"
+    assert followup.status.value == "open"
+    assert followup.evidence["outcome"] == "worsened"
+
+    async def resolve_and_audit():
+        async with Store.open(DSN) as store:
+            resolved = await store.resolve_followup(followup.id, actor="tester", note="已核对")
+            events = await store.list_audit(attempt.proposal_id)
+        return resolved, events
+
+    resolved, events = asyncio.run(resolve_and_audit())
+    assert resolved is not None and resolved.status.value == "resolved"
+    assert any(event.event == "action.followup_resolved" for event in events)
 
 
 def test_restart_no_improvement_when_baseline_already_failing(tmp_path, cleanup):
@@ -1164,6 +1265,9 @@ def test_restart_no_improvement_when_baseline_already_failing(tmp_path, cleanup)
     assert attempt.verification["outcome"] == "no_improvement"
     assert attempt.verification["baseline"]["failure_ratio"] == 1.0
     assert saved.status is ProposalStatus.FAILED
+    followup = read_followup(attempt.id)
+    assert followup is not None
+    assert followup.outcome.value == "no_improvement"
 
 
 def test_restart_rechecks_discardable_after_baseline(tmp_path, cleanup):
@@ -1320,6 +1424,7 @@ def test_restart_expiry_during_intent_write_stops_before_delete(monkeypatch, tmp
     assert attempt is not None
     assert attempt.status.value == "failed"
     assert [call[0] for call in adapter.calls] == ["dry_run"]
+    assert read_followup(attempt.id) is None
 
 
 def test_restart_proxy_error_is_not_a_business_baseline(tmp_path, cleanup):
@@ -1371,6 +1476,7 @@ def test_restart_ignores_warmup_failures_outside_the_tail(tmp_path, cleanup):
     assert attempt.verification["post"]["failed_samples"] == 1
     assert attempt.verification["post_tail"]["failed_samples"] == 0
     assert saved.status is ProposalStatus.SUCCEEDED
+    assert read_followup(attempt.id) is None
 
 
 def test_restart_without_post_business_responses_is_unknown(tmp_path, cleanup):
@@ -1401,6 +1507,9 @@ def test_restart_tail_without_business_responses_is_unknown(tmp_path, cleanup):
     assert attempt.verification["outcome"] == "unknown"
     assert attempt.verification["tail_unavailable_samples"] >= 1
     assert saved.status is ProposalStatus.UNKNOWN
+    followup = read_followup(attempt.id)
+    assert followup is not None
+    assert followup.outcome.value == "unknown"
 
 
 def test_restart_dry_run_failure_creates_no_attempt(tmp_path, cleanup):

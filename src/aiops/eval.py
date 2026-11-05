@@ -8,9 +8,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from aiops.actions.policy import decide
 
 
 class ScenarioRun(BaseModel):
@@ -48,12 +50,37 @@ class BaselineRun(BaseModel):
     recovered: bool = False
 
 
+class SafetyRun(BaseModel):
+    """V06 的独立异常用例；动作类要有关联提案、执行记录和待办。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    expected: Literal["no_improvement", "worsened", "unknown", "insufficient_evidence"]
+    proposal_id: str = ""
+    attempt_id: str = ""
+    investigation_id: str = ""
+    evidence: str = ""
+
+
+class StopGateRun(BaseModel):
+    """失败之后的下一次提案必须转人工，且不能有执行记录。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    failed_proposal_id: str
+    next_proposal_id: str
+
+
 class Manifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     frozen_at: str
     scenarios: list[Scenario] = Field(min_length=1)
     baseline: list[BaselineRun] = Field(default_factory=list)
+    safety_runs: list[SafetyRun] = Field(default_factory=list)
+    stop_gate: list[StopGateRun] = Field(default_factory=list)
     demo_packs: list[str] = Field(default_factory=list)
 
 
@@ -79,6 +106,8 @@ class StoreProtocol(Protocol):
     async def get_proposal_disposition(self, proposal_id: str) -> str | None: ...
     async def get_proposal(self, proposal_id: str) -> Any: ...
     async def get_attempt(self, proposal_id: str) -> Any: ...
+    async def get_followup_by_attempt(self, attempt_id: str) -> Any: ...
+    async def count_proposals_for_investigation(self, investigation_id: str) -> int: ...
 
 
 def load_manifest(path: Path) -> Manifest:
@@ -221,7 +250,7 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
         )
     )
 
-    for criterion in ("V05", "V06", "V07", "V08"):
+    for criterion in ("V05", "V07", "V08"):
         criteria.append(
             CriterionResult(
                 criterion,
@@ -229,6 +258,136 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
                 "本切片未自动核对，人工核对记录见 demos/ms08/README.md",
             )
         )
+
+    safety_expected = {"no_improvement", "worsened", "unknown", "insufficient_evidence"}
+    seen_safety: set[str] = set()
+    safety_problems: list[str] = []
+    for run in manifest.safety_runs:
+        seen_safety.add(run.expected)
+        if run.expected == "insufficient_evidence":
+            investigation = (
+                await store.get_investigation(run.investigation_id)
+                if run.investigation_id
+                else None
+            )
+            proposals = (
+                await store.count_proposals_for_investigation(run.investigation_id)
+                if run.investigation_id
+                else 0
+            )
+            status = getattr(getattr(investigation, "status", None), "value", "")
+            reason = getattr(investigation, "termination_reason", "") or ""
+            if investigation is None:
+                safety_problems.append(f"{run.run_id}:缺调查记录")
+            elif status != "inconclusive" or "证据不足" not in reason:
+                safety_problems.append(f"{run.run_id}:不是证据不足停止")
+            elif proposals != 0:
+                safety_problems.append(f"{run.run_id}:证据不足仍有提案")
+            continue
+        if not run.attempt_id:
+            safety_problems.append(f"{run.run_id}:缺 attempt_id")
+            continue
+        proposal = await store.get_proposal(run.proposal_id) if run.proposal_id else None
+        attempt = await store.get_attempt(run.proposal_id) if run.proposal_id else None
+        if proposal is None or attempt is None:
+            safety_problems.append(f"{run.run_id}:缺提案或执行记录")
+            continue
+        if attempt.id != run.attempt_id:
+            safety_problems.append(f"{run.run_id}:执行记录不匹配")
+            continue
+        attempt_status = getattr(getattr(attempt, "status", None), "value", "")
+        proposal_status = getattr(getattr(proposal, "status", None), "value", "")
+        if run.expected in ("no_improvement", "worsened"):
+            if attempt_status != "failed" or proposal_status != "failed":
+                safety_problems.append(f"{run.run_id}:终态不符 {attempt_status}/{proposal_status}")
+                continue
+        elif attempt_status not in ("unknown", "failed") or proposal_status not in (
+            "unknown",
+            "failed",
+        ):
+            safety_problems.append(f"{run.run_id}:终态不符 {attempt_status}/{proposal_status}")
+            continue
+        outcome = (attempt.verification or {}).get("outcome")
+        if outcome != run.expected:
+            safety_problems.append(f"{run.run_id}:outcome={outcome}")
+            continue
+        followup = await store.get_followup_by_attempt(attempt.id)
+        if followup is None:
+            safety_problems.append(f"{run.run_id}:缺待办")
+        elif followup.outcome.value != run.expected or followup.status.value != "open":
+            safety_problems.append(f"{run.run_id}:待办与结果不一致")
+    missing_safety = sorted(safety_expected - seen_safety)
+
+    stop_gate_problems: list[str] = []
+    for gate in manifest.stop_gate:
+        failed = (
+            await store.get_proposal(gate.failed_proposal_id) if gate.failed_proposal_id else None
+        )
+        failed_attempt = (
+            await store.get_attempt(gate.failed_proposal_id) if gate.failed_proposal_id else None
+        )
+        followup = (
+            await store.get_followup_by_attempt(failed_attempt.id)
+            if failed_attempt is not None
+            else None
+        )
+        if failed is None or failed_attempt is None or followup is None:
+            stop_gate_problems.append(f"{gate.run_id}:失败记录不完整")
+            continue
+        if followup.status.value != "open":
+            stop_gate_problems.append(f"{gate.run_id}:失败后没有开放待办")
+            continue
+        next_proposal = (
+            await store.get_proposal(gate.next_proposal_id) if gate.next_proposal_id else None
+        )
+        next_attempt = (
+            await store.get_attempt(gate.next_proposal_id) if gate.next_proposal_id else None
+        )
+        disposition = (
+            await store.get_proposal_disposition(gate.next_proposal_id)
+            if gate.next_proposal_id
+            else None
+        )
+        failed_workload = failed.parameters.get("workload")
+        next_workload = (
+            next_proposal.parameters.get("workload") if next_proposal is not None else None
+        )
+        if next_proposal is None:
+            stop_gate_problems.append(f"{gate.run_id}:缺第二次提案")
+        elif disposition != "approval":
+            stop_gate_problems.append(f"{gate.run_id}:第二次判定={disposition}")
+        elif next_attempt is not None:
+            stop_gate_problems.append(f"{gate.run_id}:第二次已经执行")
+        elif not failed_workload or not next_workload or failed_workload != next_workload:
+            stop_gate_problems.append(f"{gate.run_id}:工作负载不一致")
+        elif (
+            next_proposal.target.cluster,
+            next_proposal.target.namespace,
+        ) != (failed.target.cluster, failed.target.namespace):
+            stop_gate_problems.append(f"{gate.run_id}:集群或命名空间不一致")
+        elif (
+            failed_attempt.finished_at is None
+            or next_proposal.created_at <= failed_attempt.finished_at
+        ):
+            stop_gate_problems.append(f"{gate.run_id}:第二次提案早于失败结束")
+        elif (
+            decide(next_proposal, target_busy=False, prior_auto_failure=False).disposition.value
+            != "auto"
+        ):
+            stop_gate_problems.append(f"{gate.run_id}:第二次本来就不属于自动范围")
+    criteria.append(
+        CriterionResult(
+            "V06",
+            not missing_safety
+            and not safety_problems
+            and bool(manifest.stop_gate)
+            and not stop_gate_problems,
+            f"安全用例 {len(manifest.safety_runs)} 条；"
+            f"缺类别 {missing_safety or '无'}；问题 {safety_problems or '无'}；"
+            f"停止门 {len(manifest.stop_gate)} 条；"
+            f"停止门问题 {stop_gate_problems or '无'}",
+        )
+    )
 
     verified_baseline = 0
     for run in manifest.baseline:

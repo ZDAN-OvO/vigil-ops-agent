@@ -3,8 +3,10 @@
 checkpoint 表由 LangGraph 官方 saver 自己管理，不与这里的迁移混用。
 """
 
+import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Self
 
@@ -15,14 +17,17 @@ from psycopg_pool import AsyncConnectionPool
 
 from aiops.contracts import (
     ActionAttempt,
+    ActionFollowup,
     ActionProposal,
     ActionTarget,
     Approval,
+    AttemptOutcome,
     AttemptStatus,
     AuditEvent,
     Budget,
     BudgetUsage,
     Evidence,
+    FollowupStatus,
     Hypothesis,
     Incident,
     Investigation,
@@ -852,6 +857,177 @@ class Store:
             if cursor.rowcount != 1:
                 raise LookupError(f"执行记录不存在：{attempt_id}")
 
+    async def finish_attempt(
+        self,
+        attempt_id: str,
+        *,
+        proposal_id: str,
+        proposal_status: ProposalStatus,
+        status: AttemptStatus,
+        result: dict | None,
+        verification: dict | None,
+        finished_at,
+        followup: ActionFollowup | None = None,
+    ) -> None:
+        """执行记录、提案状态和待办同一事务落库，避免只写一半。"""
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                cursor = await conn.execute(
+                    """
+                    UPDATE action_attempts
+                       SET status = %s,
+                           result = COALESCE(%s, result),
+                           verification = COALESCE(%s, verification),
+                           finished_at = COALESCE(%s, finished_at)
+                     WHERE id = %s
+                    """,
+                    (
+                        status.value,
+                        Jsonb(result) if result is not None else None,
+                        Jsonb(verification) if verification is not None else None,
+                        finished_at,
+                        attempt_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise LookupError(f"执行记录不存在：{attempt_id}")
+                await conn.execute(
+                    "UPDATE action_proposals SET status = %s WHERE id = %s",
+                    (proposal_status.value, proposal_id),
+                )
+                if followup is not None:
+                    await self._insert_followup(conn, followup)
+
+    async def _insert_followup(
+        self, conn: psycopg.AsyncConnection, followup: ActionFollowup
+    ) -> None:
+        await conn.execute(
+            """
+            INSERT INTO action_followups (
+                id, proposal_id, attempt_id, cluster, namespace, target_kind,
+                target_name, outcome, reason, evidence, status, created_at,
+                resolved_at, resolved_by, resolution
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                followup.id,
+                followup.proposal_id,
+                followup.attempt_id,
+                followup.cluster,
+                followup.namespace,
+                followup.target_kind,
+                followup.target_name,
+                followup.outcome.value,
+                followup.reason,
+                Jsonb(followup.evidence),
+                followup.status.value,
+                followup.created_at,
+                followup.resolved_at,
+                followup.resolved_by,
+                followup.resolution,
+            ),
+        )
+
+    async def list_followups(
+        self,
+        *,
+        status: FollowupStatus | None = None,
+        proposal_id: str | None = None,
+        limit: int = 50,
+    ) -> list[ActionFollowup]:
+        clauses = []
+        values: list[object] = []
+        if status is not None:
+            clauses.append("status = %s")
+            values.append(status.value)
+        if proposal_id is not None:
+            clauses.append("proposal_id = %s")
+            values.append(proposal_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        values.append(limit)
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                f"""
+                SELECT * FROM action_followups {where}
+                 ORDER BY created_at DESC, id DESC LIMIT %s
+                """,
+                tuple(values),
+            )
+            rows = await cursor.fetchall()
+        return [_followup_from_row(row) for row in rows]
+
+    async def get_followup_by_attempt(self, attempt_id: str) -> ActionFollowup | None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM action_followups WHERE attempt_id = %s", (attempt_id,)
+            )
+            row = await cursor.fetchone()
+        return _followup_from_row(row) if row else None
+
+    async def count_proposals_for_investigation(self, investigation_id: str) -> int:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT count(*) AS total FROM action_proposals WHERE investigation_id = %s",
+                (investigation_id,),
+            )
+            row = await cursor.fetchone()
+        return int(row["total"]) if row else 0
+
+    async def get_followup(self, followup_id: str) -> ActionFollowup | None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM action_followups WHERE id = %s", (followup_id,)
+            )
+            row = await cursor.fetchone()
+        return _followup_from_row(row) if row else None
+
+    async def resolve_followup(
+        self, followup_id: str, *, actor: str, note: str
+    ) -> ActionFollowup | None:
+        if not actor.strip() or not note.strip():
+            raise ValueError("解决待办必须记录操作者与说明")
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                cursor = await conn.execute(
+                    """
+                    UPDATE action_followups
+                       SET status = %s, resolved_at = %s, resolved_by = %s, resolution = %s
+                     WHERE id = %s AND status = %s
+                    """,
+                    (
+                        FollowupStatus.RESOLVED.value,
+                        datetime.now(UTC),
+                        actor,
+                        note,
+                        followup_id,
+                        FollowupStatus.OPEN.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    return None
+                cursor = await conn.execute(
+                    "SELECT * FROM action_followups WHERE id = %s", (followup_id,)
+                )
+                row = await cursor.fetchone()
+                if row is None:
+                    return None
+                await conn.execute(
+                    """
+                    INSERT INTO audit_events (
+                        id, correlation_id, actor, event, occurred_at, payload
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        f"audit-{uuid.uuid4().hex[:12]}",
+                        row["proposal_id"],
+                        actor,
+                        "action.followup_resolved",
+                        datetime.now(UTC),
+                        Jsonb({"followup_id": followup_id, "note": note}),
+                    ),
+                )
+        return _followup_from_row(row)
+
     async def get_attempt(self, proposal_id: str) -> ActionAttempt | None:
         async with self._pool.connection() as conn:
             cursor = await conn.execute(
@@ -919,4 +1095,24 @@ def _attempt_from_row(row: dict) -> ActionAttempt:
         verification=row["verification"],
         started_at=row["started_at"],
         finished_at=row["finished_at"],
+    )
+
+
+def _followup_from_row(row: dict) -> ActionFollowup:
+    return ActionFollowup(
+        id=row["id"],
+        proposal_id=row["proposal_id"],
+        attempt_id=row["attempt_id"],
+        cluster=row["cluster"],
+        namespace=row["namespace"],
+        target_kind=row["target_kind"],
+        target_name=row["target_name"],
+        outcome=AttemptOutcome(row["outcome"]),
+        reason=row["reason"],
+        evidence=row["evidence"] or {},
+        status=FollowupStatus(row["status"]),
+        created_at=row["created_at"],
+        resolved_at=row["resolved_at"],
+        resolved_by=row["resolved_by"],
+        resolution=row["resolution"],
     )

@@ -1,0 +1,28 @@
+2026-11-05T19:54:07Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild
+2026-11-05T19:54:14Z DEPLOYED pod=rebuild-demo-f4b67fbd9-vpnxv uid=1ae30ba9-a7c1-4f10-8aeb-0b3f1b1f6b04 rs=fb140155-2d23-4739-9dd5-857c99c88735 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200
+2026-11-05T19:54:14Z ENDPOINTS_READY pod=rebuild-demo-f4b67fbd9-vpnxv
+2026-11-05T19:54:15Z CORRUPTED pod=rebuild-demo-f4b67fbd9-vpnxv state=corrupt
+2026-11-05T19:54:15Z POISON_ON pod=rebuild-demo-f4b67fbd9-vpnxv
+2026-11-05T19:54:16Z RESTART pod=rebuild-demo-f4b67fbd9-vpnxv reason=V06-2 停止门证据
+提案 act-b7906299003e：failed
+目标 Pod vigil-experiment/rebuild-demo-f4b67fbd9-vpnxv：rebuild-demo-f4b67fbd9-vpnxv（rebuild-demo-f4b67fbd9）
+风险判定：auto
+  - 动作 restart_pod 命中自动执行规则
+  - 目标在专用实验命名空间：vigil-experiment
+  - 目标 Pod 可丢弃，删除后由 ReplicaSet 重建
+  - 执行后按 Pod 与 Service 验证恢复
+执行 att-6996e2203520：failed
+验证：{"ok": false, "path": "/work", "post": {"samples": 6, "failure_ratio": 1.0, "failed_samples": 6}, "new_pod": "rebuild-demo-f4b67fbd9-rl47h", "new_uid": "4154c4ed-7e6f-41d9-88b4-0a783f475e3d", "old_uid": "1ae30ba9-a7c1-4f10-8aeb-0b3f1b1f6b04", "outcome": "no_improvement", "samples": 6, "service": "rebuild-demo", "baseline": {"samples": 3, "failure_ratio": 1.0, "failed_samples": 3}, "pod_ready": true, "post_tail": {"samples": 3, "failure_ratio": 1.0, "failed_samples": 3}, "pod_restarts": 0, "tail_samples": 3, "tail_failures": 3, "failed_samples": 6, "outcome_reason": "动作后仍有失败，失败率没有明显下降", "window_seconds": 90, "service_addresses": ["10.42.0.19"], "template_unchanged": true, "tail_failed_samples": 3, "unavailable_samples": 0, "service_selects_new_pod": true, "tail_unavailable_samples": 0}
+待办 fol-ab1425ba5132：no_improvement，动作后仍有失败，失败率没有明显下降
+2026-11-05T19:56:28Z RESTART pod=rebuild-demo-f4b67fbd9-rl47h reason=V06-2 停止门证据
+提案 act-9a2fb0355a72：pending_approval
+目标 Pod vigil-experiment/rebuild-demo-f4b67fbd9-rl47h：rebuild-demo-f4b67fbd9-rl47h（rebuild-demo-f4b67fbd9）
+风险判定：approval
+  - 动作 restart_pod
+  - 目标在实验命名空间
+  - 首次执行需人工审批
+  - 同一工作负载上一次执行失败或结果未知，本次转人工审批
+  - 人工发起
+workload=a68ddeae-7930-4e98-8c94-bdd0f68e5e8a first_disposition=auto
+act-b7906299003e status=failed disposition=auto attempts=1
+act-9a2fb0355a72 status=pending_approval disposition=approval attempts=0

@@ -68,6 +68,7 @@ ActionAdapter 接口：`preconditions / dry_run / execute / verify / undo`，并
 - 审批绑定具体提案哈希、目标 UID/resourceVersion 和有效期；过期、hint 导致参数改变或资源漂移须重新评估。
 - 同一目标互斥执行，数据库中先持久化 intent/idempotency_key，再发外部请求。进程在请求后崩溃时先协调真实状态，不能直接重放写操作。MVP 至少将未知结果持久化并停止待核实，自动协调在 MS09 完善；审批等待恢复在 MS02 真实跨进程验证。
 - 验证读 Pod 可用性与业务负载下的错误率/延迟；低流量/no data/遥测过期不能视作健康。
+- 分类为 no_improvement、worsened、unknown 的执行记录在同一事务里写 `action_followups` 待办；待办有 open/resolved 生命周期。写前失败不建执行记录，也不建待办。`aiops followups` 列出待办，`aiops followup <id> --resolve` 解决；解决必须带非空操作者与说明，并在审计里写 `action.followup_resolved`。
 - 动作前先采业务基线，采不到基线不写集群。重启路径直接请求 Pod 代理，鉴权、代理和网关错误没有取得业务响应，不能算业务失败样本；非有限遥测值不计入有效样本。回退路径使用 `probe_http_status_code`，0、401、403、502、503、504 不计入有效样本；其余非 2xx 计为业务失败。探测传输失败不会冒充业务失败。
 - 执行结果在验证记录里增加 `outcome`，取值 improved、no_improvement、worsened、unknown。分类与恢复判定使用同一个末段窗口，预热失败不计入恶化。基线无失败而末段出现失败，或末段失败率增加达到 0.5，记为恶化；末段仍失败但未达阈值为无改善；有效样本不足或无法比较为未知。业务请求恢复但模板、Service 或就绪检查失败仍按失败处理，不算改善；这种组合记录为 `outcome=unknown` 且提案 `failed`，表示业务有恢复但资源检查未通过。
 - 基线等待结束后、写请求之前，重新核对目标 UID、模板、可丢弃标记、Service 选择关系、停止门和授权有效期；任何一项变化都不发写请求。

@@ -249,5 +249,41 @@
     "demos/ms05",
     "demos/ms06",
     "demos/ms07"
+  ],
+  "safety_runs": [
+    {
+      "run_id": "v06-worsened",
+      "expected": "worsened",
+      "proposal_id": "act-ec1a4ab70beb",
+      "attempt_id": "att-865bb96a4b70",
+      "evidence": "demos/ms08/outputs/v06-2/01-worsened.txt"
+    },
+    {
+      "run_id": "v06-no-improvement",
+      "expected": "no_improvement",
+      "proposal_id": "act-1763896a0404",
+      "attempt_id": "att-034f25117a33",
+      "evidence": "demos/ms08/outputs/v06-2/02-no-improvement.txt"
+    },
+    {
+      "run_id": "v06-unknown",
+      "expected": "unknown",
+      "proposal_id": "act-f005448a27e5",
+      "attempt_id": "att-b25fca776ccc",
+      "evidence": "demos/ms08/outputs/v06-2/03-unknown.txt"
+    },
+    {
+      "run_id": "v06-insufficient",
+      "expected": "insufficient_evidence",
+      "investigation_id": "inv-4d885b078075",
+      "evidence": "demos/ms08/outputs/02-f03-run3.txt"
+    }
+  ],
+  "stop_gate": [
+    {
+      "run_id": "v06-stop-gate",
+      "failed_proposal_id": "act-b7906299003e",
+      "next_proposal_id": "act-9a2fb0355a72"
+    }
   ]
 }

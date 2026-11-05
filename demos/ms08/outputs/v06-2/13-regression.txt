@@ -1,0 +1,23 @@
+== trunk 2026-11-05T19:58:54Z
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ No such command 'followups'.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+trunk_exit=2
+== head before 2026-11-05T19:58:59Z
+open_before=4
+2026-11-05T19:59:02Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild
+2026-11-05T19:59:07Z DEPLOYED pod=rebuild-demo-f4b67fbd9-w5wmk uid=dbc2be52-43be-4f3f-9c1d-97c159bb6605 rs=83b5d1a2-26b2-47c4-8bcd-a947ad2e284b template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200
+2026-11-05T19:59:07Z ENDPOINTS_READY pod=rebuild-demo-f4b67fbd9-w5wmk
+2026-11-05T19:59:07Z RESTART pod=rebuild-demo-f4b67fbd9-w5wmk reason=V06-2 改善回归
+提案 act-c74eb78b4c6b：succeeded
+目标 Pod vigil-experiment/rebuild-demo-f4b67fbd9-w5wmk：rebuild-demo-f4b67fbd9-w5wmk（rebuild-demo-f4b67fbd9）
+风险判定：auto
+  - 动作 restart_pod 命中自动执行规则
+  - 目标在专用实验命名空间：vigil-experiment
+  - 目标 Pod 可丢弃，删除后由 ReplicaSet 重建
+  - 执行后按 Pod 与 Service 验证恢复
+执行 att-0d2873347fad：verified
+验证：{"ok": true, "path": "/work", "post": {"samples": 6, "failure_ratio": 0.0, "failed_samples": 0}, "new_pod": "rebuild-demo-f4b67fbd9-trzhw", "new_uid": "c8801999-09e5-4f88-9388-98525d24088f", "old_uid": "dbc2be52-43be-4f3f-9c1d-97c159bb6605", "outcome": "improved", "samples": 6, "service": "rebuild-demo", "baseline": {"samples": 3, "failure_ratio": 0.0, "failed_samples": 0}, "pod_ready": true, "post_tail": {"samples": 3, "failure_ratio": 0.0, "failed_samples": 0}, "pod_restarts": 0, "tail_samples": 3, "tail_failures": 0, "failed_samples": 0, "outcome_reason": "动作后业务与资源检查均通过", "window_seconds": 90, "service_addresses": ["10.42.0.21"], "template_unchanged": true, "tail_failed_samples": 0, "unavailable_samples": 0, "service_selects_new_pod": true, "tail_unavailable_samples": 0}
+== head after 2026-11-05T20:01:19Z
+open_after=4
+2026-11-05T20:02:04Z NAMESPACE_REMOVED namespace=vigil-experiment

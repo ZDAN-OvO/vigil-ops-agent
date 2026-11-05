@@ -1,0 +1,14 @@
+2026-11-05T19:15:56Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild
+2026-11-05T19:16:00Z DEPLOYED pod=rebuild-demo-f4b67fbd9-4nttq uid=bbca831b-e78d-4ecd-8563-7890dcfa6631 rs=6ab83b24-db65-4816-97c8-02d114c82ac1 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200
+2026-11-05T19:16:00Z ENDPOINTS_READY pod=rebuild-demo-f4b67fbd9-4nttq
+2026-11-05T19:16:00Z RESTART pod=rebuild-demo-f4b67fbd9-4nttq reason=V06-2 未知结果用例
+提案 act-f005448a27e5：unknown
+目标 Pod vigil-experiment/rebuild-demo-f4b67fbd9-4nttq：rebuild-demo-f4b67fbd9-4nttq（rebuild-demo-f4b67fbd9）
+风险判定：auto
+  - 动作 restart_pod 命中自动执行规则
+  - 目标在专用实验命名空间：vigil-experiment
+  - 目标 Pod 可丢弃，删除后由 ReplicaSet 重建
+  - 执行后按 Pod 与 Service 验证恢复
+执行 att-b25fca776ccc：unknown
+验证：{"ok": false, "post": {"samples": 1, "failure_ratio": 0.0, "failed_samples": 0}, "reason": "insufficient_data", "new_pod": "rebuild-demo-f4b67fbd9-w44wq", "new_uid": "83767dbf-c99f-4374-b9dd-c80f7ec4ef2a", "old_uid": "bbca831b-e78d-4ecd-8563-7890dcfa6631", "outcome": "unknown", "samples": 1, "baseline": {"samples": 2, "failure_ratio": 0.0, "failed_samples": 0}, "pod_ready": true, "post_tail": {"samples": 0, "failure_ratio": null, "failed_samples": 0}, "pod_restarts": 0, "tail_samples": 0, "failed_samples": 0, "outcome_reason": "动作后样本不足，无法判断", "template_unchanged": true, "tail_failed_samples": 0, "unavailable_samples": 0, "service_selects_new_pod": true, "tail_unavailable_samples": 0}
+待办 fol-90bf66932058：unknown，动作后样本不足，无法判断

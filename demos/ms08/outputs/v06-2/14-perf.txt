@@ -1,0 +1,2 @@
+trunk att-5c7eb843a32a duration=99.2s followups=0
+head att-6996e2203520 duration=99.8s followups=1

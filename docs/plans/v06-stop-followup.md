@@ -152,20 +152,20 @@ Each lane runs on the local `vigil-lab` k3d cluster, sequentially, with namespac
 - [ ] Edit `tests/test_eval.py`.
 - [ ] Edit `docs/contracts.md`.
 - [ ] Edit `demos/ms08/README.md`.
-- [ ] Create `demos/ms08/outputs/v06/`.
-- [ ] Create `demos/ms08/screenshots/v06/`.
+- [ ] Create `demos/ms08/outputs/v06-2/`.
+- [ ] Create `demos/ms08/screenshots/v06-2/`.
 
 **Build.**
 
 - [ ] Add the `action_followups` table with proposal and attempt references, outcome, reason, evidence JSONB, status and resolution fields.
 - [ ] Add `ActionFollowup` to `src/aiops/contracts.py`.
 - [ ] Add `finish_attempt` to `src/aiops/db.py`. It updates the attempt, updates the proposal status and inserts the followup in one transaction.
-- [ ] Add `save_followup`, `list_followups` and `resolve_followup` to `src/aiops/db.py`.
+- [ ] Add `list_followups`, `get_followup`, `get_followup_by_attempt` and `resolve_followup` to `src/aiops/db.py`. A followup is written only through `finish_attempt`, so the attempt, proposal status and followup share one transaction.
 - [ ] In `_finish`, create a followup for no_improvement, worsened and unknown. Do not create one for improved or for a pre-write failure.
 - [ ] Add `aiops followups` and `aiops followup <id> --resolve --actor --note` to `src/aiops/cli.py`.
 - [ ] Add outcome and followup id to the `act` and `proposal` text and JSON output.
 - [ ] Add `safety_runs` to the manifest model in `src/aiops/eval.py`. Each entry names the run, the expected outcome and the proposal or attempt.
-- [ ] Implement the V06 criterion. It requires one registered run for each of no_improvement, worsened, unknown and insufficient evidence, a matching attempt record, and an open followup for the three action outcomes.
+- [ ] Implement the V06 criterion. It requires one registered run for each of no_improvement, worsened, unknown and insufficient evidence, a matching attempt record with a failed/unknown terminal status, an open followup for the three action outcomes, and a stop-gate entry where the next proposal is `approval` and has no attempt. Insufficient evidence must be an inconclusive investigation whose termination reason names the evidence gap.
 - [ ] Register the V06 runs and evidence paths in `eval/scenarios.json`.
 
 **You see.**
@@ -179,7 +179,7 @@ Each lane runs on the local `vigil-lab` k3d cluster, sequentially, with namespac
 
 - [ ] Add tests for followup creation per outcome and for no followup on improved.
 - [ ] Add a test that the attempt update and followup insert roll back together on a forced insert failure.
-- [ ] Add CLI tests for listing, resolving and rejecting an unknown followup id.
+- [ ] Add CLI tests for listing, resolving, a blank note, and an unknown followup id. Add a forced insert-failure test that proves the attempt and proposal updates roll back with the followup.
 - [ ] Add eval tests for the four-category rule, a missing category and a mismatched attempt id.
 - [ ] Run `make check-all`.
 
@@ -189,9 +189,9 @@ Each lane runs on the local `vigil-lab` k3d cluster, sequentially, with namespac
 - [ ] Lane 2. Reproduce the no-improvement case and open its followup. Save `12-no-improvement-followup.png`. Pass when one open followup carries `no_improvement` and the attempt id.
 - [ ] Lane 3. Reproduce the worsened case and open its followup. Save `13-worsened-followup.png`. Pass when one open followup carries `worsened`.
 - [ ] Lane 4. Reproduce the unknown case and open its followup. Save `14-unknown-followup.png`. Pass when one open followup carries `unknown`.
-- [ ] Lane 5. List open followups. Save `15-followups-list.png`. Pass when the three items appear with their proposal and attempt ids.
+- [ ] Lane 5. List open followups. Save `15-followups-list.png`. Pass when every open item appears with its proposal and attempt id.
 - [ ] Lane 6. Resolve one followup with an actor and note. Save `16-followup-resolve.png`. Pass when the open list drops it and the audit records the resolver.
-- [ ] Lane 7. Submit a second proposal after a failed outcome. Save `17-stop-gate.png`. Pass when the disposition is `approval`, one attempt exists for the workload, and the followup stays open.
+- [ ] Lane 7. Submit a second proposal after a failed outcome. Save `17-stop-gate.png`. Pass when the disposition is `approval`, the failed proposal has one attempt, the second has none, and the followup stays open.
 - [ ] Lane 8. Run `aiops eval --manifest-path eval/scenarios.json`. Save `18-eval-v06.png`. Pass when V06 passes and V01 to V04 and V10 keep their previous results.
 - [ ] Lane 9. Run the same command on a copy of the manifest with the worsened run removed. Save `19-eval-v06-negative.png`. Pass when V06 fails and names the missing category.
 - [ ] Lane 10. Clean up and verify the evidence pack. Save `20-cleanup.png`. Pass when the namespace is absent, `vigil-shop` has 12 Deployments, and the output and screenshot directories exist.
@@ -199,7 +199,7 @@ Each lane runs on the local `vigil-lab` k3d cluster, sequentially, with namespac
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
 - [ ] Metric. Wall-clock time from delete to attempt finish for a failed outcome, trunk against head, plus the followup write count.
-- [ ] Probe. Run the same no-improvement scenario on trunk and on head, interleaved.
+- [ ] Probe. Compare the same no-improvement scenario on trunk and head. If trunk cannot record followups, compare only the attempt duration and the head followup count, and say so in the result.
 - [ ] Baseline. Record the trunk duration first.
 - [ ] Rule. Head minus trunk must stay within 2 seconds, and the head must produce exactly one followup row.
 
