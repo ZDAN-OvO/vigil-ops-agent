@@ -40,6 +40,7 @@ async def open_runtime(
                 context_name=settings.kube_context,
                 max_items=settings.tool_max_items,
             ),
+            store,
         )
         executor = ActionExecutor(
             store=store,

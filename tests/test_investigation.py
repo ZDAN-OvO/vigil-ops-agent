@@ -31,6 +31,7 @@ from aiops.investigation.schemas import (
     HypothesisUpdate,
     PlanRequest,
     QueryRequest,
+    RunbookUse,
     Verdict,
 )
 from aiops.model import ModelCall
@@ -332,6 +333,7 @@ def test_supported_hypothesis_becomes_root_cause(ids, tmp_path):
                 action_path="",
                 action_reason="回退到上一版本",
                 action_evidence=[0],
+                runbook_uses=[],
             ),
         ]
     )
@@ -374,6 +376,7 @@ def test_failed_query_is_not_turned_into_evidence(ids, tmp_path):
                 action_path="",
                 action_reason="",
                 action_evidence=[],
+                runbook_uses=[],
             ),
         ]
     )
@@ -445,6 +448,7 @@ def test_checkpoint_is_persisted_for_the_thread(ids, tmp_path):
                 action_path="",
                 action_reason="",
                 action_evidence=[],
+                runbook_uses=[],
             ),
         ]
     )
@@ -485,6 +489,7 @@ def test_model_proposal_is_created_with_supporting_evidence(ids, tmp_path):
                 action_path="",
                 action_reason="回退到上一版本",
                 action_evidence=[0],
+                runbook_uses=[],
             ),
         ]
     )
@@ -535,6 +540,7 @@ def test_restart_pod_assessment_proposes_pod_restart(ids, tmp_path):
                 action_path="/work",
                 action_reason="Pod 级状态损坏",
                 action_evidence=[0],
+                runbook_uses=[],
             ),
         ]
     )
@@ -572,6 +578,7 @@ def _restart_assessment(**overrides) -> Assessment:
         "action_path": "/work",
         "action_reason": "Pod 级状态损坏",
         "action_evidence": [0],
+        "runbook_uses": [],
     }
     values.update(overrides)
     return Assessment(**values)
@@ -663,6 +670,7 @@ def test_action_without_supporting_evidence_is_not_proposed(ids, tmp_path):
                 action_path="",
                 action_reason="不该被执行",
                 action_evidence=[],
+                runbook_uses=[],
             ),
         ]
     )
@@ -671,6 +679,180 @@ def test_action_without_supporting_evidence_is_not_proposed(ids, tmp_path):
             ids,
             model,
             ScriptedToolbox([success_result()]),
+            tmp_path=tmp_path,
+            proposer=proposer,
+        )
+    )
+
+    assert report.proposal_id is None
+    assert proposer.calls == []
+
+
+def knowledge_result():
+    return ToolResult(
+        tool_call_id=f"call-{uuid4().hex[:8]}",
+        source="knowledge",
+        query={"tool": "knowledge.list_runbooks"},
+        time_range=WINDOW,
+        collected_at=START,
+        data={"items": [{"id": "rb-oom-limit", "version": 1, "title": "x", "summary": "y"}]},
+    )
+
+
+def test_runbook_use_is_recorded(ids, tmp_path):
+    proposer = FakeProposer()
+    model = ScriptedModel(
+        [
+            PlanRequest(
+                hypotheses=[
+                    HypothesisDraft(
+                        statement="依赖解析失败",
+                        expected_observations=["日志出现解析错误"],
+                        rationale="报错文本",
+                    )
+                ],
+                queries=[query(tool="knowledge.list_runbooks")],
+            ),
+            Assessment(
+                hypotheses=[HypothesisUpdate(index=0, status="supported", rationale="证据")],
+                verdicts=[Verdict(evidence_index=0, relation="supporting")],
+                next_queries=[],
+                finish=True,
+                root_cause=True,
+                conclusion="按 runbook rb-oom-limit 的顺序核对",
+                action_kind="none",
+                action_deployment="",
+                action_pod="",
+                action_service="",
+                action_path="",
+                action_reason="",
+                action_evidence=[],
+                runbook_uses=[
+                    RunbookUse(runbook_id="rb-oom-limit", accepted=True, reason="与证据相符")
+                ],
+            ),
+        ]
+    )
+    report, _, _, _ = asyncio.run(
+        run_case(
+            ids, model, ScriptedToolbox([knowledge_result()]), tmp_path=tmp_path, proposer=proposer
+        )
+    )
+
+    assert [use["runbook_id"] for use in report.runbook_uses] == ["rb-oom-limit"]
+    assert report.runbook_uses[0]["accepted"] is True
+    with psycopg.connect(DSN) as conn:
+        events = [
+            row[0]
+            for row in conn.execute(
+                "SELECT event FROM audit_events WHERE correlation_id = %s", (ids["investigation"],)
+            )
+        ]
+    assert "runbook.accepted" in events
+
+
+def _runbook_assessment(**overrides) -> Assessment:
+    values = {
+        "hypotheses": [HypothesisUpdate(index=0, status="supported", rationale="证据")],
+        "verdicts": [Verdict(evidence_index=0, relation="supporting")],
+        "next_queries": [],
+        "finish": True,
+        "root_cause": True,
+        "conclusion": "按条目核对",
+        "action_kind": "none",
+        "action_deployment": "",
+        "action_pod": "",
+        "action_service": "",
+        "action_path": "",
+        "action_reason": "",
+        "action_evidence": [],
+        "runbook_uses": [],
+    }
+    values.update(overrides)
+    return Assessment(**values)
+
+
+def _run_knowledge_case(ids, tmp_path, assessment):
+    model = ScriptedModel(
+        [
+            PlanRequest(
+                hypotheses=[
+                    HypothesisDraft(statement="x", expected_observations=["y"], rationale="z")
+                ],
+                queries=[query(tool="knowledge.list_runbooks")],
+            ),
+            assessment,
+        ]
+    )
+    return asyncio.run(
+        run_case(ids, model, ScriptedToolbox([knowledge_result()]), tmp_path=tmp_path)
+    )
+
+
+def test_unknown_runbook_citation_aborts_the_investigation(ids, tmp_path):
+    report, _, _, _ = _run_knowledge_case(
+        ids,
+        tmp_path,
+        _runbook_assessment(
+            runbook_uses=[RunbookUse(runbook_id="rb-ghost", accepted=True, reason="猜的")]
+        ),
+    )
+
+    assert report.status.value == "aborted"
+    assert "rb-ghost" in (report.termination_reason or "")
+
+
+def test_unjudged_runbook_candidate_aborts_the_investigation(ids, tmp_path):
+    report, _, _, _ = _run_knowledge_case(ids, tmp_path, _runbook_assessment(runbook_uses=[]))
+
+    assert report.status.value == "aborted"
+    assert "rb-oom-limit" in (report.termination_reason or "")
+
+
+def test_knowledge_only_conclusion_is_not_accepted(ids, tmp_path):
+    model = ScriptedModel(
+        [
+            PlanRequest(
+                hypotheses=[
+                    HypothesisDraft(
+                        statement="内存不足", expected_observations=["集群证据"], rationale="x"
+                    )
+                ],
+                queries=[query()],
+            ),
+            _runbook_assessment(conclusion="根据 rb-oom-limit 已确认内存不足"),
+        ]
+    )
+    report, _, _, _ = asyncio.run(
+        run_case(ids, model, ScriptedToolbox([knowledge_result()]), tmp_path=tmp_path)
+    )
+
+    assert report.status.value == "inconclusive"
+    assert report.conclusion is None
+
+
+def test_knowledge_evidence_cannot_support_an_action(ids, tmp_path):
+    proposer = FakeProposer()
+    model = ScriptedModel(
+        [
+            PlanRequest(
+                hypotheses=[
+                    HypothesisDraft(statement="x", expected_observations=["y"], rationale="z")
+                ],
+                queries=[query()],
+            ),
+            _runbook_assessment(
+                action_kind="rollout_undo",
+                action_deployment="productcatalogservice",
+                action_evidence=[0],
+            ),
+        ]
+    )
+    report, _, _, _ = asyncio.run(
+        run_case(
+            ids,
+            model,
+            ScriptedToolbox([knowledge_result()]),
             tmp_path=tmp_path,
             proposer=proposer,
         )

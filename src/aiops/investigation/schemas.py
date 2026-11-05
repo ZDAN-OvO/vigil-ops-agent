@@ -24,6 +24,8 @@ class QueryRequest(BaseModel):
         "kubernetes.list_events",
         "kubernetes.list_services",
         "kubernetes.list_logs",
+        "knowledge.list_runbooks",
+        "knowledge.get_runbook",
     ]
     purpose: str
     expression: str
@@ -55,6 +57,14 @@ class Verdict(BaseModel):
     relation: Literal["supporting", "refuting", "neutral"]
 
 
+class RunbookUse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    runbook_id: str = Field(min_length=1)
+    accepted: bool
+    reason: str = Field(min_length=1)
+
+
 class Assessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -71,3 +81,4 @@ class Assessment(BaseModel):
     action_path: str
     action_reason: str
     action_evidence: list[int]
+    runbook_uses: list[RunbookUse]

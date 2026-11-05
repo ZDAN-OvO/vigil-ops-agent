@@ -100,6 +100,11 @@ def main() -> None:
     parser.add_argument("--source", action="append", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--width", type=int, default=1280)
+    parser.add_argument(
+        "--no-command",
+        action="store_true",
+        help="来源不是单条可复跑命令时隐藏命令行，避免写出跑不出来的命令",
+    )
     args = parser.parse_args()
 
     sources = [Path(item) for item in args.source]
@@ -119,9 +124,10 @@ def main() -> None:
     foot = html.escape(
         "来源 " + "、".join(str(path) for path in sources) + f" · 原始输出按终端样式渲染 · {rendered_at}"
     )
+    command_line = "" if args.no_command else f"<div class=\"cmd\">$ {html.escape(args.command)}</div>"
     page = (
         PAGE.replace("__TITLE__", html.escape(args.title))
-        .replace("__COMMAND__", html.escape(args.command))
+        .replace('<div class="cmd">$ __COMMAND__</div>', command_line)
         .replace("__BODY__", body)
         .replace("__FOOT__", foot)
     )

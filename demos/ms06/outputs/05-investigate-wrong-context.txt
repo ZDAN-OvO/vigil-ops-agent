@@ -1,0 +1,13 @@
+调查 inv-2facf6216bc0：completed
+动作提案：act-3870a6a7ac17
+根因候选：证据支持：currencyservice 因内存 limit 被压到 16Mi（request 8Mi）而反复 OOMKilled/CrashLoopBackOff，Service 10.43.42.101:7000 无就绪后端，frontend 调用该依赖被 connection refused，首页/购物车/商品页持续返回 500。frontend 自身健康（restartCount=0、last_terminated=null、128Mi/64Mi 规格正常），其 Service 选择器 app=frontend 与 Pod 标签匹配，currencyservice Service 选择器 app=currencyservice 也与 Pod 标签匹配，因此不是 frontend 模板或 Service 端口/选择器错配。
+
+根因落在资源规格：Deployment currencyservice 当前 revision 12 的 memory_limit=16Mi，而同镜像历史 revision 11 为 128Mi；两者镜像 digest 相同（16d16968…），差异仅在资源规格，说明是模板变更（change_cause="vigil rollback act-150f872a4097"）把限额压到不可用水平。按规则必须说明：重建 Pod 会沿用当前 Deployment 模板的 16Mi limit，无法修复该故障，因此不建议重建 Pod；该 Pod 也不带 vigil.io/discardable=true 标签，restart_pod 不适用。存在可回退的历史模板（revision 11，128Mi/64Mi），故建议对 Deployment currencyservice 执行回退。
+
+“节点磁盘写满”怀疑未获任何证据：事件流中 currencyservice 的重启表现为 Killing→OOMKilled 循环与 Readiness probe 失败，没有 Evicted、DiskPressure、FailedMount 之类记录，也没有 node 级磁盘相关事件。注意证据边界：两次 prometheus 查询均因 ConnectError 不可用，node_filesystem_avail_bytes 等节点磁盘指标未能核实，因此磁盘耗尽只是“无事件层面证据”，并非用指标正面排除；同时因缺少 metrics，故障起始时间与容器重启速率的曲线也无法量化，重启次数只能以 Pod 状态与 events 计数为据（05:09–05:37 期间多次重建，restartCount 3→4）。
+
+动作仅为建议，需规则判定与人工审批，不会自动执行。
+证据 10 条，工具调用 12 次
+  - [supported] currencyservice 因容器资源规格（内存限额）不足反复 OOMKilled 重启，导致 frontend 首页下游调用失败返回 500
+  - [refuted] 节点磁盘写满（node filesystem 可用空间耗尽 / DiskPressure）导致 currencyservice 被驱逐或写入失败而反复重启，并使 frontend 请求失败
+  - [supported] frontend 自身健康且配置正常，500 完全由依赖链路（currencyservice 不可用）引起，而非 frontend 模板或 Service 配置问题

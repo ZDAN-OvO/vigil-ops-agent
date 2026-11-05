@@ -1,0 +1,7 @@
+investigation inv-4ce0757b47b0 ('completed', 9, 3)
+2026-11-05T05:10:17.473131+00:00 investigation.started {"model": "mythos-magpie-1505138152", "service": "frontend"}
+2026-11-05T05:11:06.999782+00:00 action.proposed_by_model {"kind": "rollout_undo", "target": "currencyservice", "disposition": "approval", "proposal_id": "act-d0b364a79ffd", "evidence_ids": ["ev-6824c15d0f52", "ev-47eea127812a", "ev-559f69bd1f27"]}
+2026-11-05T05:11:07.001619+00:00 runbook.accepted {"reason": "与观测相符：重启原因为 OOMKilled、exitCode=137、restartCount=3，且已按该顺序比较了当前 revision 与历史 revision 的内存规格，判断回退是否适用。", "runbook_id": "rb-oom-limit"}
+2026-11-05T05:11:07.003038+00:00 runbook.rejected {"reason": "本次错误是连接 ClusterIP 10.43.42.101:7000 被拒绝（connect: connection refused），服务名已成功解析为 ClusterIP，没有出现 no such host / name resolution 类错误，条件不符。", "runbook_id": "rb-dns-resolution"}
+2026-11-05T05:11:07.004344+00:00 runbook.rejected {"reason": "readiness 失败是容器因 OOMKilled 崩溃重启的次生现象（BackOff 7 次、探针连接超时），没有证据表明探针配置本身有误，故不适用该排查路径。", "runbook_id": "rb-readiness-probe"}
+2026-11-05T05:11:07.007079+00:00 investigation.completed {"evidence": 8, "hypotheses": 3, "tool_calls": 9, "model_calls": 3, "termination": null}

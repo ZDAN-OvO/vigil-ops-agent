@@ -18,6 +18,7 @@ MAX_LOOKBACK_SECONDS = 3600
 MIN_STEP_SECONDS = 5
 MAX_STEP_SECONDS = 300
 MAX_SELECTOR_LENGTH = 200
+MAX_RUNBOOK_ITEMS = 3
 
 
 class ToolboxProtocol(Protocol):
@@ -48,10 +49,24 @@ def observation(result: ToolResult, *, max_chars: int = 4000) -> str:
     return text
 
 
+class RunbookReader(Protocol):
+    async def list_runbooks(
+        self, *, service: str | None = None, query: str | None = None, limit: int = 3
+    ) -> list: ...
+
+    async def get_runbook(self, runbook_id: str) -> object | None: ...
+
+
 class Toolbox:
-    def __init__(self, prometheus: PrometheusClient, kubernetes: KubernetesRead) -> None:
+    def __init__(
+        self,
+        prometheus: PrometheusClient,
+        kubernetes: KubernetesRead,
+        runbooks: RunbookReader | None = None,
+    ) -> None:
         self._prometheus = prometheus
         self._kubernetes = kubernetes
+        self._runbooks = runbooks
 
     async def run(
         self, context: ToolContext, time_range: TimeRange, request: QueryRequest
@@ -82,7 +97,46 @@ class Toolbox:
                     selector=request.selector or None,
                     pod_name=request.involved_name or None,
                 )
+            case "knowledge.list_runbooks":
+                return await self._list_runbooks(time_range, request)
+            case "knowledge.get_runbook":
+                return await self._get_runbook(time_range, request)
         return _invalid(request, time_range, f"未注册的工具：{request.tool}")
+
+    def _knowledge_result(
+        self, request: QueryRequest, time_range: TimeRange, data: dict
+    ) -> ToolResult:
+        return ToolResult(
+            tool_call_id=uuid.uuid4().hex,
+            source="knowledge",
+            query=request.model_dump(),
+            time_range=time_range,
+            collected_at=datetime.now(UTC),
+            data=data,
+        )
+
+    async def _list_runbooks(self, time_range: TimeRange, request: QueryRequest) -> ToolResult:
+        if self._runbooks is None:
+            return _invalid(request, time_range, "runbook 未登记")
+        items = await self._runbooks.list_runbooks(
+            service=request.selector or None,
+            query=request.expression.strip() or None,
+            limit=MAX_RUNBOOK_ITEMS,
+        )
+        return self._knowledge_result(
+            request, time_range, {"items": [item.as_list_item() for item in items]}
+        )
+
+    async def _get_runbook(self, time_range: TimeRange, request: QueryRequest) -> ToolResult:
+        if self._runbooks is None:
+            return _invalid(request, time_range, "runbook 未登记")
+        runbook_id = request.involved_name.strip()
+        if not runbook_id:
+            return _invalid(request, time_range, "involved_name 需要填 runbook id")
+        runbook = await self._runbooks.get_runbook(runbook_id)
+        if runbook is None:
+            return _invalid(request, time_range, f"runbook 不存在：{runbook_id}")
+        return self._knowledge_result(request, time_range, runbook.as_detail())
 
     async def _prometheus_query(
         self, context: ToolContext, time_range: TimeRange, request: QueryRequest

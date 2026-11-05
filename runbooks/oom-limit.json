@@ -1,0 +1,61 @@
+[
+  {
+    "id": "rb-oom-limit",
+    "version": 1,
+    "title": "容器反复 OOMKilled 时的排查顺序",
+    "summary": "重启原因是 OOMKilled 时，先确认内存限额与历史模板，再判断回退是否适用。",
+    "applies_to": [],
+    "symptoms": [
+      "OOMKilled",
+      "restartCount",
+      "内存",
+      "limit",
+      "退出码 137"
+    ],
+    "steps": [
+      "读取 Pod 的 last_terminated.reason 与退出码，确认是 OOMKilled 而不是探针失败或镜像错误。",
+      "比较 Deployment 当前模板与历史 revision 的内存 limits 和 requests。",
+      "若存在已验证的历史模板且差异只在资源规格，按发布回退处理，并在回退后核对限额与重启数。",
+      "重建 Pod 会沿用当前模板，不能修复规格不足；不要把重建当作恢复手段。"
+    ],
+    "source": "runbooks/oom-limit.json"
+  },
+  {
+    "id": "rb-dns-resolution",
+    "version": 1,
+    "title": "服务名解析失败的排查顺序",
+    "summary": "依赖调用出现 name resolution 错误时，按 DNS 与端点顺序排查。",
+    "applies_to": [],
+    "symptoms": [
+      "no such host",
+      "DNS",
+      "name resolution",
+      "连接超时"
+    ],
+    "steps": [
+      "确认报错文本包含解析失败或超时，而不是对端返回的业务错误。",
+      "检查目标 Service 是否存在、选择器是否匹配到就绪 Pod。",
+      "检查 Pod 的 resolv.conf 与集群 DNS 组件。"
+    ],
+    "source": "runbooks/oom-limit.json"
+  },
+  {
+    "id": "rb-readiness-probe",
+    "version": 1,
+    "title": "就绪探针失败的排查顺序",
+    "summary": "Pod 长期不 Ready 时，区分启动未完成、探针配置错误与应用自身失败。",
+    "applies_to": [],
+    "symptoms": [
+      "readiness",
+      "Unhealthy",
+      "NotReady",
+      "探针失败"
+    ],
+    "steps": [
+      "查看事件里的探针失败信息与失败次数。",
+      "比较探针路径与端口是否与容器实际监听一致。",
+      "确认应用日志在探针路径上返回的状态码。"
+    ],
+    "source": "runbooks/oom-limit.json"
+  }
+]
