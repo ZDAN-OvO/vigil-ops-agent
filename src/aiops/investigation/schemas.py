@@ -64,7 +64,10 @@ class Assessment(BaseModel):
     finish: bool
     root_cause: bool
     conclusion: str
-    action_kind: Literal["none", "rollout_undo"]
+    action_kind: Literal["none", "rollout_undo", "restart_pod"]
     action_deployment: str
+    action_pod: str
+    action_service: str
+    action_path: str
     action_reason: str
     action_evidence: list[int]

@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from aiops.actions.executor import ActionExecutor
+from aiops.actions.restart_pod import PodRestartAdapter
 from aiops.actions.rollout_undo import RolloutUndoAdapter
 from aiops.config import Settings
 from aiops.contracts import Incident, Investigation
@@ -43,6 +44,9 @@ async def open_runtime(
         executor = ActionExecutor(
             store=store,
             adapter=RolloutUndoAdapter(
+                kubeconfig=settings.kubeconfig, context_name=settings.kube_context
+            ),
+            restart_adapter=PodRestartAdapter(
                 kubeconfig=settings.kubeconfig, context_name=settings.kube_context
             ),
             prometheus=prometheus,

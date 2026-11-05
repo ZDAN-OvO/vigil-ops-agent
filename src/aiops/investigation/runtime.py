@@ -52,6 +52,20 @@ class ActionProposer(Protocol):
         evidence_ids: list[str] | None = None,
     ) -> tuple[ActionProposal, RiskDecision]: ...
 
+    async def propose_restart_pod(
+        self,
+        *,
+        pod: str,
+        service: str,
+        reason: str,
+        actor: str,
+        path: str = "/",
+        namespace: str | None = None,
+        investigation_id: str | None = None,
+        origin: ActionOrigin = ActionOrigin.OPERATOR,
+        evidence_ids: list[str] | None = None,
+    ) -> tuple[ActionProposal, RiskDecision]: ...
+
 
 class ModelProtocol(Protocol):
     async def complete_json[T: BaseModel](
@@ -382,14 +396,20 @@ class InvestigationRuntime:
                 )
 
         proposal_id = ""
-        if assessment.finish and assessment.action_kind == "rollout_undo":
-            supporting = []
-            for index in assessment.action_evidence:
-                if 0 <= index < len(evidence):
-                    evidence_id = evidence[index]["id"]
-                    if evidence_id not in supporting:
-                        supporting.append(evidence_id)
-            proposal_id = await self._propose_action(assessment, supporting) or ""
+        if assessment.finish and assessment.action_kind != "none":
+            if not assessment.root_cause:
+                # 没有根因候选时不允许提案；否则自相矛盾的输出也能进入审批。
+                await self._note_action(
+                    "no_root_cause", assessment.action_pod or assessment.action_deployment or None
+                )
+            else:
+                supporting = []
+                for index in assessment.action_evidence:
+                    if 0 <= index < len(evidence) and evidence[index]["relation"] == "supporting":
+                        evidence_id = evidence[index]["id"]
+                        if evidence_id not in supporting:
+                            supporting.append(evidence_id)
+                proposal_id = await self._propose_action(assessment, supporting) or ""
 
         return {
             "hypotheses": hypotheses,
@@ -402,27 +422,49 @@ class InvestigationRuntime:
 
     async def _propose_action(self, assessment: Assessment, supporting: list[str]) -> str | None:
         """模型只能提案；规则仍会判定，执行仍要审批。提案失败不影响结论。"""
-        if not assessment.action_deployment:
-            await self._note_action("missing_deployment", None)
+        target = (
+            assessment.action_pod
+            if assessment.action_kind == "restart_pod"
+            else assessment.action_deployment
+        )
+        missing = (
+            assessment.action_kind == "restart_pod" and not assessment.action_service
+        ) or not target
+        if missing:
+            await self._note_action("missing_target", target or None)
             return None
         if not supporting:
-            await self._note_action("no_supporting_evidence", assessment.action_deployment)
+            await self._note_action("no_supporting_evidence", target)
             return None
         if self._proposer is None:
-            await self._note_action("proposer_unavailable", assessment.action_deployment)
+            await self._note_action("proposer_unavailable", target)
             return None
+        reason = assessment.action_reason or assessment.conclusion
         try:
-            proposal, decision = await self._proposer.propose_rollback(
-                deployment=assessment.action_deployment,
-                reason=assessment.action_reason or assessment.conclusion,
-                actor="investigation-runtime",
-                namespace=self._incident.namespace,
-                investigation_id=self._investigation_id,
-                origin=ActionOrigin.MODEL,
-                evidence_ids=supporting,
-            )
+            if assessment.action_kind == "restart_pod":
+                proposal, decision = await self._proposer.propose_restart_pod(
+                    pod=assessment.action_pod,
+                    service=assessment.action_service,
+                    path=assessment.action_path or "/",
+                    reason=reason,
+                    actor="investigation-runtime",
+                    namespace=self._incident.namespace,
+                    investigation_id=self._investigation_id,
+                    origin=ActionOrigin.MODEL,
+                    evidence_ids=supporting,
+                )
+            else:
+                proposal, decision = await self._proposer.propose_rollback(
+                    deployment=assessment.action_deployment,
+                    reason=reason,
+                    actor="investigation-runtime",
+                    namespace=self._incident.namespace,
+                    investigation_id=self._investigation_id,
+                    origin=ActionOrigin.MODEL,
+                    evidence_ids=supporting,
+                )
         except ActionError as exc:
-            await self._note_action(exc.code, assessment.action_deployment)
+            await self._note_action(exc.code, target)
             return None
         await self._store.append_audit(
             [
@@ -434,7 +476,8 @@ class InvestigationRuntime:
                     occurred_at=datetime.now(UTC),
                     payload={
                         "proposal_id": proposal.id,
-                        "deployment": assessment.action_deployment,
+                        "kind": assessment.action_kind,
+                        "target": target,
                         "disposition": decision.disposition.value,
                         "evidence_ids": supporting,
                     },

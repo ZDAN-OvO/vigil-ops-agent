@@ -1,0 +1,7 @@
+调查 inv-e6a92291724e：completed
+动作提案：act-344aa4694ecf
+根因候选：证据支持：rebuild-demo 的 /work 在 Pod 内返回 500，而 /healthz 始终 200、Pod Ready、restartCount=0、无 last_terminated/OOMKilled，说明不是探针失败、崩溃循环或调度问题；Deployment 只有 revision 1 且镜像/资源规格与当前一致，events 显示同一 ReplicaSet 仅出现 scale up/down，没有近期模板变更或可回退的历史 revision，因此不是发布回退类原因；命名空间内其他 12 个服务 Pod 全部 Ready、restartCount=0，Service selector/端口与 Pod 标签一致，日志中没有连接拒绝/超时/DNS 等依赖错误，依赖链路原因可排除。因此故障边界落在 rebuild-demo 自身的 Pod 级运行状态（日志显示 state=/state/work_state），与资源规格不足无关（无 OOM、无重启），不涉及内存限额问题。注意：未能取得 /work 500 的内部错误详情（Prometheus 不可用、针对已删除 Pod 的日志查询 404），也无法直接查看 Pod 卷挂载；若重建后 /work 仍再次出现 500，则说明存在跨 Pod 持久的共享状态或代码级缺陷，需另行排查，本结论不覆盖该情形。
+证据 9 条，工具调用 13 次
+  - [supported] rebuild-demo 的 /work 处理器或容器内部运行状态异常，导致持续返回 500；Pod 本身仍 Ready 且无重启，资源规格和调度不是直接原因。
+  - [refuted] rebuild-demo 依赖的后端服务、数据库或中间件不可用/配置错误，导致 /work 在调用依赖时失败并返回 500；rebuild-demo 自身 Pod 健康。
+  - [refuted] rebuild-demo 最近的 Deployment revision 引入了镜像、环境变量或配置模板错误，当前 Pod 虽然 Ready，但 /work 请求持续失败。

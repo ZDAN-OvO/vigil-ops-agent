@@ -1,0 +1,3 @@
+执行 act-344aa4694ecf：verified
+结果：{"stage": "rebuilt", "new_uid": "e2ee187f-6784-4124-b509-6e54b231f798", "old_uid": "c27cbaa0-a08c-4bb6-bf6f-e79136006fe8"}
+验证：{"ok": true, "path": "/work", "new_pod": "rebuild-demo-58958844c8-9km44", "new_uid": "e2ee187f-6784-4124-b509-6e54b231f798", "old_uid": "c27cbaa0-a08c-4bb6-bf6f-e79136006fe8", "samples": 6, "service": "rebuild-demo", "pod_ready": true, "pod_restarts": 0, "tail_failures": 0, "failed_samples": 0, "window_seconds": 90, "service_addresses": ["10.42.0.128"], "template_unchanged": true, "service_selects_new_pod": true}
