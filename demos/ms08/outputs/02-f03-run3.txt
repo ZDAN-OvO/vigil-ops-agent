@@ -1,0 +1,6 @@
+调查 inv-4d885b078075：inconclusive
+终止原因：证据不足，未形成根因候选
+证据 10 条，工具调用 16 次
+  - [refuted] 延迟升高来自 frontend 入口 Pod 自身状态或资源规格（CPU 限流/容器重启/OOM），而非下游依赖
+  - [inconclusive] 下游依赖服务的延迟（源于其 Pod 重启/OOM 或资源规格不足）沿调用链传导到 frontend 的 / 与 /cart
+  - [inconclusive] Service 选择器或中间层改变调用链，使流量落到不同后端，导致 frontend 请求变慢而错误率不变

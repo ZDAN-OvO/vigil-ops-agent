@@ -1,0 +1,233 @@
+{
+  "frozen_at": "2026-11-05T08:00:00Z",
+  "scenarios": [
+    {
+      "id": "f01",
+      "version": 1,
+      "card": "docs/mvp.md#f01",
+      "signal_classes": [
+        "platform",
+        "business"
+      ],
+      "allowed_actions": [
+        "rollout_undo"
+      ],
+      "core": true,
+      "runs": [
+        {
+          "run_id": "f01-ms01-a",
+          "valid": true,
+          "reason": "坏发布注入与首页 500 核验",
+          "investigation_id": "inv-919644e08833",
+          "proposal_id": "act-f363f67ddbb1",
+          "attempt_id": "att-efb104b9001c",
+          "recovered": true,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f01-ms01-b",
+          "valid": true,
+          "reason": "模型提案后回退",
+          "investigation_id": "inv-e81757d2e978",
+          "proposal_id": "act-e6e1fcfd8a2a",
+          "attempt_id": "att-244459ad7b83",
+          "recovered": true,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f01-ms01-c",
+          "valid": true,
+          "reason": "模型提案后回退",
+          "investigation_id": "inv-e5072b516d10",
+          "proposal_id": "act-cce0ce7032a6",
+          "attempt_id": "att-b00a2666bb4e",
+          "recovered": true,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f01-ms01-d",
+          "valid": true,
+          "reason": "操作者发起回退",
+          "investigation_id": "inv-ad00d3655493",
+          "proposal_id": "act-a5175e380402",
+          "attempt_id": "att-7077200837be",
+          "recovered": true,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f01-i02-a",
+          "valid": true,
+          "reason": "模型失败：结论 inconclusive",
+          "investigation_id": "inv-902288680f89",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": false
+        },
+        {
+          "run_id": "f01-i02-b",
+          "valid": true,
+          "reason": "模型失败：结论 inconclusive",
+          "investigation_id": "inv-42f562005c5f",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": false
+        },
+        {
+          "run_id": "f01-i02-c",
+          "valid": true,
+          "reason": "模型失败：结论 inconclusive",
+          "investigation_id": "inv-53b156c56eb4",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": false
+        },
+        {
+          "run_id": "f01-i02-d",
+          "valid": true,
+          "reason": "模型失败：结论 inconclusive",
+          "investigation_id": "inv-aad3b4e73654",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": false
+        }
+      ]
+    },
+    {
+      "id": "f02",
+      "version": 1,
+      "card": "docs/mvp.md#f02",
+      "signal_classes": [
+        "platform",
+        "business"
+      ],
+      "allowed_actions": [
+        "rollout_undo"
+      ],
+      "core": true,
+      "runs": [
+        {
+          "run_id": "f02-ms03-a",
+          "valid": true,
+          "reason": "OOM 注入、告警与回退",
+          "investigation_id": "inv-e545a5e2facc",
+          "proposal_id": "act-150f872a4097",
+          "attempt_id": "att-d2e9f93ac862",
+          "recovered": true,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f02-ms06-a",
+          "valid": true,
+          "reason": "runbook 场景，回退提案被操作者拒绝",
+          "investigation_id": "inv-4ce0757b47b0",
+          "proposal_id": "act-d0b364a79ffd",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f02-ms06-b",
+          "valid": true,
+          "reason": "错误 Context 场景，提案被拒绝",
+          "investigation_id": "inv-4562415c391c",
+          "proposal_id": "act-3d2d2989cacd",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f02-ms06-c",
+          "valid": true,
+          "reason": "错误 Context 复跑，提案被拒绝",
+          "investigation_id": "inv-2facf6216bc0",
+          "proposal_id": "act-3870a6a7ac17",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        }
+      ]
+    },
+    {
+      "id": "f03",
+      "version": 1,
+      "card": "docs/mvp.md#f03",
+      "signal_classes": [
+        "platform",
+        "business"
+      ],
+      "allowed_actions": [],
+      "core": true,
+      "runs": [
+        {
+          "run_id": "f03-ms04-a",
+          "valid": true,
+          "reason": "代理延迟核验，结论定位链路且不动作",
+          "investigation_id": "inv-36e5c873f9ce",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f03-ms08-b",
+          "valid": true,
+          "reason": "延迟核验通过；模型调用失败",
+          "investigation_id": "inv-6b11e68bb914",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": false
+        },
+        {
+          "run_id": "f03-ms08-c",
+          "valid": true,
+          "reason": "延迟核验通过；结论 inconclusive",
+          "investigation_id": "inv-4d885b078075",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": false
+        }
+      ]
+    },
+    {
+      "id": "a01",
+      "version": 1,
+      "card": "docs/mvp.md#a01",
+      "signal_classes": [
+        "platform",
+        "business"
+      ],
+      "allowed_actions": [
+        "restart_pod"
+      ],
+      "core": false,
+      "runs": [
+        {
+          "run_id": "a01-ms05-a",
+          "valid": true,
+          "reason": "操作者提案重建并验证恢复",
+          "investigation_id": "",
+          "proposal_id": "act-8c4d56f1f1fa",
+          "attempt_id": "att-cd263265f070",
+          "recovered": true,
+          "investigation_correct": false
+        }
+      ]
+    }
+  ],
+  "baseline": [],
+  "demo_packs": [
+    "demos/ms01",
+    "demos/ms02",
+    "demos/ms03",
+    "demos/ms04",
+    "demos/ms05",
+    "demos/ms06",
+    "demos/ms07"
+  ]
+}
