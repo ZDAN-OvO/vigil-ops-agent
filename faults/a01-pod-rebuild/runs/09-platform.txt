@@ -1,0 +1,38 @@
+### 2026-11-05T03:21:52Z pods
+NAME                            READY   STATUS        RESTARTS      AGE   IP            NODE                     NOMINATED NODE   READINESS GATES
+rebuild-demo-58958844c8-htq44   1/1     Running       0             16s   10.42.0.114   k3d-vigil-lab-server-0   <none>           <none>
+rebuild-demo-58958844c8-msllh   1/1     Terminating   1 (42s ago)   90s   10.42.0.113   k3d-vigil-lab-server-0   <none>           <none>
+
+### deployment revision/image
+1 vigil/pod-rebuild-demo:20261105
+
+### events
+2026-11-05T02:43:31Z   Started             rebuild-demo-58958844c8-mdb6l   Container started
+2026-11-05T02:42:16Z   Unhealthy           rebuild-demo-58958844c8-mdb6l   Readiness probe failed: Get "http://10.42.0.109:8080/healthz": dial tcp 10.42.0.109:8080: connect: connection refused
+2026-11-05T02:43:54Z   Killing             rebuild-demo-58958844c8-mdb6l   Stopping container app
+<nil>                  Scheduled           rebuild-demo-58958844c8-msllh   Successfully assigned vigil-shop/rebuild-demo-58958844c8-msllh to k3d-vigil-lab-server-0
+2026-11-05T03:21:10Z   Pulled              rebuild-demo-58958844c8-msllh   Container image "vigil/pod-rebuild-demo:20261105" already present on machine and can be accessed by the pod
+2026-11-05T03:21:10Z   Created             rebuild-demo-58958844c8-msllh   Container created
+2026-11-05T03:21:10Z   Started             rebuild-demo-58958844c8-msllh   Container started
+2026-11-05T03:21:11Z   Unhealthy           rebuild-demo-58958844c8-msllh   Readiness probe failed: Get "http://10.42.0.113:8080/healthz": dial tcp 10.42.0.113:8080: connect: connection refused
+2026-11-05T03:21:36Z   Killing             rebuild-demo-58958844c8-msllh   Stopping container app
+<nil>                  Scheduled           rebuild-demo-58958844c8-q2c4t   Successfully assigned vigil-shop/rebuild-demo-58958844c8-q2c4t to k3d-vigil-lab-server-0
+2026-11-05T03:19:55Z   Pulled              rebuild-demo-58958844c8-q2c4t   Container image "vigil/pod-rebuild-demo:20261105" already present on machine and can be accessed by the pod
+2026-11-05T03:19:55Z   Created             rebuild-demo-58958844c8-q2c4t   Container created
+2026-11-05T03:19:55Z   Started             rebuild-demo-58958844c8-q2c4t   Container started
+2026-11-05T03:19:56Z   Unhealthy           rebuild-demo-58958844c8-q2c4t   Readiness probe failed: Get "http://10.42.0.112:8080/healthz": dial tcp 10.42.0.112:8080: connect: connection refused
+2026-11-05T03:20:21Z   Killing             rebuild-demo-58958844c8-q2c4t   Stopping container app
+2026-11-05T02:40:22Z   SuccessfulCreate    rebuild-demo-58958844c8         Created pod: rebuild-demo-58958844c8-hqzrv
+2026-11-05T02:42:15Z   SuccessfulCreate    rebuild-demo-58958844c8         Created pod: rebuild-demo-58958844c8-mdb6l
+2026-11-05T02:43:54Z   SuccessfulCreate    rebuild-demo-58958844c8         Created pod: rebuild-demo-58958844c8-2j6dg
+2026-11-05T03:17:43Z   SuccessfulCreate    rebuild-demo-58958844c8         Created pod: rebuild-demo-58958844c8-8k8wx
+2026-11-05T03:18:35Z   SuccessfulCreate    rebuild-demo-58958844c8         Created pod: rebuild-demo-58958844c8-q2c4t
+2026-11-05T03:20:22Z   SuccessfulCreate    rebuild-demo-58958844c8         Created pod: rebuild-demo-58958844c8-msllh
+2026-11-05T03:21:36Z   SuccessfulCreate    rebuild-demo-58958844c8         Created pod: rebuild-demo-58958844c8-htq44
+2026-11-05T02:40:21Z   ScalingReplicaSet   rebuild-demo                    Scaled up replica set rebuild-demo-58958844c8 from 0 to 1
+2026-11-05T03:17:42Z   ScalingReplicaSet   rebuild-demo                    Scaled up replica set rebuild-demo-58958844c8 from 0 to 1
+2026-11-05T03:18:34Z   ScalingReplicaSet   rebuild-demo                    Scaled up replica set rebuild-demo-58958844c8 from 0 to 1
+
+### 2026-11-05T03:22:03Z container termination after explicit crash
+pod=rebuild-demo-58958844c8-htq44 uid=0d3524c6-40d8-4638-baaa-5ada2259e707 restarts=1 reason=Error exit=1 ready=true
+work_after_restart=200

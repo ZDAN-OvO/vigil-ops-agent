@@ -1,0 +1,3 @@
+2026-11-05T03:21:36Z REBUILD before pod=rebuild-demo-58958844c8-msllh uid=d49afd7e-3d92-480a-971b-1aea5bfff72c rs=d62c8fb9-198c-4ab7-a549-a93788930e8f template=5427399d73722fda540480d8127ec4bdbb9d3e1dba750007aefebd7a9cc67e80 restarts=1 work=500
+2026-11-05T03:21:40Z REBUILT pod=rebuild-demo-58958844c8-htq44 uid=0d3524c6-40d8-4638-baaa-5ada2259e707 rs=d62c8fb9-198c-4ab7-a549-a93788930e8f template=5427399d73722fda540480d8127ec4bdbb9d3e1dba750007aefebd7a9cc67e80 ready=true restarts=0 work=200 elapsed_s=4
+2026-11-05T03:21:40Z VERIFIED_REBUILD old_uid=d49afd7e-3d92-480a-971b-1aea5bfff72c new_uid=0d3524c6-40d8-4638-baaa-5ada2259e707 template_unchanged=1 rs_unchanged=1 work=200 elapsed_s=4
