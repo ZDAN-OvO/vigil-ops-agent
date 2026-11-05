@@ -1,0 +1,19 @@
+== inject 2026-11-05T18:43:07Z
+deployment.apps/productcatalogservice image updated
+Waiting for deployment "productcatalogservice" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "productcatalogservice" rollout to finish: 1 old replicas are pending termination...
+deployment "productcatalogservice" successfully rolled out
+probe_success=0
+== propose 2026-11-05T18:44:46Z
+提案 act-a6afd326518d：pending_approval
+目标 Deployment vigil-shop/productcatalogservice：revision 44 → 43
+风险判定：approval
+  - 动作 rollout_undo
+  - 目标在实验命名空间
+  - 首次执行需人工审批
+  - 人工发起
+proposal_id=act-a6afd326518d
+== approve 2026-11-05T18:44:48Z
+执行 act-a6afd326518d：verified
+结果：{"stage": "applied", "rolled_out": true}
+验证：{"ok": true, "post": {"samples": 7, "failure_ratio": 0.14285714285714285, "failed_samples": 1}, "outcome": "improved", "raw_ref": "evidence/action-check-vigil-lab/f39e1a53a6f946c284cb7e106e590ca3.json", "runtime": {"uid": "a4c96990-fb28-40a5-bdf9-55cca7cc3062", "pods": [{"uid": "27a24389-4ac2-4df1-bac1-9e9a4dbc7b60", "name": "productcatalogservice-7b58b447f7-q7bp4", "phase": "Running", "ready": true, "restarts": 0, "last_terminated_reason": null, "last_terminated_exit_code": null}], "image": "gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef", "replicas": 1, "revision": 45, "memory_limit": "128Mi", "memory_request": "64Mi", "resource_version": "47554", "available_replicas": 1}, "samples": 7, "baseline": {"samples": 7, "failure_ratio": 1.0, "failed_samples": 7}, "post_tail": {"samples": 3, "failure_ratio": 0.0, "failed_samples": 0}, "ready_pods": 1, "pod_restarts": 0, "tail_samples": 3, "tail_failures": 0, "failed_samples": 1, "outcome_reason": "动作后业务与资源检查均通过", "window_seconds": 90, "tail_failed_samples": 0, "unavailable_samples": 0, "memory_limit_restored": true, "tail_unavailable_samples": 0}

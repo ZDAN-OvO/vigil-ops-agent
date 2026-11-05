@@ -1,7 +1,9 @@
 """受控回退：规则决定审批，执行前再校验，未知结果不重放。"""
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import psycopg
@@ -136,10 +138,17 @@ class FakeAdapter:
 
 
 class FakePrometheus:
+    """一次列表服务所有查询；列表套列表按调用顺序取值，末项兜底。"""
+
     def __init__(self, values):
         self._values = values
+        self._calls = 0
 
     async def query_range(self, context, expression, time_range, *, step_seconds):
+        values = self._values
+        if values and isinstance(values[0], list):
+            values = values[min(self._calls, len(values) - 1)]
+        self._calls += 1
         return ToolResult(
             tool_call_id=f"call-{uuid4().hex[:8]}",
             source="prometheus",
@@ -150,9 +159,7 @@ class FakePrometheus:
                 "series": [
                     {
                         "labels": {},
-                        "points": [
-                            [float(index), value] for index, value in enumerate(self._values)
-                        ],
+                        "points": [[float(index), value] for index, value in enumerate(values)],
                     }
                 ]
             },
@@ -243,7 +250,9 @@ async def propose_and_approve(adapter, prometheus, tmp_path, cleanup):
 def test_proposal_waits_for_approval_then_verifies_recovery(tmp_path, cleanup):
     adapter = FakeAdapter(rollout_plan())
     proposal, decision, attempt, saved, approval = asyncio.run(
-        propose_and_approve(adapter, FakePrometheus([1.0, 1.0, 1.0, 1.0]), tmp_path, cleanup)
+        propose_and_approve(
+            adapter, FakePrometheus([200.0, 200.0, 200.0, 200.0]), tmp_path, cleanup
+        )
     )
 
     assert decision.disposition is RiskDisposition.APPROVAL
@@ -252,40 +261,214 @@ def test_proposal_waits_for_approval_then_verifies_recovery(tmp_path, cleanup):
     assert approval is not None and approval.proposal_hash
     assert attempt.status.value == "verified"
     assert attempt.verification["ok"] is True
+    assert attempt.verification["outcome"] == "improved"
     assert adapter.calls == [True, False]
 
 
 def test_failed_business_verification_is_not_success(tmp_path, cleanup):
     adapter = FakeAdapter(rollout_plan())
     _, _, attempt, saved, _ = asyncio.run(
-        propose_and_approve(adapter, FakePrometheus([1.0, 1.0, 0.0, 0.0]), tmp_path, cleanup)
+        propose_and_approve(
+            adapter, FakePrometheus([[200.0, 200.0], [500.0, 500.0, 500.0]]), tmp_path, cleanup
+        )
     )
 
     assert attempt.status.value == "failed"
     assert saved.status is ProposalStatus.FAILED
     assert attempt.verification["tail_failures"] == 2
+    assert attempt.verification["outcome"] == "worsened"
+    assert attempt.verification["baseline"]["failure_ratio"] == 0.0
 
 
-def test_missing_data_cannot_count_as_recovery(tmp_path, cleanup):
+def test_missing_post_data_cannot_count_as_recovery(tmp_path, cleanup):
     adapter = FakeAdapter(rollout_plan())
     _, _, attempt, saved, _ = asyncio.run(
-        propose_and_approve(adapter, FakePrometheus([]), tmp_path, cleanup)
+        propose_and_approve(adapter, FakePrometheus([[200.0, 200.0], []]), tmp_path, cleanup)
+    )
+
+    assert attempt.status.value == "unknown"
+    assert attempt.verification["reason"] == "insufficient_data"
+    assert attempt.verification["outcome"] == "unknown"
+    assert saved.status is ProposalStatus.UNKNOWN
+
+
+def test_non_finite_baseline_stops_before_write(tmp_path, cleanup):
+    adapter = FakeAdapter(rollout_plan())
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                adapter,
+                FakePrometheus([[float("nan")] * 3, [200.0, 200.0]]),
+                tmp_path,
+            )
+            proposal, _ = await executor.propose_rollback(
+                deployment="productcatalogservice", reason="坏发布", actor="tester"
+            )
+            cleanup.append(proposal.id)
+            with pytest.raises(ActionError) as caught:
+                await executor.approve(proposal.id, actor="tester")
+            saved = await store.get_proposal(proposal.id)
+            attempt = await store.get_attempt(proposal.id)
+        return caught.value, saved, attempt
+
+    error, saved, attempt = asyncio.run(scenario())
+    assert error.code == "baseline_unavailable"
+    assert saved.status is ProposalStatus.FAILED
+    assert attempt is None
+    assert adapter.calls == []
+
+
+def test_rollout_gateway_status_baseline_stops_before_write(tmp_path, cleanup):
+    adapter = FakeAdapter(rollout_plan())
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                adapter,
+                FakePrometheus([[503, 503, 503], [200, 200]]),
+                tmp_path,
+            )
+            proposal, _ = await executor.propose_rollback(
+                deployment="productcatalogservice", reason="坏发布", actor="tester"
+            )
+            cleanup.append(proposal.id)
+            with pytest.raises(ActionError) as caught:
+                await executor.approve(proposal.id, actor="tester")
+            attempt = await store.get_attempt(proposal.id)
+        return caught.value, attempt
+
+    error, attempt = asyncio.run(scenario())
+    assert error.code == "baseline_unavailable"
+    assert attempt is None
+    assert adapter.calls == []
+
+
+def test_rollout_expiry_during_intent_write_stops_before_apply(monkeypatch, tmp_path, cleanup):
+    original = Store.save_attempt
+
+    async def slow_save(self, attempt):
+        await asyncio.sleep(1.1)
+        return await original(self, attempt)
+
+    monkeypatch.setattr(Store, "save_attempt", slow_save)
+    adapter = FakeAdapter(rollout_plan())
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                adapter,
+                FakePrometheus([200.0, 200.0]),
+                tmp_path,
+                approval_ttl_seconds=1,
+            )
+            proposal, _ = await executor.propose_rollback(
+                deployment="productcatalogservice", reason="坏发布", actor="tester"
+            )
+            cleanup.append(proposal.id)
+            await executor.approve(proposal.id, actor="tester")
+            saved = await store.get_proposal(proposal.id)
+            attempt = await store.get_attempt(proposal.id)
+        return saved, attempt
+
+    saved, attempt = asyncio.run(scenario())
+    assert saved.status is ProposalStatus.EXPIRED
+    assert attempt is not None
+    assert attempt.status.value == "failed"
+    assert adapter.calls == [True]
+
+
+def test_rollout_wait_exception_is_unknown(tmp_path, cleanup):
+    class BrokenWait(FakeAdapter):
+        def wait_rolled_out(self, plan, timeout_seconds):
+            raise ConnectionError("lost")
+
+    adapter = BrokenWait(rollout_plan())
+    _, _, attempt, saved, _ = asyncio.run(
+        propose_and_approve(adapter, FakePrometheus([200.0, 200.0]), tmp_path, cleanup)
+    )
+
+    assert attempt.status.value == "unknown"
+    assert attempt.verification["outcome"] == "unknown"
+    assert attempt.finished_at is not None
+    assert saved.status is ProposalStatus.UNKNOWN
+
+
+def test_rollout_tail_with_non_finite_values_is_unknown(tmp_path, cleanup):
+    adapter = FakeAdapter(rollout_plan())
+    _, _, attempt, saved, _ = asyncio.run(
+        propose_and_approve(
+            adapter,
+            FakePrometheus([[200.0, 200.0, 200.0], [200.0, 200.0, float("nan"), float("inf")]]),
+            tmp_path,
+            cleanup,
+        )
+    )
+
+    assert attempt.status.value == "unknown"
+    assert attempt.verification["outcome"] == "unknown"
+    assert attempt.verification["tail_unavailable_samples"] >= 1
+    assert saved.status is ProposalStatus.UNKNOWN
+
+
+def test_rollout_resource_failure_with_missing_post_data_is_failed(tmp_path, cleanup):
+    class NotRolledOut(FakeAdapter):
+        def wait_rolled_out(self, plan, timeout_seconds):
+            return False
+
+    adapter = NotRolledOut(rollout_plan())
+    _, _, attempt, saved, _ = asyncio.run(
+        propose_and_approve(adapter, FakePrometheus([[200.0, 200.0], []]), tmp_path, cleanup)
     )
 
     assert attempt.status.value == "failed"
-    assert attempt.verification["reason"] == "insufficient_data"
+    assert attempt.verification["outcome"] == "unknown"
     assert saved.status is ProposalStatus.FAILED
+
+
+def test_missing_baseline_stops_before_write(tmp_path, cleanup):
+    adapter = FakeAdapter(rollout_plan())
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store, adapter, FakePrometheus([[], [200.0, 200.0]]), tmp_path
+            )
+            proposal, _ = await executor.propose_rollback(
+                deployment="productcatalogservice", reason="坏发布", actor="tester"
+            )
+            cleanup.append(proposal.id)
+            with pytest.raises(ActionError) as caught:
+                await executor.approve(proposal.id, actor="tester")
+            saved = await store.get_proposal(proposal.id)
+            attempt = await store.get_attempt(proposal.id)
+        return caught.value, saved, attempt
+
+    error, saved, attempt = asyncio.run(scenario())
+    assert error.code == "baseline_unavailable"
+    assert saved.status is ProposalStatus.FAILED
+    assert attempt is None
+    assert adapter.calls == []
 
 
 def test_unknown_apply_result_stops_without_replay(tmp_path, cleanup):
     adapter = FakeAdapter(rollout_plan(), fail_on_apply=True)
     _, _, attempt, saved, _ = asyncio.run(
-        propose_and_approve(adapter, FakePrometheus([1.0, 1.0]), tmp_path, cleanup)
+        propose_and_approve(adapter, FakePrometheus([200.0, 200.0]), tmp_path, cleanup)
     )
 
     assert attempt.status.value == "unknown"
     assert saved.status is ProposalStatus.UNKNOWN
     assert adapter.calls == [True, False]
+    assert attempt.verification["outcome"] == "unknown"
+    assert attempt.verification["baseline"]["samples"] > 0
 
 
 def test_drift_after_approval_blocks_execution(tmp_path, cleanup):
@@ -315,7 +498,7 @@ def test_drift_after_approval_blocks_execution(tmp_path, cleanup):
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            executor = build_executor(store, adapter, FakePrometheus([200.0, 200.0]), tmp_path)
             proposal, _ = await executor.propose_rollback(
                 deployment="productcatalogservice", reason="坏发布", actor="tester"
             )
@@ -339,7 +522,7 @@ def test_second_approval_is_refused(tmp_path, cleanup):
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            executor = build_executor(store, adapter, FakePrometheus([200.0, 200.0]), tmp_path)
             proposal, _ = await executor.propose_rollback(
                 deployment="productcatalogservice", reason="坏发布", actor="tester"
             )
@@ -359,7 +542,7 @@ def test_approved_proposal_survives_restart_and_resumes(tmp_path, cleanup):
     async def first_process():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            executor = build_executor(store, adapter, FakePrometheus([200.0, 200.0]), tmp_path)
             proposal, _ = await executor.propose_rollback(
                 deployment="productcatalogservice", reason="坏发布", actor="tester"
             )
@@ -371,7 +554,7 @@ def test_approved_proposal_survives_restart_and_resumes(tmp_path, cleanup):
         async with Store.open(DSN) as store:
             await store.migrate()
             waiting = await store.list_proposals(status=ProposalStatus.APPROVED)
-            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            executor = build_executor(store, adapter, FakePrometheus([200.0, 200.0]), tmp_path)
             attempt = await executor.resume(proposal_id, actor="restarted")
             saved = await store.get_proposal(proposal_id)
         return waiting, attempt, saved
@@ -393,7 +576,7 @@ def test_expired_approval_is_not_executed(tmp_path, cleanup):
         async with Store.open(DSN) as store:
             await store.migrate()
             executor = build_executor(
-                store, adapter, FakePrometheus([1.0, 1.0]), tmp_path, approval_ttl_seconds=0
+                store, adapter, FakePrometheus([200.0, 200.0]), tmp_path, approval_ttl_seconds=0
             )
             proposal, _ = await executor.propose_rollback(
                 deployment="productcatalogservice", reason="坏发布", actor="tester"
@@ -402,7 +585,7 @@ def test_expired_approval_is_not_executed(tmp_path, cleanup):
             await executor.approve(proposal.id, actor="tester", defer=True)
         async with Store.open(DSN) as store:
             executor = build_executor(
-                store, adapter, FakePrometheus([1.0, 1.0]), tmp_path, approval_ttl_seconds=0
+                store, adapter, FakePrometheus([200.0, 200.0]), tmp_path, approval_ttl_seconds=0
             )
             with pytest.raises(ActionError) as caught:
                 await executor.resume(proposal.id, actor="restarted")
@@ -423,7 +606,7 @@ def test_changed_proposal_does_not_reuse_approval(tmp_path, cleanup):
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            executor = build_executor(store, adapter, FakePrometheus([200.0, 200.0]), tmp_path)
             proposal, _ = await executor.propose_rollback(
                 deployment="productcatalogservice", reason="坏发布", actor="tester"
             )
@@ -437,7 +620,7 @@ def test_changed_proposal_does_not_reuse_approval(tmp_path, cleanup):
                 (proposal.id,),
             )
         async with Store.open(DSN) as store:
-            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            executor = build_executor(store, adapter, FakePrometheus([200.0, 200.0]), tmp_path)
             with pytest.raises(ActionError) as caught:
                 await executor.resume(proposal.id, actor="restarted")
             saved = await store.get_proposal(proposal.id)
@@ -455,7 +638,7 @@ def test_repeated_resume_executes_once(tmp_path, cleanup):
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            executor = build_executor(store, adapter, FakePrometheus([200.0, 200.0]), tmp_path)
             proposal, _ = await executor.propose_rollback(
                 deployment="productcatalogservice", reason="坏发布", actor="tester"
             )
@@ -478,7 +661,7 @@ def test_rejection_after_restart_never_touches_cluster(tmp_path, cleanup):
     async def first_process():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            executor = build_executor(store, adapter, FakePrometheus([200.0, 200.0]), tmp_path)
             proposal, _ = await executor.propose_rollback(
                 deployment="productcatalogservice", reason="坏发布", actor="tester"
             )
@@ -488,7 +671,7 @@ def test_rejection_after_restart_never_touches_cluster(tmp_path, cleanup):
     async def second_process(proposal_id):
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            executor = build_executor(store, adapter, FakePrometheus([200.0, 200.0]), tmp_path)
             proposal = await executor.reject(proposal_id, actor="restarted", reason="不需要")
             attempt = await store.get_attempt(proposal_id)
         return proposal, attempt
@@ -507,12 +690,12 @@ def test_concurrent_approvals_only_one_wins(tmp_path, cleanup):
     async def scenario():
         async with Store.open(DSN) as store_a, Store.open(DSN) as store_b:
             await store_a.migrate()
-            executor_a = build_executor(store_a, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            executor_a = build_executor(store_a, adapter, FakePrometheus([200.0, 200.0]), tmp_path)
             proposal, _ = await executor_a.propose_rollback(
                 deployment="productcatalogservice", reason="坏发布", actor="tester"
             )
             cleanup.append(proposal.id)
-            executor_b = build_executor(store_b, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            executor_b = build_executor(store_b, adapter, FakePrometheus([200.0, 200.0]), tmp_path)
             results = await asyncio.gather(
                 executor_a.approve(proposal.id, actor="alice", defer=True),
                 executor_b.approve(proposal.id, actor="bob", defer=True),
@@ -534,7 +717,9 @@ def test_memory_limit_restored_is_part_of_verification(tmp_path, cleanup):
     adapter = FakeAdapter(rollout_plan(target_memory_limit="128Mi"))
 
     _, _, attempt, saved, _ = asyncio.run(
-        propose_and_approve(adapter, FakePrometheus([1.0, 1.0, 1.0, 1.0]), tmp_path, cleanup)
+        propose_and_approve(
+            adapter, FakePrometheus([200.0, 200.0, 200.0, 200.0]), tmp_path, cleanup
+        )
     )
 
     assert attempt.status.value == "verified"
@@ -550,7 +735,9 @@ def test_unrestored_memory_limit_is_not_recovery(tmp_path, cleanup):
     )
 
     _, _, attempt, saved, _ = asyncio.run(
-        propose_and_approve(adapter, FakePrometheus([1.0, 1.0, 1.0, 1.0]), tmp_path, cleanup)
+        propose_and_approve(
+            adapter, FakePrometheus([200.0, 200.0, 200.0, 200.0]), tmp_path, cleanup
+        )
     )
 
     assert attempt.status.value == "failed"
@@ -566,7 +753,9 @@ def test_pod_restarts_in_window_are_not_recovery(tmp_path, cleanup):
     )
 
     _, _, attempt, saved, _ = asyncio.run(
-        propose_and_approve(adapter, FakePrometheus([1.0, 1.0, 1.0, 1.0]), tmp_path, cleanup)
+        propose_and_approve(
+            adapter, FakePrometheus([200.0, 200.0, 200.0, 200.0]), tmp_path, cleanup
+        )
     )
 
     assert attempt.status.value == "failed"
@@ -580,7 +769,7 @@ def test_proposal_binds_memory_limits(tmp_path, cleanup):
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(store, adapter, FakePrometheus([1.0, 1.0]), tmp_path)
+            executor = build_executor(store, adapter, FakePrometheus([200.0, 200.0]), tmp_path)
             proposal, _ = await executor.propose_rollback(
                 deployment="productcatalogservice", reason="内存限额不足", actor="tester"
             )
@@ -627,38 +816,49 @@ class FakeRestartAdapter:
         service_status=200,
         service_selects=True,
         service_selects_after=None,
+        service_selects_after_call=1,
         service_selects_not_ready=False,
         live_ready=True,
         live_restarts=0,
         rebuild_available=True,
         replan_error=None,
+        replan_after=1,
+        statuses=None,
+        fail_on_dry_run=False,
     ):
         self._plan = plan
         self._rebuilt_spec_hash = rebuilt_spec_hash or plan.spec_hash
         self._fail_on_delete = fail_on_delete
         self._replan = replan
         self._service_status = service_status
+        self._statuses = list(statuses) if statuses is not None else None
         self._service_selects = service_selects
         self._service_selects_after = service_selects_after
+        self._service_selects_after_call = service_selects_after_call
         self._service_selects_not_ready = service_selects_not_ready
         self._live_ready = live_ready
         self._live_restarts = live_restarts
         self._rebuild_available = rebuild_available
         self._replan_error = replan_error
+        self._replan_after = replan_after
+        self._fail_on_dry_run = fail_on_dry_run
         self.calls = []
         self._plan_calls = 0
         self._service_calls = 0
+        self.pod_get_calls = 0
 
     def plan(self, namespace, name):
         self._plan_calls += 1
-        if self._replan_error is not None and self._plan_calls > 1:
+        if self._replan_error is not None and self._plan_calls > self._replan_after:
             raise self._replan_error
-        if self._replan is not None and self._plan_calls > 1:
+        if self._replan is not None and self._plan_calls > self._replan_after:
             return self._replan
         return self._plan
 
     def dry_run(self, plan):
         self.calls.append(("dry_run", plan.uid))
+        if self._fail_on_dry_run:
+            raise ActionError("precondition_failed", "dry-run 失败")
         return {"dry_run": True}
 
     def execute(self, plan):
@@ -682,7 +882,11 @@ class FakeRestartAdapter:
         }
 
     def pod_get(self, namespace, name, path):
-        status = self._service_status
+        self.pod_get_calls += 1
+        if self._statuses is not None:
+            status = self._statuses[min(self.pod_get_calls - 1, len(self._statuses) - 1)]
+        else:
+            status = self._service_status
         return {"ok": status == 200, "status": status, "body": "ok" if status == 200 else ""}
 
     def service_selects(self, namespace, service, pod_ip, *, ready_only=True):
@@ -691,7 +895,10 @@ class FakeRestartAdapter:
         if self._service_selects_not_ready:
             # 目标只出现在 notReadyAddresses：选择关系成立，但还没有就绪端点。
             ok = not ready_only
-        if self._service_selects_after is not None and self._service_calls > 1:
+        if (
+            self._service_selects_after is not None
+            and self._service_calls > self._service_selects_after_call
+        ):
             ok = self._service_selects_after
         return {"ok": ok, "pod_ip": pod_ip, "addresses": [pod_ip], "ready_only": ready_only}
 
@@ -870,7 +1077,7 @@ async def run_restart(
         executor = build_executor(
             store,
             FakeAdapter(rollout_plan()),
-            FakePrometheus([1.0]),
+            FakePrometheus([200.0]),
             tmp_path,
             restart_adapter=adapter,
             verify_seconds=verify_seconds,
@@ -900,6 +1107,373 @@ async def run_restart(
                 attempt = None
         saved = await store.get_proposal(proposal.id)
     return proposal, decision, attempt, saved
+
+
+def test_restart_dry_run_does_not_delete_the_pod(monkeypatch):
+    adapter = PodRestartAdapter()
+    calls: list[str] = []
+
+    class Core:
+        def read_namespaced_pod(self, name, namespace):
+            return SimpleNamespace(metadata=SimpleNamespace(uid="pod-uid-1"))
+
+        def delete_namespaced_pod(self, *args, **kwargs):
+            calls.append("delete")
+
+    class Auth:
+        def __init__(self, client):
+            pass
+
+        def create_self_subject_access_review(self, review):
+            return SimpleNamespace(status=SimpleNamespace(allowed=True))
+
+    adapter._loaded = True
+    adapter._core = Core()
+    adapter._client = object()
+    monkeypatch.setattr("aiops.actions.restart_pod.k8s_client.AuthorizationV1Api", Auth)
+
+    result = adapter.dry_run(pod_plan())
+
+    assert result == {"dry_run": True, "uid": "pod-uid-1", "allowed": True}
+    assert calls == []
+
+
+def test_restart_worsened_when_baseline_was_healthy(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment"), statuses=[200, 200] + [500] * 8
+    )
+
+    _, _, attempt, saved = asyncio.run(
+        run_restart(adapter, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert attempt.status.value == "failed"
+    assert attempt.verification["outcome"] == "worsened"
+    assert attempt.verification["baseline"]["failure_ratio"] == 0.0
+    assert saved.status is ProposalStatus.FAILED
+
+
+def test_restart_no_improvement_when_baseline_already_failing(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), statuses=[500] * 10)
+
+    _, _, attempt, saved = asyncio.run(
+        run_restart(adapter, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert attempt.status.value == "failed"
+    assert attempt.verification["outcome"] == "no_improvement"
+    assert attempt.verification["baseline"]["failure_ratio"] == 1.0
+    assert saved.status is ProposalStatus.FAILED
+
+
+def test_restart_rechecks_discardable_after_baseline(tmp_path, cleanup):
+    plan = pod_plan(namespace="vigil-experiment")
+    adapter = FakeRestartAdapter(plan, replan=replace(plan, discardable=False), replan_after=2)
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                FakeAdapter(rollout_plan()),
+                FakePrometheus([200.0]),
+                tmp_path,
+                restart_adapter=adapter,
+                verify_seconds=1,
+                sample_seconds=0.2,
+            )
+            with pytest.raises(AutoExecutionError) as caught:
+                await executor.propose_restart_pod(
+                    pod="rebuild-demo-abc",
+                    service="rebuild-demo",
+                    path="/work",
+                    reason=TEST_REASON,
+                    actor="tester",
+                    namespace="vigil-experiment",
+                )
+            cleanup.append(caught.value.proposal_id)
+            saved = await store.get_proposal(caught.value.proposal_id)
+            attempt = await store.get_attempt(caught.value.proposal_id)
+        return caught.value, saved, attempt
+
+    error, saved, attempt = asyncio.run(scenario())
+    assert error.code == "policy_denied"
+    assert saved.status is ProposalStatus.FAILED
+    assert attempt is None
+    assert adapter.pod_get_calls >= 2
+    assert [call[0] for call in adapter.calls] == []
+
+
+def test_restart_rechecks_discardable_after_dry_run(tmp_path, cleanup):
+    plan = pod_plan(namespace="vigil-experiment")
+    adapter = FakeRestartAdapter(plan, replan=replace(plan, discardable=False), replan_after=3)
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                FakeAdapter(rollout_plan()),
+                FakePrometheus([200.0]),
+                tmp_path,
+                restart_adapter=adapter,
+                verify_seconds=1,
+                sample_seconds=0.2,
+            )
+            with pytest.raises(AutoExecutionError) as caught:
+                await executor.propose_restart_pod(
+                    pod="rebuild-demo-abc",
+                    service="rebuild-demo",
+                    path="/work",
+                    reason=TEST_REASON,
+                    actor="tester",
+                    namespace="vigil-experiment",
+                )
+            cleanup.append(caught.value.proposal_id)
+            saved = await store.get_proposal(caught.value.proposal_id)
+            attempt = await store.get_attempt(caught.value.proposal_id)
+        return caught.value, saved, attempt
+
+    error, saved, attempt = asyncio.run(scenario())
+    assert error.code == "policy_denied"
+    assert saved.status is ProposalStatus.FAILED
+    assert attempt is None
+    assert [call[0] for call in adapter.calls] == ["dry_run"]
+    assert adapter.pod_get_calls >= 2
+
+
+def test_restart_expiry_during_baseline_stops_before_delete(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"))
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                FakeAdapter(rollout_plan()),
+                FakePrometheus([200.0]),
+                tmp_path,
+                restart_adapter=adapter,
+                verify_seconds=3,
+                sample_seconds=1.2,
+                approval_ttl_seconds=1,
+            )
+            with pytest.raises(AutoExecutionError) as caught:
+                await executor.propose_restart_pod(
+                    pod="rebuild-demo-abc",
+                    service="rebuild-demo",
+                    path="/work",
+                    reason=TEST_REASON,
+                    actor="tester",
+                    namespace="vigil-experiment",
+                )
+            cleanup.append(caught.value.proposal_id)
+            saved = await store.get_proposal(caught.value.proposal_id)
+            attempt = await store.get_attempt(caught.value.proposal_id)
+        return caught.value, saved, attempt
+
+    error, saved, attempt = asyncio.run(scenario())
+    assert error.code == "expired"
+    assert saved.status is ProposalStatus.EXPIRED
+    assert attempt is None
+    assert [call[0] for call in adapter.calls] == []
+
+
+def test_restart_expiry_during_intent_write_stops_before_delete(monkeypatch, tmp_path, cleanup):
+    original = Store.save_attempt
+
+    async def slow_save(self, attempt):
+        await asyncio.sleep(1.1)
+        return await original(self, attempt)
+
+    monkeypatch.setattr(Store, "save_attempt", slow_save)
+    adapter = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"))
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                FakeAdapter(rollout_plan()),
+                FakePrometheus([1.0]),
+                tmp_path,
+                restart_adapter=adapter,
+                verify_seconds=1,
+                sample_seconds=0.2,
+                approval_ttl_seconds=1,
+            )
+            proposal, _ = await executor.propose_restart_pod(
+                pod="rebuild-demo-abc",
+                service="rebuild-demo",
+                path="/work",
+                reason=TEST_REASON,
+                actor="tester",
+                namespace="vigil-experiment",
+            )
+            cleanup.append(proposal.id)
+            saved = await store.get_proposal(proposal.id)
+            attempt = await store.get_attempt(proposal.id)
+        return saved, attempt
+
+    saved, attempt = asyncio.run(scenario())
+    assert saved.status is ProposalStatus.EXPIRED
+    assert attempt is not None
+    assert attempt.status.value == "failed"
+    assert [call[0] for call in adapter.calls] == ["dry_run"]
+
+
+def test_restart_proxy_error_is_not_a_business_baseline(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), statuses=[403, 403])
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                FakeAdapter(rollout_plan()),
+                FakePrometheus([200.0]),
+                tmp_path,
+                restart_adapter=adapter,
+                verify_seconds=1,
+                sample_seconds=0.2,
+            )
+            with pytest.raises(AutoExecutionError) as caught:
+                await executor.propose_restart_pod(
+                    pod="rebuild-demo-abc",
+                    service="rebuild-demo",
+                    path="/work",
+                    reason=TEST_REASON,
+                    actor="tester",
+                    namespace="vigil-experiment",
+                )
+            cleanup.append(caught.value.proposal_id)
+            attempt = await store.get_attempt(caught.value.proposal_id)
+        return caught.value, attempt
+
+    error, attempt = asyncio.run(scenario())
+    assert error.code == "baseline_unavailable"
+    assert attempt is None
+    assert [call[0] for call in adapter.calls] == []
+
+
+def test_restart_ignores_warmup_failures_outside_the_tail(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment"),
+        statuses=[200, 200, 500, 200, 200, 200, 200],
+    )
+
+    _, _, attempt, saved = asyncio.run(
+        run_restart(adapter, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert attempt.status.value == "verified"
+    assert attempt.verification["outcome"] == "improved"
+    assert attempt.verification["post"]["failed_samples"] == 1
+    assert attempt.verification["post_tail"]["failed_samples"] == 0
+    assert saved.status is ProposalStatus.SUCCEEDED
+
+
+def test_restart_without_post_business_responses_is_unknown(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment"), statuses=[200, 200, None, None, None]
+    )
+
+    _, _, attempt, saved = asyncio.run(
+        run_restart(adapter, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert attempt.status.value == "unknown"
+    assert attempt.verification["outcome"] == "unknown"
+    assert attempt.verification["unavailable_samples"] >= 1
+    assert saved.status is ProposalStatus.UNKNOWN
+
+
+def test_restart_tail_without_business_responses_is_unknown(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(
+        pod_plan(namespace="vigil-experiment"), statuses=[200, 200] + [503] * 6
+    )
+
+    _, _, attempt, saved = asyncio.run(
+        run_restart(adapter, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert attempt.status.value == "unknown"
+    assert attempt.verification["outcome"] == "unknown"
+    assert attempt.verification["tail_unavailable_samples"] >= 1
+    assert saved.status is ProposalStatus.UNKNOWN
+
+
+def test_restart_dry_run_failure_creates_no_attempt(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), fail_on_dry_run=True)
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                FakeAdapter(rollout_plan()),
+                FakePrometheus([200.0]),
+                tmp_path,
+                restart_adapter=adapter,
+                verify_seconds=1,
+                sample_seconds=0.2,
+            )
+            with pytest.raises(AutoExecutionError) as caught:
+                await executor.propose_restart_pod(
+                    pod="rebuild-demo-abc",
+                    service="rebuild-demo",
+                    path="/work",
+                    reason=TEST_REASON,
+                    actor="tester",
+                    namespace="vigil-experiment",
+                )
+            cleanup.append(caught.value.proposal_id)
+            saved = await store.get_proposal(caught.value.proposal_id)
+            attempt = await store.get_attempt(caught.value.proposal_id)
+        return caught.value, saved, attempt
+
+    error, saved, attempt = asyncio.run(scenario())
+    assert error.code == "precondition_failed"
+    assert saved.status is ProposalStatus.FAILED
+    assert attempt is None
+    assert [call[0] for call in adapter.calls] == ["dry_run"]
+
+
+def test_restart_missing_baseline_stops_before_delete(tmp_path, cleanup):
+    adapter = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), statuses=[None, None])
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                FakeAdapter(rollout_plan()),
+                FakePrometheus([200.0]),
+                tmp_path,
+                restart_adapter=adapter,
+                verify_seconds=1,
+                sample_seconds=0.2,
+            )
+            with pytest.raises(AutoExecutionError) as caught:
+                await executor.propose_restart_pod(
+                    pod="rebuild-demo-abc",
+                    service="rebuild-demo",
+                    path="/work",
+                    reason=TEST_REASON,
+                    actor="tester",
+                    namespace="vigil-experiment",
+                )
+            proposal_id = caught.value.proposal_id
+            cleanup.append(proposal_id)
+            saved = await store.get_proposal(proposal_id)
+            attempt = await store.get_attempt(proposal_id)
+        return caught.value, saved, attempt
+
+    error, saved, attempt = asyncio.run(scenario())
+    assert error.code == "baseline_unavailable"
+    assert saved.status is ProposalStatus.FAILED
+    assert attempt is None
+    assert [call[0] for call in adapter.calls] == []
 
 
 def test_auto_restart_executes_without_human_approval(tmp_path, cleanup):
@@ -993,7 +1567,7 @@ def test_auto_restart_stops_after_a_pre_delete_failure(tmp_path, cleanup):
             executor = build_executor(
                 store,
                 FakeAdapter(rollout_plan()),
-                FakePrometheus([1.0]),
+                FakePrometheus([200.0]),
                 tmp_path,
                 restart_adapter=FakeRestartAdapter(
                     pod_plan(namespace="vigil-experiment"), service_selects=False
@@ -1245,7 +1819,7 @@ def test_authorized_auto_proposal_is_stopped_when_the_workload_failed_meanwhile(
             executor = build_executor(
                 store,
                 FakeAdapter(rollout_plan()),
-                FakePrometheus([1.0]),
+                FakePrometheus([200.0]),
                 tmp_path,
                 restart_adapter=adapter,
                 verify_seconds=1,
@@ -1323,6 +1897,8 @@ def test_restart_with_changed_template_is_not_success(tmp_path, cleanup):
 
     assert attempt.status.value == "failed"
     assert attempt.verification["template_unchanged"] is False
+    assert attempt.verification["outcome"] == "unknown"
+    assert "资源检查" in attempt.verification["outcome_reason"]
     assert saved.status is ProposalStatus.FAILED
 
 
@@ -1337,7 +1913,12 @@ def test_restart_stops_before_delete_when_service_does_not_select_pod(tmp_path, 
 
 
 def test_restart_with_service_that_stops_selecting_new_pod_is_not_success(tmp_path, cleanup):
-    adapter = FakeRestartAdapter(pod_plan(), service_selects=True, service_selects_after=False)
+    adapter = FakeRestartAdapter(
+        pod_plan(),
+        service_selects=True,
+        service_selects_after=False,
+        service_selects_after_call=3,
+    )
 
     _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
 

@@ -23,19 +23,21 @@
 - `/healthz` 永远返回 200，只表示进程存活，不读取业务状态。
 - `/work` 在状态文件内容为 `corrupt` 时返回 500，否则返回 200。
 - `/crash` 返回 202 后调用 `os._exit(1)`，用于模拟进程崩溃。
+- 启动毒化：Pod 启动时读取挂载的 `rebuild-demo-poison` ConfigMap。内容为 `yes` 就把自身状态写成 `corrupt`，新 Pod 一开始就返回 500。开关只用于 V06 的无改善与恶化安全用例，不改变 A01 的故障真值。
 
 容器内 PID 1 无法被同一 PID 命名空间的进程杀死，因此用 `/crash` 触发容器退出，由 kubelet 按 `restartPolicy: Always` 原地重启容器。liveness 探测刻意只探 `/healthz`，否则 kubelet 会自行重启容器，掩盖“自恢复不成立”这一判断。
 
 构建与导入：
 
 ```bash
-docker build -t vigil/pod-rebuild-demo:20261105 faults/a01-pod-rebuild
-k3d image import vigil/pod-rebuild-demo:20261105 -c vigil-lab
+docker build -t vigil/pod-rebuild-demo:20261105-v06 faults/a01-pod-rebuild
+k3d image import vigil/pod-rebuild-demo:20261105-v06 -c vigil-lab
 ```
 
 - 基础镜像 `python:3.12-slim`。
-- 本地镜像 ID `sha256:e5cba3e138b9`，大小 177 MB。
+- 当前镜像 ID `sha256:dc96a26602e5`，大小 177 MB，构建与 inspect 记录在 [`demos/ms08/outputs/v06/26-image.txt`](../../demos/ms08/outputs/v06/26-image.txt)。MS05 的历史证据使用旧标签 `20261105`，ID `sha256:e5cba3e138b9`。
 - 镜像只在本地构建和导入，没有推送外部仓库。
+- V06 使用 `20261105-v06` 标签，由 [`v06.sh`](v06.sh) 驱动毒化、损坏、重建和清理；脚本只接受 `vigil-experiment`，归属不符或读不到归属时直接停止，并把 `KUBECONFIG` 显式传给 `aiops`，避免检查与执行落在不同集群。
 
 ## 3. 两类信号
 

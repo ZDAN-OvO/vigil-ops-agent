@@ -184,19 +184,39 @@ class PodRestartAdapter:
         return k8s_client.V1DeleteOptions(preconditions=k8s_client.V1Preconditions(uid=plan.uid))
 
     def dry_run(self, plan: PodPlan) -> dict[str, Any]:
-        """带 UID 前置条件的删除试运行，由 API 服务器校验身份和权限。"""
+        """只读预检：重读 UID 并查询删除权限。
+
+        不用 API 的 delete dry-run：本集群会把它当成真实删除，先删掉目标 Pod。
+        """
         core = self._api()
         try:
-            core.delete_namespaced_pod(
-                plan.name,
-                plan.namespace,
-                body=self._delete_options(plan),
-                dry_run="All",
-            )
+            pod = core.read_namespaced_pod(plan.name, plan.namespace)
         except ApiException as exc:
-            code = "precondition_failed" if exc.status == 409 else "api_error"
-            raise ActionError(code, f"dry-run 删除失败：HTTP {exc.status}") from exc
-        return {"dry_run": True, "uid": plan.uid}
+            code = "not_found" if exc.status == 404 else "api_error"
+            raise ActionError(code, f"dry-run 读取 Pod 失败：HTTP {exc.status}") from exc
+        if pod.metadata.uid != plan.uid:
+            raise ActionError("precondition_failed", "dry-run 发现目标 Pod 已变化")
+        if self._client is None:
+            raise ActionError("client_error", "Kubernetes 客户端初始化失败")
+        review = k8s_client.V1SelfSubjectAccessReview(
+            spec=k8s_client.V1SelfSubjectAccessReviewSpec(
+                resource_attributes=k8s_client.V1ResourceAttributes(
+                    group="",
+                    namespace=plan.namespace,
+                    resource="pods",
+                    verb="delete",
+                    name=plan.name,
+                )
+            )
+        )
+        status = (
+            k8s_client.AuthorizationV1Api(self._client)
+            .create_self_subject_access_review(review)
+            .status
+        )
+        if status is None or status.allowed is not True:
+            raise ActionError("forbidden", "dry-run 发现没有删除 Pod 的权限")
+        return {"dry_run": True, "uid": plan.uid, "allowed": True}
 
     def execute(self, plan: PodPlan) -> dict[str, Any]:
         """删除目标 Pod；前置条件保证删的是审批时看到的那个对象。"""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,7 @@ from typing import Any
 
 from loguru import logger
 
+from aiops.actions.outcome import SampleSummary, classify_outcome
 from aiops.actions.policy import decide, target_key
 from aiops.actions.restart_pod import PodPlan, PodRestartAdapter
 from aiops.actions.rollout_undo import ActionError, RolloutUndoAdapter
@@ -24,6 +26,7 @@ from aiops.contracts import (
     ActionTarget,
     Approval,
     ApprovalDecision,
+    AttemptOutcome,
     AttemptStatus,
     AuditEvent,
     ProposalStatus,
@@ -50,6 +53,61 @@ def _initial_status(decision: RiskDecision) -> ProposalStatus:
     if decision.disposition is RiskDisposition.AUTO:
         return ProposalStatus.APPROVED
     return ProposalStatus.PENDING_APPROVAL
+
+
+# 鉴权、代理和网关错误没有拿到业务响应，不能当成业务失败样本。
+NON_BUSINESS_STATUSES = frozenset({401, 403, 502, 503, 504})
+
+
+def _business_response(item: dict[str, Any]) -> bool:
+    status = item.get("status")
+    return status is not None and status not in NON_BUSINESS_STATUSES
+
+
+def _summarise_pod_samples(samples: list[dict[str, Any]]) -> tuple[SampleSummary, int]:
+    valid = [item for item in samples if _business_response(item)]
+    failed = [item for item in valid if not (item.get("ok") and item.get("status") == 200)]
+    return SampleSummary(samples=len(valid), failed=len(failed)), len(samples) - len(valid)
+
+
+def _unknown_verification(baseline: SampleSummary, reason: str) -> dict[str, Any]:
+    empty = SampleSummary(samples=0, failed=0)
+    return {
+        "ok": False,
+        "outcome": AttemptOutcome.UNKNOWN.value,
+        "outcome_reason": reason,
+        "baseline": baseline.to_payload(),
+        "post": empty.to_payload(),
+        "post_tail": empty.to_payload(),
+    }
+
+
+def _probe_points(points: list[list[Any]]) -> tuple[list[list[Any]], int]:
+    """0 表示没有响应；鉴权与网关错误与重启路径一样不计入业务样本。"""
+    valid: list[list[Any]] = []
+    for point in points:
+        try:
+            value = float(point[1])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value != 0.0 and int(value) not in NON_BUSINESS_STATUSES:
+            valid.append(point)
+    return valid, len(points) - len(valid)
+
+
+def _probe_ok(point: list[Any]) -> bool:
+    return 200 <= float(point[1]) < 300
+
+
+def _execution_status(
+    outcome: AttemptOutcome, *, samples: int, min_samples: int, known_failure: bool = False
+) -> tuple[AttemptStatus, ProposalStatus]:
+    """只有“连结果都没采到”才记 unknown；资源检查失败是确定的失败。"""
+    if outcome is AttemptOutcome.IMPROVED:
+        return AttemptStatus.VERIFIED, ProposalStatus.SUCCEEDED
+    if outcome is AttemptOutcome.UNKNOWN and not known_failure and samples < min_samples:
+        return AttemptStatus.UNKNOWN, ProposalStatus.UNKNOWN
+    return AttemptStatus.FAILED, ProposalStatus.FAILED
 
 
 def proposal_hash(proposal: ActionProposal) -> str:
@@ -81,7 +139,7 @@ class ActionExecutor:
         approval_ttl_seconds: int = 900,
         verify_delay_seconds: float | None = None,
         verify_grace_seconds: float | None = None,
-        probe_expression: str = 'probe_success{job="frontend-probe"}',
+        probe_expression: str = 'probe_http_status_code{job="frontend-probe"}',
     ) -> None:
         self._store = store
         self._adapter = adapter
@@ -447,6 +505,46 @@ class ActionExecutor:
         ):
             raise await self._fail(proposal, "drift", "审批后目标资源已变化，需重新提案")
 
+        # 没有动作前基线就无法判断执行后是没改善还是变差，必须在写操作之前拿到。
+        try:
+            baseline = await self._business_baseline()
+        except ActionError as exc:
+            raise await self._fail(proposal, exc.code, exc.message) from exc
+
+        # 基线窗口很长，期间目标可能漂移或授权过期，写前必须再核对一次。
+        try:
+            plan = await asyncio.to_thread(
+                self._adapter.plan, proposal.target.namespace, proposal.target.name
+            )
+        except ActionError as exc:
+            raise await self._fail(proposal, exc.code, exc.message) from exc
+        if (
+            plan.deployment_uid != proposal.target.uid
+            or plan.resource_version != proposal.target.resource_version
+        ):
+            raise await self._fail(proposal, "drift", "基线期间目标资源已变化，需重新提案")
+        await self._require_approval_valid(proposal, approval)
+
+        # dry-run 不是写操作；通过后再用最终状态核对一次，才落执行意图。
+        try:
+            await asyncio.to_thread(
+                self._adapter.apply, plan, dry_run=True, proposal_id=proposal.id
+            )
+        except ActionError as exc:
+            raise await self._fail(proposal, exc.code, exc.message) from exc
+        try:
+            plan = await asyncio.to_thread(
+                self._adapter.plan, proposal.target.namespace, proposal.target.name
+            )
+        except ActionError as exc:
+            raise await self._fail(proposal, exc.code, exc.message) from exc
+        if (
+            plan.deployment_uid != proposal.target.uid
+            or plan.resource_version != proposal.target.resource_version
+        ):
+            raise await self._fail(proposal, "drift", "dry-run 后目标资源已变化，需重新提案")
+        await self._require_approval_valid(proposal, approval)
+
         attempt = ActionAttempt(
             id=f"att-{uuid.uuid4().hex[:12]}",
             proposal_id=proposal.id,
@@ -460,6 +558,7 @@ class ActionExecutor:
                 "current_image": plan.current_image,
                 "target_image": plan.target_image,
                 "approval_hash": approval.proposal_hash,
+                "baseline": baseline.to_payload(),
             },
             request={
                 "kind": "rollout_undo",
@@ -474,24 +573,20 @@ class ActionExecutor:
         except DuplicateAttempt as exc:
             raise ActionError("already_executed", str(exc)) from exc
         await self._store.set_proposal_status(proposal.id, ProposalStatus.EXECUTING)
-
-        try:
-            await asyncio.to_thread(
-                self._adapter.apply, plan, dry_run=True, proposal_id=proposal.id
-            )
-        except ActionError as exc:
-            return await self._finish(
-                attempt,
-                AttemptStatus.FAILED,
-                ProposalStatus.FAILED,
-                result={"stage": "dry_run", "code": exc.code, "message": exc.message},
-            )
-
         await self._store.update_attempt(
             attempt.id,
             status=AttemptStatus.EXECUTING,
             result={"stage": "apply_started"},
         )
+        # 最后一次校验放在所有数据库 I/O 之后、真正写集群之前。
+        if approval.expires_at is not None and datetime.now(UTC) > approval.expires_at:
+            return await self._finish(
+                attempt,
+                AttemptStatus.FAILED,
+                ProposalStatus.EXPIRED,
+                result={"code": "expired"},
+                verification=_unknown_verification(baseline, "审批在写入前过期，未写集群"),
+            )
         try:
             await asyncio.to_thread(
                 self._adapter.apply, plan, dry_run=False, proposal_id=proposal.id
@@ -502,17 +597,29 @@ class ActionExecutor:
                 AttemptStatus.UNKNOWN,
                 ProposalStatus.UNKNOWN,
                 result={"stage": "apply", "error": exc.__class__.__name__},
+                verification=_unknown_verification(baseline, "写请求结果未知，停止等待人工核实"),
             )
 
-        rolled_out = await asyncio.to_thread(
-            self._adapter.wait_rolled_out, plan, self._rollout_timeout
-        )
-        # 滚动完成后再等两个抓取周期，避免把恢复前的最后一个样本算进来。
-        await asyncio.sleep(self._verify_grace)
-        recovered_from = datetime.now(UTC)
-        await asyncio.sleep(self._verify_delay)
-        verification = await self._verify_business(recovered_from)
-        runtime = await self._runtime_state(proposal)
+        try:
+            rolled_out = await asyncio.to_thread(
+                self._adapter.wait_rolled_out, plan, self._rollout_timeout
+            )
+            # 滚动完成后再等两个抓取周期，避免把恢复前的最后一个样本算进来。
+            await asyncio.sleep(self._verify_grace)
+            recovered_from = datetime.now(UTC)
+            await asyncio.sleep(self._verify_delay)
+            verification = await self._verify_business(recovered_from)
+            runtime = await self._runtime_state(proposal)
+        except Exception as exc:  # noqa: BLE001 - 应用后无法核实，停止等待人工
+            return await self._finish(
+                attempt,
+                AttemptStatus.UNKNOWN,
+                ProposalStatus.UNKNOWN,
+                result={"stage": "verify_after_apply", "error": exc.__class__.__name__},
+                verification=_unknown_verification(
+                    baseline, "应用后无法核实业务结果，停止等待人工"
+                ),
+            )
         ready = [pod for pod in runtime.get("pods", []) if pod.get("ready")]
         restarts = sum(int(pod.get("restarts") or 0) for pod in ready)
         # 无内存限额目标时跳过该检查；有目标就必须在窗口内回到目标规格且无重启。
@@ -520,12 +627,23 @@ class ActionExecutor:
             plan.target_memory_limit is None
             or runtime.get("memory_limit") == plan.target_memory_limit
         )
-        ok = (
-            rolled_out
-            and verification.get("ok") is True
-            and limit_ok
-            and bool(ready)
-            and restarts == 0
+        post_full = SampleSummary(
+            samples=int(verification.get("samples") or 0),
+            failed=int(verification.get("failed_samples") or 0),
+        )
+        # 与恢复判定使用同一个末段窗口，避免预热失败单独触发恶化。
+        post = SampleSummary(
+            samples=int(verification.get("tail_samples") or 0),
+            failed=int(verification.get("tail_failed_samples") or 0),
+        )
+        resource_ok = rolled_out and limit_ok and bool(ready) and restarts == 0
+        post_unavailable = int(verification.get("tail_unavailable_samples") or 0)
+        decision = classify_outcome(
+            baseline,
+            post,
+            business_ok=verification.get("ok") is True,
+            resource_ok=resource_ok,
+            post_reliable=post.samples >= self._min_samples and post_unavailable == 0,
         )
         verification = {
             **verification,
@@ -533,16 +651,198 @@ class ActionExecutor:
             "memory_limit_restored": limit_ok,
             "ready_pods": len(ready),
             "pod_restarts": restarts,
+            "outcome": decision.outcome.value,
+            "outcome_reason": decision.reason,
+            "baseline": decision.baseline.to_payload(),
+            "post": post_full.to_payload(),
+            "post_tail": decision.post.to_payload(),
         }
+        attempt_status, proposal_status = _execution_status(
+            decision.outcome,
+            samples=post.samples,
+            min_samples=self._min_samples,
+            known_failure=not resource_ok,
+        )
         return await self._finish(
             attempt,
-            AttemptStatus.VERIFIED if ok else AttemptStatus.FAILED,
-            ProposalStatus.SUCCEEDED if ok else ProposalStatus.FAILED,
+            attempt_status,
+            proposal_status,
             result={"stage": "applied", "rolled_out": rolled_out},
             verification=verification,
         )
 
     async def _execute_restart(self, proposal: ActionProposal, approval: Approval) -> ActionAttempt:
+        adapter = self._restart_adapter
+        if adapter is None:
+            raise await self._fail(proposal, "adapter_missing", "未配置 restart_pod 适配器")
+        plan = await self._restart_preconditions(proposal, approval)
+
+        # 删除后旧 Pod 不再存在，基线只能在删除前采集。
+        try:
+            baseline = await self._restart_baseline(
+                plan, str(proposal.parameters.get("path") or "/")
+            )
+        except ActionError as exc:
+            raise await self._fail(proposal, exc.code, exc.message) from exc
+
+        # 采样等待期间目标可能失去可丢弃标记、Service 选择关系、停止门状态或授权有效期。
+        plan = await self._restart_preconditions(proposal, approval)
+        await self._require_approval_valid(proposal, approval)
+
+        # dry-run 不是写操作；通过后还要用最终状态再核对一次，再落执行意图。
+        try:
+            await asyncio.to_thread(adapter.dry_run, plan)
+        except ActionError as exc:
+            raise await self._fail(proposal, exc.code, exc.message) from exc
+        plan = await self._restart_preconditions(proposal, approval)
+        await self._require_approval_valid(proposal, approval)
+
+        attempt = ActionAttempt(
+            id=f"att-{uuid.uuid4().hex[:12]}",
+            proposal_id=proposal.id,
+            status=AttemptStatus.INTENT,
+            idempotency_key=proposal.idempotency_key,
+            snapshot={
+                "uid": plan.uid,
+                "resource_version": plan.resource_version,
+                "pod": plan.name,
+                "replica_set": plan.owner_name,
+                "template_hash": plan.template_hash,
+                "spec_hash": plan.spec_hash,
+                "restart_count": plan.restart_count,
+                "approval_hash": approval.proposal_hash,
+                "baseline": baseline.to_payload(),
+            },
+            request={
+                "kind": "restart_pod",
+                "namespace": plan.namespace,
+                "pod": plan.name,
+                "service": proposal.parameters.get("service"),
+                "path": proposal.parameters.get("path", "/"),
+            },
+            started_at=datetime.now(UTC),
+        )
+        try:
+            await self._store.save_attempt(attempt)
+        except DuplicateAttempt as exc:
+            raise ActionError("already_executed", str(exc)) from exc
+        await self._store.set_proposal_status(proposal.id, ProposalStatus.EXECUTING)
+        await self._store.update_attempt(
+            attempt.id, status=AttemptStatus.EXECUTING, result={"stage": "apply_started"}
+        )
+        # 最后一次校验放在所有数据库 I/O 之后、真正写集群之前。
+        if approval.expires_at is not None and datetime.now(UTC) > approval.expires_at:
+            return await self._finish(
+                attempt,
+                AttemptStatus.FAILED,
+                ProposalStatus.EXPIRED,
+                result={"code": "expired"},
+                verification=_unknown_verification(baseline, "审批在写入前过期，未写集群"),
+            )
+        try:
+            await asyncio.to_thread(adapter.execute, plan)
+        except Exception as exc:  # noqa: BLE001 - 删除结果未知时停止，不重放
+            return await self._finish(
+                attempt,
+                AttemptStatus.UNKNOWN,
+                ProposalStatus.UNKNOWN,
+                result={
+                    "stage": "apply",
+                    "error": exc.__class__.__name__,
+                    "code": getattr(exc, "code", None),
+                    "message": str(exc)[:200],
+                },
+                verification=_unknown_verification(baseline, "删除结果未知，停止等待人工核实"),
+            )
+
+        # 删除已经发出，之后的任何异常都必须落成 unknown，不能把执行记录留在 executing。
+        try:
+            new_pod = await asyncio.to_thread(adapter.wait_rebuilt, plan, self._rollout_timeout)
+            verification = await self._verify_restart(proposal, plan, new_pod)
+            live = None
+            if new_pod is not None:
+                live = await asyncio.to_thread(
+                    adapter.pod_state, plan.namespace, plan.owner_uid or "", str(new_pod["uid"])
+                )
+        except Exception as exc:  # noqa: BLE001 - 删除后结果不可核实，停止等待人工
+            return await self._finish(
+                attempt,
+                AttemptStatus.UNKNOWN,
+                ProposalStatus.UNKNOWN,
+                result={
+                    "stage": "verify_after_delete",
+                    "error": exc.__class__.__name__,
+                    "code": getattr(exc, "code", None),
+                    "message": str(exc)[:200],
+                },
+                verification=_unknown_verification(
+                    baseline, "删除后无法核实业务结果，停止等待人工"
+                ),
+            )
+        template_unchanged = bool(live) and live.get("template_hash") == plan.spec_hash
+        ready = bool(live and live.get("ready"))
+        restarts = int(live.get("restarts") or 0) if live else None
+        post_full = SampleSummary(
+            samples=int(verification.get("samples") or 0),
+            failed=int(verification.get("failed_samples") or 0),
+        )
+        # 与恢复判定使用同一个末段窗口，避免预热失败单独触发恶化。
+        post = SampleSummary(
+            samples=int(verification.get("tail_samples") or 0),
+            failed=int(verification.get("tail_failed_samples") or 0),
+        )
+        resource_ok = (
+            new_pod is not None
+            and verification.get("service_selects_new_pod") is True
+            and template_unchanged
+            and ready
+            and restarts == 0
+        )
+        known_failure = bool(verification.get("known_failure"))
+        post_unavailable = int(verification.get("tail_unavailable_samples") or 0)
+        decision = classify_outcome(
+            baseline,
+            post,
+            business_ok=verification.get("ok") is True,
+            resource_ok=resource_ok,
+            known_failure=known_failure,
+            post_reliable=(post.samples >= self._min_samples and post_unavailable == 0)
+            or known_failure,
+        )
+        verification = {
+            **verification,
+            "old_uid": plan.uid,
+            "new_uid": new_pod.get("uid") if new_pod else None,
+            "new_pod": new_pod.get("name") if new_pod else None,
+            "template_unchanged": template_unchanged,
+            "pod_ready": ready,
+            "pod_restarts": restarts,
+            "outcome": decision.outcome.value,
+            "outcome_reason": decision.reason,
+            "baseline": decision.baseline.to_payload(),
+            "post": post_full.to_payload(),
+            "post_tail": decision.post.to_payload(),
+        }
+        attempt_status, proposal_status = _execution_status(
+            decision.outcome,
+            samples=post.samples,
+            min_samples=self._min_samples,
+            known_failure=known_failure or not resource_ok,
+        )
+        return await self._finish(
+            attempt,
+            attempt_status,
+            proposal_status,
+            result={
+                "stage": "rebuilt",
+                "old_uid": plan.uid,
+                "new_uid": new_pod.get("uid") if new_pod else None,
+            },
+            verification=verification,
+        )
+
+    async def _restart_preconditions(self, proposal: ActionProposal, approval: Approval) -> PodPlan:
+        """删除前的全部硬检查；基线等待前后各跑一次，后一次用最终状态。"""
         adapter = self._restart_adapter
         if adapter is None:
             raise await self._fail(proposal, "adapter_missing", "未配置 restart_pod 适配器")
@@ -601,121 +901,79 @@ class ActionExecutor:
             adapter.service_selects, plan.namespace, service, plan.ip, ready_only=False
         )
         if endpoints.get("ok") is not True:
+            logger.warning(
+                "Service 未选中目标 Pod：service={} pod={} ip={} endpoints={}",
+                service,
+                plan.name,
+                plan.ip,
+                endpoints,
+            )
             raise await self._fail(
                 proposal,
                 "service_not_selecting",
                 "验证 Service 未选中目标 Pod，删除前停止",
             )
+        return plan
 
-        attempt = ActionAttempt(
-            id=f"att-{uuid.uuid4().hex[:12]}",
-            proposal_id=proposal.id,
-            status=AttemptStatus.INTENT,
-            idempotency_key=proposal.idempotency_key,
-            snapshot={
-                "uid": plan.uid,
-                "resource_version": plan.resource_version,
-                "pod": plan.name,
-                "replica_set": plan.owner_name,
-                "template_hash": plan.template_hash,
-                "spec_hash": plan.spec_hash,
-                "restart_count": plan.restart_count,
-                "approval_hash": approval.proposal_hash,
-            },
-            request={
-                "kind": "restart_pod",
-                "namespace": plan.namespace,
-                "pod": plan.name,
-                "service": proposal.parameters.get("service"),
-                "path": proposal.parameters.get("path", "/"),
-            },
-            started_at=datetime.now(UTC),
-        )
-        try:
-            await self._store.save_attempt(attempt)
-        except DuplicateAttempt as exc:
-            raise ActionError("already_executed", str(exc)) from exc
-        await self._store.set_proposal_status(proposal.id, ProposalStatus.EXECUTING)
-
-        try:
-            await asyncio.to_thread(adapter.dry_run, plan)
-        except ActionError as exc:
-            return await self._finish(
-                attempt,
-                AttemptStatus.FAILED,
-                ProposalStatus.FAILED,
-                result={"stage": "dry_run", "code": exc.code, "message": exc.message},
+    async def _require_approval_valid(self, proposal: ActionProposal, approval: Approval) -> None:
+        if approval.expires_at is not None and datetime.now(UTC) > approval.expires_at:
+            raise await self._fail(
+                proposal, "expired", "审批已过期，需重新提案", ProposalStatus.EXPIRED
             )
 
-        await self._store.update_attempt(
-            attempt.id, status=AttemptStatus.EXECUTING, result={"stage": "apply_started"}
-        )
-        try:
-            await asyncio.to_thread(adapter.execute, plan)
-        except Exception as exc:  # noqa: BLE001 - 删除结果未知时停止，不重放
-            return await self._finish(
-                attempt,
-                AttemptStatus.UNKNOWN,
-                ProposalStatus.UNKNOWN,
-                result={
-                    "stage": "apply",
-                    "error": exc.__class__.__name__,
-                    "code": getattr(exc, "code", None),
-                    "message": str(exc)[:200],
-                },
+    async def _restart_baseline(self, plan: PodPlan, path: str) -> SampleSummary:
+        """删除前直接从目标 Pod 采样；连接级失败不能当作基线。"""
+        adapter = self._restart_adapter
+        if adapter is None:
+            raise ActionError("adapter_missing", "未配置 restart_pod 适配器")
+        samples: list[dict[str, Any]] = []
+        for index in range(self._min_samples):
+            samples.append(
+                await asyncio.to_thread(adapter.pod_get, plan.namespace, plan.name, path)
             )
+            if index + 1 < self._min_samples:
+                await asyncio.sleep(self._sample_seconds)
+        summary, unavailable = _summarise_pod_samples(samples)
+        if unavailable:
+            raise ActionError(
+                "baseline_unavailable",
+                f"动作前有 {unavailable} 次请求没有取得业务响应，停止",
+            )
+        return summary
 
-        # 删除已经发出，之后的任何异常都必须落成 unknown，不能把执行记录留在 executing。
-        try:
-            new_pod = await asyncio.to_thread(adapter.wait_rebuilt, plan, self._rollout_timeout)
-            verification = await self._verify_restart(proposal, plan, new_pod)
-            live = None
-            if new_pod is not None:
-                live = await asyncio.to_thread(
-                    adapter.pod_state, plan.namespace, plan.owner_uid or "", str(new_pod["uid"])
-                )
-        except Exception as exc:  # noqa: BLE001 - 删除后结果不可核实，停止等待人工
-            return await self._finish(
-                attempt,
-                AttemptStatus.UNKNOWN,
-                ProposalStatus.UNKNOWN,
-                result={
-                    "stage": "verify_after_delete",
-                    "error": exc.__class__.__name__,
-                    "code": getattr(exc, "code", None),
-                    "message": str(exc)[:200],
-                },
+    async def _business_baseline(self) -> SampleSummary:
+        end = datetime.now(UTC)
+        start = end - timedelta(seconds=self._verify_seconds)
+        result = await self._query_probe(start, end)
+        if result.error is not None:
+            raise ActionError("baseline_unavailable", f"动作前查询失败：{result.error.code}")
+        points = [
+            point
+            for series in (result.data or {}).get("series", [])
+            for point in series.get("points", [])
+        ]
+        valid, unavailable = _probe_points(points)
+        if len(valid) < self._min_samples:
+            raise ActionError(
+                "baseline_unavailable",
+                f"动作前有效样本不足（无效 {unavailable} 个），停止",
             )
-        template_unchanged = bool(live) and live.get("template_hash") == plan.spec_hash
-        ready = bool(live and live.get("ready"))
-        restarts = int(live.get("restarts") or 0) if live else None
-        ok = (
-            new_pod is not None
-            and verification.get("ok") is True
-            and verification.get("service_selects_new_pod") is True
-            and template_unchanged
-            and ready
-            and restarts == 0
+        failed = sum(1 for point in valid if not _probe_ok(point))
+        return SampleSummary(samples=len(valid), failed=failed)
+
+    async def _query_probe(self, start: datetime, end: datetime):
+        context = ToolContext.create(
+            investigation_id=f"action-check-{self._cluster}",
+            cluster=self._cluster,
+            namespace=self._namespace,
+            runtime_path=self._runtime_path,
+            timeout_seconds=30,
         )
-        verification = {
-            **verification,
-            "old_uid": plan.uid,
-            "new_uid": new_pod.get("uid") if new_pod else None,
-            "new_pod": new_pod.get("name") if new_pod else None,
-            "template_unchanged": template_unchanged,
-            "pod_ready": ready,
-            "pod_restarts": restarts,
-        }
-        return await self._finish(
-            attempt,
-            AttemptStatus.VERIFIED if ok else AttemptStatus.FAILED,
-            ProposalStatus.SUCCEEDED if ok else ProposalStatus.FAILED,
-            result={
-                "stage": "rebuilt",
-                "old_uid": plan.uid,
-                "new_uid": new_pod.get("uid") if new_pod else None,
-            },
-            verification=verification,
+        return await self._prometheus.query_range(
+            context,
+            self._probe_expression,
+            TimeRange(start=start, end=end),
+            step_seconds=self._sample_seconds,
         )
 
     async def _verify_restart(
@@ -724,9 +982,16 @@ class ActionExecutor:
         """在窗口内反复请求重建后的 Pod，只看末尾连续样本，并确认 Service 已接上它。"""
         adapter = self._restart_adapter
         if adapter is None:
-            return {"ok": False, "reason": "adapter_missing"}
+            return {"ok": False, "reason": "adapter_missing", "samples": 0, "failed_samples": 0}
         if new_pod is None:
-            return {"ok": False, "reason": "no_new_pod", "service_selects_new_pod": False}
+            return {
+                "ok": False,
+                "reason": "no_new_pod",
+                "samples": 0,
+                "failed_samples": 0,
+                "known_failure": True,
+                "service_selects_new_pod": False,
+            }
         service = str(proposal.parameters.get("service") or "")
         path = str(proposal.parameters.get("path") or "/")
         await asyncio.sleep(min(5.0, self._verify_grace))
@@ -740,24 +1005,32 @@ class ActionExecutor:
         endpoints = await asyncio.to_thread(
             adapter.service_selects, plan.namespace, service, str(new_pod.get("ip") or "")
         )
-        if len(samples) < self._min_samples:
+        summary, unavailable = _summarise_pod_samples(samples)
+        raw_tail = samples[-self._min_samples :]
+        tail = [item for item in raw_tail if _business_response(item)]
+        tail_unavailable = len(raw_tail) - len(tail)
+        if summary.samples < self._min_samples:
             return {
                 "ok": False,
                 "reason": "insufficient_data",
-                "samples": len(samples),
+                "samples": summary.samples,
+                "failed_samples": summary.failed,
+                "unavailable_samples": unavailable,
+                "tail_samples": 0,
+                "tail_failed_samples": 0,
+                "tail_unavailable_samples": tail_unavailable,
                 "service_selects_new_pod": endpoints.get("ok"),
             }
-        failures = [item for item in samples if not (item["ok"] and item["status"] == 200)]
-        tail_failures = sum(
-            1
-            for item in samples[-self._min_samples :]
-            if not (item["ok"] and item["status"] == 200)
-        )
+        tail_failures = sum(1 for item in tail if not (item["ok"] and item["status"] == 200))
         return {
             "ok": tail_failures == 0,
-            "samples": len(samples),
-            "failed_samples": len(failures),
+            "samples": summary.samples,
+            "failed_samples": summary.failed,
             "tail_failures": tail_failures,
+            "tail_samples": len(tail),
+            "tail_failed_samples": tail_failures,
+            "tail_unavailable_samples": tail_unavailable,
+            "unavailable_samples": unavailable,
             "window_seconds": self._verify_seconds,
             "service": service,
             "path": path,
@@ -777,37 +1050,46 @@ class ActionExecutor:
         """只看执行之后的样本；故障窗口内的失败不能算作恢复，也不能算成功。"""
         end = datetime.now(UTC)
         start = max(since, end - timedelta(seconds=self._verify_seconds))
-        context = ToolContext.create(
-            investigation_id=f"action-check-{self._cluster}",
-            cluster=self._cluster,
-            namespace=self._namespace,
-            runtime_path=self._runtime_path,
-            timeout_seconds=30,
-        )
-        result = await self._prometheus.query_range(
-            context,
-            self._probe_expression,
-            TimeRange(start=start, end=end),
-            step_seconds=self._sample_seconds,
-        )
+        result = await self._query_probe(start, end)
         if result.error is not None:
-            return {"ok": False, "reason": "query_failed", "error": result.error.code}
+            return {
+                "ok": False,
+                "reason": "query_failed",
+                "error": result.error.code,
+                "samples": 0,
+                "failed_samples": 0,
+            }
         points = [
             point
             for series in (result.data or {}).get("series", [])
             for point in series.get("points", [])
         ]
-        if len(points) < self._min_samples:
-            return {"ok": False, "reason": "insufficient_data", "samples": len(points)}
-        failed = [point for point in points if point[1] != 1.0]
+        valid, unavailable = _probe_points(points)
+        failed = [point for point in valid if not _probe_ok(point)]
+        raw_tail = points[-self._min_samples :]
+        tail, tail_unavailable = _probe_points(raw_tail)
+        if len(valid) < self._min_samples:
+            return {
+                "ok": False,
+                "reason": "insufficient_data",
+                "samples": len(valid),
+                "failed_samples": len(failed),
+                "unavailable_samples": unavailable,
+                "tail_samples": 0,
+                "tail_failed_samples": 0,
+                "tail_unavailable_samples": tail_unavailable,
+            }
         # 恢复判定看窗口末段的连续样本；滚动刚结束时的预热失败单独记录，不算恢复失败。
-        tail = points[-self._min_samples :]
-        tail_failures = sum(1 for point in tail if point[1] != 1.0)
+        tail_failures = sum(1 for point in tail if not _probe_ok(point))
         return {
             "ok": tail_failures == 0,
-            "samples": len(points),
+            "samples": len(valid),
             "failed_samples": len(failed),
             "tail_failures": tail_failures,
+            "tail_samples": len(tail),
+            "tail_failed_samples": tail_failures,
+            "tail_unavailable_samples": tail_unavailable,
+            "unavailable_samples": unavailable,
             "window_seconds": self._verify_seconds,
             "raw_ref": result.raw_ref,
         }

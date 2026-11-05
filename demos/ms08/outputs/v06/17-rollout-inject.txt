@@ -1,0 +1,15 @@
+== inject 2026-11-05T16:13:39Z
+deployment.apps/productcatalogservice image updated
+Waiting for deployment "productcatalogservice" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "productcatalogservice" rollout to finish: 1 old replicas are pending termination...
+deployment "productcatalogservice" successfully rolled out
+probe_success=1
+probe_success=1
+probe_success=1
+probe_success=1
+probe_success=1
+probe_success=1
+probe_success=1
+probe_success=0
+vigil/productcatalogservice:canary-20261104
+1/1

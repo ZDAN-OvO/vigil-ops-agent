@@ -1,0 +1,14 @@
+Using CPython 3.12.14 interpreter at: /home/zdan/.pyenv/versions/3.12.14/bin/python3.12
+Creating virtual environment at: .venv
+   Building vigil-aiops @ file:///tmp/v06-trunk
+      Built vigil-aiops @ file:///tmp/v06-trunk
+Installed 68 packages in 19ms
+提案 act-7fb23f4445e4：succeeded
+目标 Pod vigil-experiment/rebuild-demo-f4b67fbd9-xznkk：rebuild-demo-f4b67fbd9-xznkk（rebuild-demo-f4b67fbd9）
+风险判定：auto
+  - 动作 restart_pod 命中自动执行规则
+  - 目标在专用实验命名空间：vigil-experiment
+  - 目标 Pod 可丢弃，删除后由 ReplicaSet 重建
+  - 执行后按 Pod 与 Service 验证恢复
+执行 att-2c3eaad8d02b：verified
+验证：{"ok": true, "path": "/work", "new_pod": "rebuild-demo-f4b67fbd9-pwxxj", "new_uid": "b2dfada5-3415-40d2-89c5-89e3ffe4d9c7", "old_uid": "5435dcfb-ba88-4ea3-bcb8-cedf527df332", "samples": 6, "service": "rebuild-demo", "pod_ready": true, "pod_restarts": 0, "tail_failures": 0, "failed_samples": 0, "window_seconds": 90, "service_addresses": ["10.42.0.186"], "template_unchanged": true, "service_selects_new_pod": true}

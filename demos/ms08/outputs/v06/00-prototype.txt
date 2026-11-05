@@ -1,0 +1,14 @@
+== before 2026-11-05T15:40:13Z
+rebuild-demo-89b95f6f8-gw7hg   39dadded-e35b-42df-ab3b-6c200198412e   true
+work_before=200
+== poison on 2026-11-05T15:40:15Z
+configmap/rebuild-demo-poison patched
+pod "rebuild-demo-89b95f6f8-gw7hg" deleted from vigil-experiment namespace
+old_pod=rebuild-demo-89b95f6f8-gw7hg new_pod=rebuild-demo-89b95f6f8-bcb7p
+rebuild-demo-89b95f6f8-bcb7p   6bfcf248-dc46-4d46-81d5-862a69cf0fe1   true
+rebuild-demo-89b95f6f8-gw7hg   39dadded-e35b-42df-ab3b-6c200198412e   true
+state_file=corrupt
+work_after_1=500
+work_after_2=500
+work_after_3=500
+== done 2026-11-05T15:40:25Z

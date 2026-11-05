@@ -220,6 +220,15 @@ class AttemptStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class AttemptOutcome(StrEnum):
+    """动作后业务结果与动作前基线的比较；未知不等于失败。"""
+
+    IMPROVED = "improved"
+    NO_IMPROVEMENT = "no_improvement"
+    WORSENED = "worsened"
+    UNKNOWN = "unknown"
+
+
 class ApprovalDecision(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"
