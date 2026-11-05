@@ -589,6 +589,14 @@ class Store:
             rows = await cursor.fetchall()
         return [AuditEvent(**row) for row in rows]
 
+    async def count_proposals_by_disposition(self, disposition: str) -> int:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT count(*) FROM action_proposals WHERE risk_disposition = %s", (disposition,)
+            )
+            row = await cursor.fetchone()
+        return int(next(iter(row.values())))
+
     async def save_proposal(self, proposal: ActionProposal, decision: RiskDecision) -> None:
         async with self._pool.connection() as conn:
             try:

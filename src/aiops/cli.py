@@ -26,6 +26,7 @@ from aiops.contracts import (
     TimeRange,
 )
 from aiops.db import Store, StoreUnavailable
+from aiops.eval import evaluate, load_manifest
 from aiops.investigation.explain import ExplainError, ExplainService
 from aiops.investigation.factory import open_runtime
 from aiops.investigation.runtime import Report
@@ -378,6 +379,51 @@ def _duration(since: datetime) -> str:
     if seconds < 3600:
         return f"{seconds // 60}m{seconds % 60:02d}s"
     return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+
+@app.command("eval")
+def eval_report(
+    manifest_path: str = typer.Option("eval/scenarios.json", help="冻结的评估清单"),
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """按冻结清单核对 MVP 门槛；只读数据库记录，不触发运行。"""
+
+    async def run():
+        manifest = load_manifest(Path(manifest_path))
+        async with Store.open(_require_dsn()) as store:
+            return await evaluate(manifest, store)
+
+    try:
+        report = asyncio.run(run())
+    except (OSError, ValueError) as exc:
+        typer.echo(f"清单读取失败：{exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    if output == OutputFormat.JSON:
+        typer.echo(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "status": "passed" if report.passed else "failed",
+                    "data": {
+                        "frozen_at": report.frozen_at,
+                        "criteria": [
+                            {"id": item.id, "passed": item.passed, "detail": item.detail}
+                            for item in report.criteria
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+            )
+        )
+    else:
+        for item in report.criteria:
+            mark = "通过" if item.passed else "未通过"
+            typer.echo(f"{item.id} {mark}：{item.detail}")
+    raise typer.Exit(code=0 if report.passed else 1)
 
 
 @app.command()

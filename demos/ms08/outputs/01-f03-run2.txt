@@ -1,0 +1,6 @@
+调查 inv-6b11e68bb914：aborted
+终止原因：模型调用失败：exhausted
+证据 11 条，工具调用 14 次
+  - [refuted] 前端延迟升高源于 frontend Deployment 最近的模板/revision 变更（资源规格或版本变化），而非业务代码错误。
+  - [pending] 真实瓶颈在下游依赖服务（如购物车/目录服务），frontend 只是被动等待，依赖侧存在重启、OOM 或资源规格不足。
+  - [supported] 调用链在入口层被改变（Service 选择器、端口或代理/中间层），导致额外的延迟而服务端未出错。
