@@ -1,0 +1,7 @@
+调查 inv-4ce0757b47b0：completed
+动作提案：act-d0b364a79ffd
+根因候选：根因是 currencyservice Deployment 当前模板（revision 8，change_cause 'vigil rollback act-150f872a4097'）把容器内存 limit 从历史 revision 7 的 128Mi 降到 16Mi、request 从 64Mi 降到 8Mi，容器启动后即被 OOMKilled（exitCode=137，last_terminated.reason=OOMKilled，restart_count=3，CrashLoopBackOff），Pod 始终 NotReady，Service 10.43.42.101:7000 无可达后端，frontend 调用货币服务被拒（connect: connection refused）从而对 /product/* 返回 500。frontend 自身健康（Ready、restartCount=0、/_healthz 200），Service 选择器与端口正常。需要说明：revision 7 与 revision 8 镜像一致，差异仅为资源规格，属于内存限额不足类故障；单纯重建 Pod 会沿用当前 16Mi limit 的 Deployment 模板，无法修复该故障，因此不建议重建 Pod；存在资源规格更充足的历史模板 revision 7（128Mi/64Mi），可考虑回退到该模板（需规则判定与人工审批），并进一步确认为何上一次 rollback 落到了 16Mi 模板。证据边界：prometheus.query_range 因连接失败不可用，缺少内存使用曲线与服务端侧指标佐证，OOM 结论基于 kubelet 状态与事件。runbook 引用：rb-oom-limit v1（仅作排查顺序参考，未作为已观测事实）。
+证据 8 条，工具调用 9 次
+  - [supported] currencyservice 容器内存限额不足，进程被 OOMKilled 后反复重启，导致 frontend 首页 500
+  - [inconclusive] 近期对 currencyservice（或 frontend 依赖链）的发布变更引入了不兼容的模板/配置，使 Pod 反复重启
+  - [supported] frontend 500 来自依赖链路（Service 选择器或 currencyservice 不可用）而非 frontend 自身，且 currencyservice 服务端内部无对应错误证据

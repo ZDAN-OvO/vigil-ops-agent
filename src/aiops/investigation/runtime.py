@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, TypedDict
@@ -90,6 +90,8 @@ class State(TypedDict, total=False):
     termination: str
     outcome: str
     proposal_id: str
+    runbook_ids: list[str]
+    runbook_uses: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,7 @@ class Report:
     evidence_count: int
     tool_call_count: int
     proposal_id: str | None = None
+    runbook_uses: list[dict[str, Any]] = field(default_factory=list)
 
 
 class InvestigationRuntime:
@@ -161,6 +164,7 @@ class InvestigationRuntime:
             evidence_count=len(final.get("evidence") or []),
             tool_call_count=self._used_tool_calls,
             proposal_id=final.get("proposal_id") or None,
+            runbook_uses=final.get("runbook_uses") or [],
         )
 
     def _build(self):
@@ -260,6 +264,7 @@ class InvestigationRuntime:
         hypotheses = list(state.get("hypotheses") or [])
         evidence = list(state.get("evidence") or [])
         failures = list(state.get("failures") or [])
+        runbook_ids = list(state.get("runbook_ids") or [])
 
         for payload in state.get("queries") or []:
             block = self._tool_budget_block()
@@ -303,8 +308,26 @@ class InvestigationRuntime:
             evidence.append(
                 await self._record_evidence(request, hypotheses[request.hypothesis]["id"], result)
             )
+            if request.tool.startswith("knowledge."):
+                for runbook_id in self._runbook_ids(result):
+                    if runbook_id not in runbook_ids:
+                        runbook_ids.append(runbook_id)
 
-        return {"evidence": evidence, "failures": failures, "queries": []}
+        return {
+            "evidence": evidence,
+            "failures": failures,
+            "queries": [],
+            "runbook_ids": runbook_ids,
+        }
+
+    @staticmethod
+    def _runbook_ids(result: ToolResult) -> list[str]:
+        data = result.data or {}
+        if "items" in data:
+            return [str(item.get("id")) for item in data["items"] if item.get("id")]
+        if data.get("id"):
+            return [str(data["id"])]
+        return []
 
     def _tool_context(self) -> ToolContext:
         remaining = self._deadline - time.monotonic()
@@ -368,6 +391,7 @@ class InvestigationRuntime:
         hypotheses = list(state.get("hypotheses") or [])
         evidence = list(state.get("evidence") or [])
         failures = list(state.get("failures") or [])
+        runbook_ids = list(state.get("runbook_ids") or [])
         try:
             call = await self._model.complete_json(
                 assess_messages(
@@ -395,8 +419,12 @@ class InvestigationRuntime:
                     evidence[verdict.evidence_index]["id"], verdict.relation
                 )
 
+        knowledge_only = assessment.root_cause and not any(
+            item["relation"] == "supporting" and item["source"] != "knowledge" for item in evidence
+        )
+
         proposal_id = ""
-        if assessment.finish and assessment.action_kind != "none":
+        if assessment.finish and assessment.action_kind != "none" and not knowledge_only:
             if not assessment.root_cause:
                 # 没有根因候选时不允许提案；否则自相矛盾的输出也能进入审批。
                 await self._note_action(
@@ -405,20 +433,88 @@ class InvestigationRuntime:
             else:
                 supporting = []
                 for index in assessment.action_evidence:
-                    if 0 <= index < len(evidence) and evidence[index]["relation"] == "supporting":
+                    if (
+                        0 <= index < len(evidence)
+                        and evidence[index]["relation"] == "supporting"
+                        and evidence[index]["source"] != "knowledge"
+                    ):
                         evidence_id = evidence[index]["id"]
                         if evidence_id not in supporting:
                             supporting.append(evidence_id)
                 proposal_id = await self._propose_action(assessment, supporting) or ""
+
+        runbook_uses = list(state.get("runbook_uses") or [])
+        unknown = sorted(
+            {use.runbook_id for use in assessment.runbook_uses if use.runbook_id not in runbook_ids}
+        )
+        for runbook_id in unknown:
+            await self._audit_runbook("runbook.unknown", runbook_id, "引用了未取回的条目")
+        if unknown:
+            # 结论里可能已经写了这个条目，不能只丢掉结构化字段后继续。
+            return {
+                "aborted": True,
+                "termination": f"引用了未取回的 runbook：{','.join(unknown)}",
+            }
+        for use in assessment.runbook_uses:
+            event = "runbook.accepted" if use.accepted else "runbook.rejected"
+            await self._audit_runbook(event, use.runbook_id, use.reason)
+            runbook_uses.append(
+                {
+                    "runbook_id": use.runbook_id,
+                    "accepted": use.accepted,
+                    "reason": use.reason,
+                }
+            )
+        if assessment.finish and runbook_ids:
+            judged = {use.runbook_id for use in assessment.runbook_uses}
+            missing = [runbook_id for runbook_id in runbook_ids if runbook_id not in judged]
+            if missing:
+                await self._audit_runbook("runbook.unjudged", ",".join(missing), "查询过但没有判定")
+                return {
+                    "aborted": True,
+                    "termination": f"未判定已查询的 runbook：{','.join(missing)}",
+                }
+        if knowledge_only:
+            # 只有 runbook 参考、没有集群证据时不能确认根因。
+            await self._store.append_audit(
+                [
+                    AuditEvent(
+                        id=f"audit-{uuid.uuid4().hex[:12]}",
+                        correlation_id=self._investigation_id,
+                        actor="investigation-runtime",
+                        event="conclusion.rejected_knowledge_only",
+                        occurred_at=datetime.now(UTC),
+                        payload={"reason": "没有非 knowledge 来源的支撑证据"},
+                    )
+                ]
+            )
 
         return {
             "hypotheses": hypotheses,
             "evidence": evidence,
             "queries": [query.model_dump() for query in assessment.next_queries],
             "finished": assessment.finish,
-            "conclusion": assessment.conclusion if assessment.root_cause else "",
+            "conclusion": (
+                assessment.conclusion if assessment.root_cause and not knowledge_only else ""
+            ),
             "proposal_id": proposal_id,
+            "runbook_uses": runbook_uses,
+            "runbook_ids": runbook_ids,
         }
+
+    async def _audit_runbook(self, event: str, runbook_id: str, reason: str) -> None:
+        await self._store.append_audit(
+            [
+                AuditEvent(
+                    id=f"audit-{uuid.uuid4().hex[:12]}",
+                    correlation_id=self._investigation_id,
+                    actor="investigation-runtime",
+                    event=event,
+                    occurred_at=datetime.now(UTC),
+                    payload={"runbook_id": runbook_id, "reason": reason[:300]},
+                )
+            ]
+        )
 
     async def _propose_action(self, assessment: Assessment, supporting: list[str]) -> str | None:
         """模型只能提案；规则仍会判定，执行仍要审批。提案失败不影响结论。"""

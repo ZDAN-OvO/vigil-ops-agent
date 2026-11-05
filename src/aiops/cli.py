@@ -6,6 +6,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -27,6 +28,7 @@ from aiops.contracts import (
 from aiops.db import Store, StoreUnavailable
 from aiops.investigation.factory import open_runtime
 from aiops.investigation.runtime import Report
+from aiops.knowledge import load_runbooks
 from aiops.tools.prometheus import PrometheusClient
 from aiops.webhook import build_app
 
@@ -374,6 +376,47 @@ def _duration(since: datetime) -> str:
     if seconds < 3600:
         return f"{seconds // 60}m{seconds % 60:02d}s"
     return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+
+@app.command("knowledge")
+def knowledge(
+    action: str = typer.Argument("list", help="list 或 import"),
+    path: str = typer.Option("runbooks", help="import 时的 JSON 文件或目录"),
+) -> None:
+    """登记与查看结构化 runbook；导入只写知识表，不改集群。"""
+
+    async def run():
+        async with Store.open(_require_dsn()) as store:
+            await store.migrate()
+            if action == "import":
+                target = Path(path)
+                files = sorted(target.glob("*.json")) if target.is_dir() else [target]
+                # 先解析全部文件再写库；有坏文件时一条都不写，避免半套知识生效。
+                parsed = []
+                for file in files:
+                    try:
+                        parsed.extend(load_runbooks(file))
+                    except (OSError, ValueError) as exc:
+                        raise ActionError("invalid_runbook", f"{file}：{exc}") from exc
+                for runbook in parsed:
+                    await store.upsert_runbook(runbook)
+                return len(parsed), []
+            return 0, await store.list_runbooks(limit=50)
+
+    try:
+        count, items = asyncio.run(run())
+    except ActionError as exc:
+        typer.echo(f"导入失败（{exc.code}）：{exc.message}", err=True)
+        raise typer.Exit(code=1) from exc
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    if action == "import":
+        typer.echo(f"已导入 {count} 条 runbook")
+        return
+    for item in items:
+        typer.echo(f"{item.id} v{item.version} {item.title}｜{item.summary}")
 
 
 @app.command("act")

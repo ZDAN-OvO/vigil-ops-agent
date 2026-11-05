@@ -1,0 +1,3 @@
+investigation inv-2facf6216bc0 ('completed', 12, 4)
+runbook events 0
+knowledge queries 1

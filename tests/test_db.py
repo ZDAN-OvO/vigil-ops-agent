@@ -20,6 +20,7 @@ from aiops.contracts import (
     ToolCall,
 )
 from aiops.db import Store
+from aiops.knowledge import Runbook
 
 DSN = Settings().database_url
 pytestmark = pytest.mark.skipif(not DSN, reason="未配置 VIGIL_DATABASE_URL，跳过真实库测试")
@@ -204,3 +205,35 @@ def test_completed_requires_conclusion(ids):
     assert saved is not None
     assert saved.status is InvestigationStatus.INCONCLUSIVE
     assert saved.termination_reason == "证据不足"
+
+
+def test_runbook_roundtrip_and_query(tmp_path):
+    runbook = Runbook(
+        id="rb-test-oom",
+        version=1,
+        title="测试 runbook",
+        summary="内存限额排查",
+        applies_to=("currencyservice",),
+        symptoms=("OOMKilled",),
+        steps=("比较历史模板",),
+        source="tests",
+    )
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            await store.upsert_runbook(runbook)
+            by_service = await store.list_runbooks(service="currencyservice", limit=5)
+            by_other = await store.list_runbooks(service="frontend", limit=5)
+            by_query = await store.list_runbooks(query="OOMKilled", limit=5)
+            detail = await store.get_runbook("rb-test-oom")
+            async with store._pool.connection() as conn:
+                await conn.execute("DELETE FROM runbooks WHERE id = %s", ("rb-test-oom",))
+            return by_service, by_other, by_query, detail
+
+    by_service, by_other, by_query, detail = run(scenario())
+
+    assert "rb-test-oom" in [item.id for item in by_service]
+    assert all(item.id != "rb-test-oom" for item in by_other)
+    assert "rb-test-oom" in [item.id for item in by_query]
+    assert detail is not None and detail.steps == ("比较历史模板",)

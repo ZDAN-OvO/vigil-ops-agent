@@ -1,0 +1,16 @@
+2026-11-05T05:40:16Z RESTORE start revision=12 limit=16Mi restarts=5
+2026-11-05T05:40:20Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:40:30Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:40:40Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:40:50Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:41:01Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:41:11Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:41:21Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:41:32Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:41:42Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:41:52Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:42:02Z RECOVER home=200 probe=0 alert=firing restarts=0
+2026-11-05T05:42:13Z RECOVER home=200 probe=0 alert=firing restarts=0
+2026-11-05T05:42:23Z RECOVER home=200 probe=1 alert=firing restarts=0
+2026-11-05T05:42:33Z RECOVER home=200 probe=1 alert=none restarts=0
+2026-11-05T05:42:33Z RESTORED revision=13 limit=128Mi restarts=0 | currencyservice-567db8cb65-nrlrg restarts=0 ready=true last=/ state=

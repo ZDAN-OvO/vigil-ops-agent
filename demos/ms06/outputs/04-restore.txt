@@ -1,0 +1,13 @@
+2026-11-05T05:11:29Z RESTORE start revision=8 limit=16Mi restarts=4
+2026-11-05T05:11:43Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:11:53Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:12:03Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:12:13Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:12:24Z RECOVER home=500 probe=0 alert=firing restarts=0
+2026-11-05T05:12:34Z RECOVER home=200 probe=0 alert=firing restarts=0
+2026-11-05T05:12:44Z RECOVER home=200 probe=0 alert=firing restarts=0
+2026-11-05T05:12:54Z RECOVER home=200 probe=1 alert=firing restarts=0
+2026-11-05T05:13:05Z RECOVER home=200 probe=1 alert=none restarts=0
+2026-11-05T05:13:05Z RESTORED revision=9 limit=128Mi restarts=0 | currencyservice-567db8cb65-bq9gs restarts=0 ready=true last=/ state=
+rev=9 limit=128Mi
+currencyservice-567db8cb65-bq9gs ready=true restarts=0

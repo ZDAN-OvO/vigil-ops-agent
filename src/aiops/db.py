@@ -32,6 +32,7 @@ from aiops.contracts import (
     TimeRange,
     ToolCall,
 )
+from aiops.knowledge import Runbook
 
 MIGRATIONS_DIR = Path(__file__).with_name("migrations")
 SCHEMA_MIGRATIONS = (
@@ -491,6 +492,74 @@ class Store:
             )
             for row in rows
         ]
+
+    async def upsert_runbook(self, runbook: Runbook) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO runbooks (
+                    id, version, title, summary, applies_to, symptoms, steps, source, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (id) DO UPDATE SET
+                    version = EXCLUDED.version,
+                    title = EXCLUDED.title,
+                    summary = EXCLUDED.summary,
+                    applies_to = EXCLUDED.applies_to,
+                    symptoms = EXCLUDED.symptoms,
+                    steps = EXCLUDED.steps,
+                    source = EXCLUDED.source,
+                    updated_at = now()
+                """,
+                (
+                    runbook.id,
+                    runbook.version,
+                    runbook.title,
+                    runbook.summary,
+                    list(runbook.applies_to),
+                    list(runbook.symptoms),
+                    Jsonb(list(runbook.steps)),
+                    runbook.source,
+                ),
+            )
+
+    async def list_runbooks(
+        self, *, service: str | None = None, query: str | None = None, limit: int = 3
+    ) -> list[Runbook]:
+        clauses = ["(applies_to = '{}' OR %s = ANY(applies_to))"] if service else []
+        params: list[object] = [service] if service else []
+        if query:
+            clauses.append(
+                "(title ILIKE %s OR summary ILIKE %s OR array_to_string(symptoms, ' ') ILIKE %s)"
+            )
+            like = f"%{query}%"
+            params.extend([like, like, like])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                f"SELECT * FROM runbooks {where} ORDER BY id LIMIT %s", tuple(params)
+            )
+            rows = await cursor.fetchall()
+        return [self._runbook(row) for row in rows]
+
+    async def get_runbook(self, runbook_id: str) -> Runbook | None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute("SELECT * FROM runbooks WHERE id = %s", (runbook_id,))
+            row = await cursor.fetchone()
+        return self._runbook(row) if row else None
+
+    @staticmethod
+    def _runbook(row) -> Runbook:
+        return Runbook(
+            id=row["id"],
+            version=row["version"],
+            title=row["title"],
+            summary=row["summary"],
+            applies_to=tuple(row["applies_to"] or ()),
+            symptoms=tuple(row["symptoms"] or ()),
+            steps=tuple(row["steps"] or ()),
+            source=row["source"],
+        )
 
     async def append_audit(self, events: Sequence[AuditEvent]) -> None:
         async with self._pool.connection() as conn:
