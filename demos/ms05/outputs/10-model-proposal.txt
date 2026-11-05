@@ -1,0 +1,6 @@
+act-344aa4694ecf restart_pod vigil-shop/rebuild-demo-58958844c8-hqcqw [pending_approval]
+目标 Pod rebuild-demo-58958844c8-hqcqw，ReplicaSet rebuild-demo-58958844c8，uid c27cbaa0-a08c-4bb6-bf6f-e79136006fe8
+创建于 2026-11-05T04:57:27.054512+00:00，已等待 12s
+审批：无
+执行：尚未开始
+  2026-11-05T04:57:27.057971+00:00 investigation-runtime action.proposed

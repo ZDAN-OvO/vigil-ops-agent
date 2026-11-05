@@ -163,6 +163,61 @@ class FakeProposer:
         self.proposal_id = proposal_id
         self.calls = []
 
+    async def propose_restart_pod(
+        self,
+        *,
+        pod,
+        service,
+        reason,
+        actor,
+        path="/",
+        namespace=None,
+        investigation_id=None,
+        origin=None,
+        evidence_ids=None,
+    ):
+        self.calls.append(
+            {
+                "kind": "restart_pod",
+                "pod": pod,
+                "service": service,
+                "path": path,
+                "reason": reason,
+                "actor": actor,
+                "namespace": namespace,
+                "investigation_id": investigation_id,
+                "origin": origin,
+                "evidence_ids": evidence_ids or [],
+            }
+        )
+        return (
+            ActionProposal(
+                id=self.proposal_id,
+                kind=ActionKind.RESTART_POD,
+                target=ActionTarget(
+                    cluster="vigil-lab",
+                    namespace="vigil-shop",
+                    kind="Pod",
+                    name=pod,
+                    uid="pod-uid-1",
+                    resource_version="1",
+                ),
+                parameters={"pod": pod, "service": service},
+                idempotency_key="restart:pod-uid-1",
+                reason=reason,
+                created_at=START,
+                origin=ActionOrigin.MODEL,
+                evidence_ids=evidence_ids or [],
+            ),
+            RiskDecision(
+                proposal_id=self.proposal_id,
+                disposition=RiskDisposition.APPROVAL,
+                policy_version="test",
+                reasons=["test"],
+                requires_compensation=False,
+            ),
+        )
+
     async def propose_rollback(
         self,
         *,
@@ -272,6 +327,9 @@ def test_supported_hypothesis_becomes_root_cause(ids, tmp_path):
                 conclusion="新版本导致 productcatalogservice 不可用，首页返回 500",
                 action_kind="rollout_undo",
                 action_deployment="productcatalogservice",
+                action_pod="",
+                action_service="",
+                action_path="",
                 action_reason="回退到上一版本",
                 action_evidence=[0],
             ),
@@ -311,6 +369,9 @@ def test_failed_query_is_not_turned_into_evidence(ids, tmp_path):
                 conclusion="取证失败，无法判断",
                 action_kind="none",
                 action_deployment="",
+                action_pod="",
+                action_service="",
+                action_path="",
                 action_reason="",
                 action_evidence=[],
             ),
@@ -379,6 +440,9 @@ def test_checkpoint_is_persisted_for_the_thread(ids, tmp_path):
                 conclusion="没有可用证据",
                 action_kind="none",
                 action_deployment="",
+                action_pod="",
+                action_service="",
+                action_path="",
                 action_reason="",
                 action_evidence=[],
             ),
@@ -416,6 +480,9 @@ def test_model_proposal_is_created_with_supporting_evidence(ids, tmp_path):
                 conclusion="productcatalogservice 新版本导致首页 500",
                 action_kind="rollout_undo",
                 action_deployment="productcatalogservice",
+                action_pod="",
+                action_service="",
+                action_path="",
                 action_reason="回退到上一版本",
                 action_evidence=[0],
             ),
@@ -438,6 +505,134 @@ def test_model_proposal_is_created_with_supporting_evidence(ids, tmp_path):
     assert call["evidence_ids"] == [evidence[0].id]
     assert call["investigation_id"] == ids["investigation"]
     assert call["deployment"] == "productcatalogservice"
+
+
+def test_restart_pod_assessment_proposes_pod_restart(ids, tmp_path):
+    proposer = FakeProposer()
+    model = ScriptedModel(
+        [
+            PlanRequest(
+                hypotheses=[
+                    HypothesisDraft(
+                        statement="Pod 级状态损坏导致业务请求失败",
+                        expected_observations=["Pod 内请求全部失败"],
+                        rationale="应用日志持续 500",
+                    )
+                ],
+                queries=[query()],
+            ),
+            Assessment(
+                hypotheses=[HypothesisUpdate(index=0, status="supported", rationale="失败持续")],
+                verdicts=[Verdict(evidence_index=0, relation="supporting")],
+                next_queries=[],
+                finish=True,
+                root_cause=True,
+                conclusion="重建该 Pod 可以清除状态",
+                action_kind="restart_pod",
+                action_deployment="",
+                action_pod="rebuild-demo-abc",
+                action_service="rebuild-demo",
+                action_path="/work",
+                action_reason="Pod 级状态损坏",
+                action_evidence=[0],
+            ),
+        ]
+    )
+    report, evidence, _, _ = asyncio.run(
+        run_case(
+            ids,
+            model,
+            ScriptedToolbox([success_result()]),
+            tmp_path=tmp_path,
+            proposer=proposer,
+        )
+    )
+
+    assert report.proposal_id == "act-model-1"
+    call = proposer.calls[0]
+    assert call["kind"] == "restart_pod"
+    assert call["pod"] == "rebuild-demo-abc"
+    assert call["service"] == "rebuild-demo"
+    assert call["path"] == "/work"
+    assert call["evidence_ids"] == [evidence[0].id]
+
+
+def _restart_assessment(**overrides) -> Assessment:
+    values = {
+        "hypotheses": [HypothesisUpdate(index=0, status="supported", rationale="失败持续")],
+        "verdicts": [Verdict(evidence_index=0, relation="supporting")],
+        "next_queries": [],
+        "finish": True,
+        "root_cause": True,
+        "conclusion": "重建该 Pod 可以清除状态",
+        "action_kind": "restart_pod",
+        "action_deployment": "",
+        "action_pod": "rebuild-demo-abc",
+        "action_service": "rebuild-demo",
+        "action_path": "/work",
+        "action_reason": "Pod 级状态损坏",
+        "action_evidence": [0],
+    }
+    values.update(overrides)
+    return Assessment(**values)
+
+
+def _run_restart_case(ids, tmp_path, proposer, assessment):
+    model = ScriptedModel(
+        [
+            PlanRequest(
+                hypotheses=[
+                    HypothesisDraft(
+                        statement="Pod 级状态损坏",
+                        expected_observations=["请求失败"],
+                        rationale="日志",
+                    )
+                ],
+                queries=[query()],
+            ),
+            assessment,
+        ]
+    )
+    return asyncio.run(
+        run_case(
+            ids, model, ScriptedToolbox([success_result()]), tmp_path=tmp_path, proposer=proposer
+        )
+    )
+
+
+def test_restart_without_root_cause_is_not_proposed(ids, tmp_path):
+    proposer = FakeProposer()
+
+    report, _, _, _ = _run_restart_case(
+        ids, tmp_path, proposer, _restart_assessment(root_cause=False, conclusion="")
+    )
+
+    assert report.proposal_id is None
+    assert proposer.calls == []
+
+
+def test_restart_citing_refuting_evidence_is_not_proposed(ids, tmp_path):
+    proposer = FakeProposer()
+    assessment = _restart_assessment(
+        verdicts=[Verdict(evidence_index=0, relation="refuting")],
+        hypotheses=[HypothesisUpdate(index=0, status="refuted", rationale="请求正常")],
+    )
+
+    report, _, _, _ = _run_restart_case(ids, tmp_path, proposer, assessment)
+
+    assert report.proposal_id is None
+    assert proposer.calls == []
+
+
+def test_restart_without_service_is_not_proposed(ids, tmp_path):
+    proposer = FakeProposer()
+
+    report, _, _, _ = _run_restart_case(
+        ids, tmp_path, proposer, _restart_assessment(action_service="")
+    )
+
+    assert report.proposal_id is None
+    assert proposer.calls == []
 
 
 def test_action_without_supporting_evidence_is_not_proposed(ids, tmp_path):
@@ -463,6 +658,9 @@ def test_action_without_supporting_evidence_is_not_proposed(ids, tmp_path):
                 conclusion="证据不支持",
                 action_kind="rollout_undo",
                 action_deployment="productcatalogservice",
+                action_pod="",
+                action_service="",
+                action_path="",
                 action_reason="不该被执行",
                 action_evidence=[],
             ),

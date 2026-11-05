@@ -83,7 +83,7 @@ bash faults/a01-pod-rebuild/repeat.sh cleanup           # 删除实验负载
 
 ## 7. 缺口
 
-- `restart_pod` 动作链已在 MS05 实现，证据见 [`demos/ms05/`](../../demos/ms05/README.md)。调查侧还不能生成该提案。
+- `restart_pod` 动作链已在 MS05 实现，调查侧也能生成该提案；证据见 [`demos/ms05/`](../../demos/ms05/README.md)。
 - 实验负载没有接入 Prometheus 采集和告警，两类信号靠 `kubectl` 与宿主请求循环取得。是否需要告警入口由 MS05 的完整链路决定。
 - 真值访问隔离仍未实现。
 - 运行依赖宿主 port-forward 和本地镜像导入，换机器要重新构建镜像。

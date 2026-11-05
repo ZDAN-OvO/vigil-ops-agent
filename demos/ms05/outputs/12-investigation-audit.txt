@@ -1,0 +1,8 @@
+investigation inv-e6a92291724e completed tools 13 models 5
+proposal act-344aa4694ecf bound_evidence 2
+2026-11-05T04:54:20.069592+00:00 cli investigation.started {"model": "mythos-magpie-1505138152", "service": "rebuild-demo"}
+2026-11-05T04:57:27.057971+00:00 investigation-runtime action.proposed {"kind": "restart_pod", "target": "vigil-shop/rebuild-demo-58958844c8-hqcqw", "reasons": ["动作 restart_pod", "目标在实验命名空间", "首次执行需人工审批"], "disposition": "approval", "replica_set": "re
+2026-11-05T04:57:27.060010+00:00 investigation-runtime action.proposed_by_model {"kind": "restart_pod", "target": "rebuild-demo-58958844c8-hqcqw", "disposition": "approval", "proposal_id": "act-344aa4694ecf", "evidence_ids": ["ev-65e612caff68", "ev-203a253589a
+2026-11-05T04:57:27.063394+00:00 investigation-runtime investigation.completed {"evidence": 9, "hypotheses": 3, "tool_calls": 13, "model_calls": 5, "termination": null}
+2026-11-05T04:57:43.201791+00:00 ms05-demo action.approved {"expires_at": "2026-11-05T05:12:43.199744+00:00", "approval_id": "apr-19720dc112fe", "proposal_hash": "21af33deaaddf721fb436b1037e4507b849a03937b194714360968e19d2d238c"}
+2026-11-05T04:59:22.656239+00:00 action-executor action.succeeded {"attempt_id": "att-d195ae5d4b4d", "verification": {"ok": true, "path": "/work", "new_pod": "rebuild-demo-58958844c8-9km44", "new_uid": "e2ee187f-6784-4124-b509-6e54b231f798", "old
