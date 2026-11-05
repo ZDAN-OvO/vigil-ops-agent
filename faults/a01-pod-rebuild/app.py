@@ -10,6 +10,20 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 STATE_FILE = os.environ.get("STATE_FILE", "/state/work_state")
+POISON_FILE = os.environ.get("POISON_FILE", "/config/poison")
+
+
+def apply_startup_poison() -> None:
+    """启动时读取挂载开关；开关打开就把新 Pod 的状态写成损坏。"""
+    try:
+        with open(POISON_FILE, encoding="utf-8") as handle:
+            armed = handle.read().strip() == "yes"
+    except FileNotFoundError:
+        return
+    if not armed:
+        return
+    with open(STATE_FILE, "w", encoding="utf-8") as handle:
+        handle.write("corrupt")
 
 
 def state_corrupt() -> bool:
@@ -52,6 +66,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    apply_startup_poison()
     server = ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
     print(f"listening on 8080 state={STATE_FILE}", flush=True)
     server.serve_forever()
