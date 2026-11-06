@@ -32,7 +32,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 - [ ] Follow this dependency graph. Start dependent work only after its parent merges, or base it on the parent branch when the execution playbook stacks.
   - [ ] V06-1 branches from `main` and lands first.
   - [ ] V06-2 branches from `main` after V06-1 merges.
-- [ ] Hold the file boundaries. V06-1 touches only `src/aiops/actions/`, `src/aiops/contracts.py`, `faults/a01-pod-rebuild/`, `tests/test_actions.py` and `docs/contracts.md`. V06-2 touches only `src/aiops/migrations/`, `src/aiops/db.py`, `src/aiops/contracts.py`, `src/aiops/actions/executor.py`, `src/aiops/cli.py`, `src/aiops/eval.py`, `eval/scenarios.json`, the related tests, `docs/contracts.md` and `demos/ms08/`. The two PRs share `contracts.py` and one executor file, so they never run in parallel.
+- [ ] Hold the file boundaries. V06-1 touches only `src/aiops/actions/`, `src/aiops/contracts.py`, `faults/a01-pod-rebuild/`, `tests/test_actions_*.py` and `docs/contracts.md`. V06-2 touches only `src/aiops/migrations/`, `src/aiops/db.py`, `src/aiops/contracts.py`, `src/aiops/actions/executor.py`, `src/aiops/cli.py`, `src/aiops/eval.py`, `eval/scenarios.json`, the related tests, `docs/contracts.md` and `demos/ms08/`. The two PRs share `contracts.py` and one executor file, so they never run in parallel.
 - [ ] Hold the review gate. No PR is review-gated. The agent merges after a clean independent review, and the operator spot-checks merged PRs, per the standing MVP policy.
 
 ### PR mechanics, for every PR
@@ -72,7 +72,7 @@ Each lane runs on the local `vigil-lab` k3d cluster, sequentially, with namespac
 - [ ] Edit `faults/a01-pod-rebuild/app.py`.
 - [ ] Edit `faults/a01-pod-rebuild/manifests.yaml`.
 - [ ] Create `faults/a01-pod-rebuild/v06.sh`.
-- [ ] Edit `tests/test_actions.py`.
+- [ ] Edit `tests/test_actions_restart.py`.
 - [ ] Create `tests/test_outcome.py`.
 - [ ] Edit `tests/test_a01_script.py`.
 - [ ] Edit `faults/a01-pod-rebuild/README.md`.
@@ -99,7 +99,7 @@ Each lane runs on the local `vigil-lab` k3d cluster, sequentially, with namespac
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Add classification tests for the four outcomes and the 0.5 boundary in `tests/test_actions.py`.
+- [ ] Add classification tests for the four outcomes and the 0.5 boundary in `tests/test_actions_restart.py`.
 - [ ] Add a test that a missing baseline aborts before `adapter.execute` and before `save_attempt`.
 - [ ] Add mapping tests for attempt and proposal status per outcome.
 - [ ] Update the existing restart and rollout tests for the new baseline call.
@@ -147,7 +147,7 @@ Each lane runs on the local `vigil-lab` k3d cluster, sequentially, with namespac
 - [ ] Edit `src/aiops/cli.py`.
 - [ ] Edit `src/aiops/eval.py`.
 - [ ] Edit `eval/scenarios.json`.
-- [ ] Edit `tests/test_actions.py`.
+- [ ] Edit `tests/test_actions_restart.py`.
 - [ ] Edit `tests/test_cli.py`.
 - [ ] Edit `tests/test_eval.py`.
 - [ ] Edit `docs/contracts.md`.
