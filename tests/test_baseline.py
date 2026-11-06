@@ -179,10 +179,11 @@ def revision(number, *, image="repo/app:1", memory="128Mi", created=None):
     }
 
 
-def deployment(name, revisions, *, limits="128Mi", app=None):
+def deployment(name, revisions, *, limits="128Mi", app=None, selector=None):
     return {
         "name": name,
         "labels": {"app": app or name},
+        "selector": selector if selector is not None else {"app": app or name},
         "containers": [{"name": "server", "image": "repo/app:1", "limits": {"memory": limits}}],
         "revisions": revisions,
     }
@@ -223,7 +224,7 @@ def plan(deployments=None, pods=None, events=None, logs=None, probe=None, runboo
     ]
 
 
-def build(*, budget_tool_calls=16, proposer=None):
+def build(*, budget_tool_calls=16, budget_wall_seconds=120, proposer=None):
     incident = Incident(
         id="inc-test",
         environment="local",
@@ -243,17 +244,23 @@ def build(*, budget_tool_calls=16, proposer=None):
         budget=Budget(
             max_tool_calls=budget_tool_calls,
             max_model_calls=4,
-            max_wall_clock_seconds=120,
+            max_wall_clock_seconds=budget_wall_seconds,
         ),
         started_at=START,
     )
     return incident, investigation
 
 
-def run_case(results, *, budget_tool_calls=16, proposer=None):
-    incident, investigation = build(budget_tool_calls=budget_tool_calls, proposer=proposer)
+def run_case(
+    results, *, budget_tool_calls=16, budget_wall_seconds=120, proposer=None, toolbox=None
+):
+    incident, investigation = build(
+        budget_tool_calls=budget_tool_calls,
+        budget_wall_seconds=budget_wall_seconds,
+        proposer=proposer,
+    )
     store = MemoryStore(investigation)
-    toolbox = ScriptedToolbox(results)
+    toolbox = toolbox or ScriptedToolbox(results)
     baseline = RulesBaseline(
         store=store,
         toolbox=toolbox,
@@ -424,3 +431,140 @@ def test_tool_budget_exhaustion_aborts():
     assert "预算耗尽：tool_calls" in report.termination_reason
     assert len(toolbox.requests) == 1
     assert len(store.calls) == 1
+
+
+class SlowToolbox:
+    def __init__(self, delay):
+        self.delay = delay
+        self.requests = []
+
+    async def run(self, context, time_range, request):
+        self.requests.append(request)
+        await asyncio.sleep(self.delay)
+        return result({"items": []})
+
+
+def test_pod_prefix_does_not_attach_to_another_deployment():
+    proposer = RecordingProposer()
+    results = plan(
+        deployments=[
+            deployment(
+                "cart", [revision(1, image="repo/cart:1"), revision(2, image="repo/cart:2")]
+            ),
+            deployment(
+                "cart-worker",
+                [revision(1, image="repo/worker:1"), revision(2, image="repo/worker:2")],
+            ),
+        ],
+        pods=[pod("cart-worker-abc", "cart-worker", ready=False)],
+        probe=1,
+    )
+
+    report, store, _, _ = run_case(results, proposer=proposer)
+
+    assert report.status is InvestigationStatus.COMPLETED
+    assert store.events("baseline.rule")[0].payload["deployment"] == "cart-worker"
+    assert proposer.calls[0]["deployment"] == "cart-worker"
+
+
+def test_oom_after_raising_the_limit_is_not_rolled_back():
+    proposer = RecordingProposer()
+    results = plan(
+        deployments=[
+            deployment(
+                "currencyservice",
+                [revision(1, memory="128Mi"), revision(2, memory="256Mi")],
+                limits="256Mi",
+            )
+        ],
+        pods=[pod("currencyservice-abc", "currencyservice", oom=True, restarts=2, ready=False)],
+        probe=0,
+    )
+
+    report, store, _, _ = run_case(results, proposer=proposer)
+
+    assert report.status is InvestigationStatus.COMPLETED
+    assert store.events("baseline.rule")[0].payload["rule"] == "oom-limit"
+    assert store.events("baseline.rule")[0].payload["action"] == "none"
+    assert proposer.calls == []
+    assert report.proposal_id is None
+
+
+def test_template_created_before_window_is_not_a_recent_rollout():
+    old = START - timedelta(days=5)
+    results = plan(
+        deployments=[
+            deployment(
+                "productcatalogservice",
+                [
+                    revision(1, image="repo/a", created=old),
+                    revision(2, image="repo/b", created=old),
+                ],
+            )
+        ],
+        pods=[pod("productcatalogservice-abc", "productcatalogservice", ready=False)],
+        logs=[
+            {
+                "pod": "frontend-abc",
+                "lines": ['{"message":"productcatalogservice returned error code 13"}'],
+            }
+        ],
+        probe=1,
+    )
+
+    report, store, _, _ = run_case(results)
+
+    assert report.status is InvestigationStatus.INCONCLUSIVE
+    assert store.events("baseline.rule") == []
+
+
+def test_probe_failure_with_missing_workload_data_is_inconclusive():
+    results = [
+        result({"items": []}, error=ToolError(code="timeout", message="查询超时")),
+        result({"items": []}, error=ToolError(code="timeout", message="查询超时")),
+        result({"items": []}),
+        result({"items": []}),
+        result({"series": [{"labels": {}, "points": [[0, 0]]}]}, source="prometheus"),
+        result({"items": []}, source="knowledge"),
+    ]
+
+    report, store, _, _ = run_case(results)
+
+    assert report.status is InvestigationStatus.INCONCLUSIVE
+    assert store.events("baseline.rule") == []
+
+
+def test_wall_clock_overrun_aborts_without_proposal():
+    proposer = RecordingProposer()
+    toolbox = SlowToolbox(1.2)
+
+    report, store, _, _ = run_case([], budget_wall_seconds=1, proposer=proposer, toolbox=toolbox)
+
+    assert report.status is InvestigationStatus.ABORTED
+    assert "预算耗尽：wall_clock" in report.termination_reason
+    assert proposer.calls == []
+    assert report.proposal_id is None
+
+
+def test_log_hint_is_bound_to_the_proposal():
+    proposer = RecordingProposer()
+    results = plan(
+        deployments=[
+            deployment(
+                "productcatalogservice",
+                [revision(20), revision(21, image="repo/app:canary")],
+            )
+        ],
+        pods=[pod("productcatalogservice-abc", "productcatalogservice")],
+        logs=[{"pod": "frontend-abc", "lines": ['{"message":"productcatalogservice failed"}']}],
+        probe=1,
+    )
+
+    report, store, _, _ = run_case(results, proposer=proposer)
+
+    log_evidence = [
+        item for item in store.evidence if "productcatalogservice failed" in item.observation
+    ]
+    assert log_evidence
+    assert log_evidence[0].relation == "supporting"
+    assert log_evidence[0].id in proposer.calls[0]["evidence_ids"]

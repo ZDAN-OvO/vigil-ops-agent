@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 import uuid
@@ -138,14 +139,47 @@ def _oom_container(pod: dict[str, Any], window_start: datetime) -> dict[str, Any
     return None
 
 
+_MEMORY_SUFFIX = {
+    "": 1,
+    "K": 10**3,
+    "M": 10**6,
+    "G": 10**9,
+    "T": 10**12,
+    "P": 10**15,
+    "E": 10**18,
+    "Ki": 2**10,
+    "Mi": 2**20,
+    "Gi": 2**30,
+    "Ti": 2**40,
+    "Pi": 2**50,
+    "Ei": 2**60,
+}
+_MEMORY_VALUE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([KMGTPE]i?)?$")
+
+
+def _memory_bytes(value: Any) -> int | None:
+    """把 Kubernetes 内存数量解析成字节；解析不了就返回 None，不能凭字符串猜大小。"""
+    match = _MEMORY_VALUE.match(_text(value).strip())
+    if match is None:
+        return None
+    return int(float(match.group(1)) * _MEMORY_SUFFIX[match.group(2) or ""])
+
+
+def _selector_match(pod: dict[str, Any], deployment: dict[str, Any]) -> bool:
+    selector = deployment.get("selector") or {}
+    if not isinstance(selector, dict) or not selector:
+        return False
+    labels = pod.get("labels") or {}
+    return all(labels.get(key) == value for key, value in selector.items())
+
+
 def _deployment_for_pod(pod: dict[str, Any], deployments: list[dict[str, Any]]) -> dict | None:
+    matched = [item for item in deployments if _selector_match(pod, item)]
+    if matched:
+        return max(matched, key=lambda item: len(item.get("selector") or {}))
     app = (pod.get("labels") or {}).get("app")
     for deployment in deployments:
         if deployment.get("name") == app:
-            return deployment
-    prefix = (pod.get("name") or "").rsplit("-", 2)[0]
-    for deployment in deployments:
-        if deployment.get("name") == prefix:
             return deployment
     return None
 
@@ -160,13 +194,12 @@ def _started_at(pod: dict[str, Any]) -> datetime | None:
 
 
 def _pods_for(deployment: dict[str, Any], pods: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按 Deployment 选择器归属 Pod；没有选择器时才退回 app 标签，名字前缀不能作为归属依据。"""
+    selector = deployment.get("selector") or {}
+    if selector:
+        return [pod for pod in pods if _selector_match(pod, deployment)]
     name = _text(deployment.get("name"))
-    return [
-        pod
-        for pod in pods
-        if (pod.get("labels") or {}).get("app") == name
-        or (pod.get("name") or "").startswith(f"{name}-")
-    ]
+    return [pod for pod in pods if (pod.get("labels") or {}).get("app") == name]
 
 
 def _log_hint(name: str, logs: list[dict[str, Any]]) -> str:
@@ -256,7 +289,15 @@ class RulesBaseline:
                 break
             context = self._tool_context()
             started_at = datetime.now(UTC)
-            result = await self._toolbox.run(context, self._window, item.request)
+            # 工具自己的截止时间不被所有实现遵守（知识库查询就没有），这里再加一层硬超时。
+            timeout = max(0.05, context.deadline - time.monotonic()) + 0.05
+            try:
+                result = await asyncio.wait_for(
+                    self._toolbox.run(context, self._window, item.request), timeout=timeout
+                )
+            except TimeoutError:
+                aborted = "wall_clock"
+                break
             finished_at = datetime.now(UTC)
             await self._record_tool_call(item.request, result, started_at, finished_at)
             if result.error is not None:
@@ -274,6 +315,8 @@ class RulesBaseline:
                 await self._record_evidence(item, hypotheses[item.hypothesis]["id"], result)
             ]
 
+        if aborted is None and time.monotonic() >= self._deadline:
+            aborted = "wall_clock"
         if aborted is not None:
             return await self._finish(
                 InvestigationStatus.ABORTED,
@@ -285,6 +328,15 @@ class RulesBaseline:
             )
 
         hit = self._decide(datasets, failures)
+        if time.monotonic() >= self._deadline:
+            return await self._finish(
+                InvestigationStatus.ABORTED,
+                conclusion=None,
+                termination="预算耗尽：wall_clock",
+                hypotheses=hypotheses,
+                evidence_keys=evidence_keys,
+                proposal_id=None,
+            )
         if hit is None:
             return await self._finish(
                 InvestigationStatus.INCONCLUSIVE,
@@ -500,11 +552,12 @@ class RulesBaseline:
             "failures": failures,
             "event_count": len(events),
         }
+        complete = all(key in datasets for key in ("deployments", "pods", "logs"))
         hit = self._match_oom(deployments, pods, common)
         if hit is None:
             hit = self._match_change(deployments, pods, logs, common)
         if hit is None:
-            hit = self._match_dependency(logs, probe, common)
+            hit = self._match_dependency(logs, probe, common, complete=complete)
         return hit
 
     def _match_oom(
@@ -532,12 +585,21 @@ class RulesBaseline:
                 f"（exit_code={last.get('exit_code')}，restart_count={container.get('restart_count')}），"
                 f"当前内存 limits={limits or '未取到'}、requests={requests or '未取到'}"
             )
+            previous_limit = _memory_bytes(previous.get("memory_limit")) if previous else None
+            current_limit = _memory_bytes((current or {}).get("memory_limit"))
             if previous is None:
                 detail += "；没有可比较的历史模板，不能确认回退适用"
                 action = "none"
-            elif previous.get("memory_limit") == (current or {}).get("memory_limit"):
+            elif previous_limit is None or current_limit is None:
                 detail += (
-                    f"；上一版 revision {previous.get('revision')} 的内存限额相同，"
+                    f"；当前或上一版 revision {previous.get('revision')} 的内存限额无法解析，"
+                    "不能确认回退能缓解资源不足"
+                )
+                action = "none"
+            elif previous_limit <= current_limit:
+                detail += (
+                    f"；上一版 revision {previous.get('revision')} 的内存限额 "
+                    f"{previous.get('memory_limit')} 不高于当前 {limits or '未取到'}，"
                     "回退不能修复资源规格"
                 )
                 action = "none"
@@ -586,6 +648,10 @@ class RulesBaseline:
                 continue
             started = max(starts)
             created = _as_time(latest.get("created_at"))
+            # 容器今天重启不代表模板今天改过。模板创建时间不在观察窗内时，
+            # 五天前的发布碰巧今天重启不能被当成近期坏发布。
+            if created is None or created < window_start:
+                continue
             name = _text(deployment.get("name"))
             hint = _log_hint(name, logs)
             unhealthy = bool(deployment.get("unavailable_replicas")) or any(
@@ -594,8 +660,6 @@ class RulesBaseline:
                 for container in pod.get("containers") or []
             )
             if previous is None:
-                if created is None or created < window_start:
-                    continue
                 candidates.append((started, deployment, latest, None, hint, created))
                 continue
             if (
@@ -648,7 +712,7 @@ class RulesBaseline:
             ),
             action="rollout_undo",
             deployment=name,
-            evidence_keys=("deployments", "pods"),
+            evidence_keys=("deployments", "pods") + (("logs",) if hint else ()),
             signals={
                 **common,
                 "deployment": name,
@@ -661,7 +725,7 @@ class RulesBaseline:
         )
 
     def _match_dependency(
-        self, logs: list[dict], probe: float | None, common: dict[str, Any]
+        self, logs: list[dict], probe: float | None, common: dict[str, Any], *, complete: bool
     ) -> _Hit | None:
         markers: list[str] = []
         for item in logs:
@@ -672,23 +736,33 @@ class RulesBaseline:
                         markers.append(marker)
         if not markers and not (probe is not None and probe < 1):
             return None
+        # 只有探针失败、取证又缺了工作负载或日志时，既不能确认依赖，也不能声称排除其他根因。
+        if not markers and not complete:
+            return None
         observed: list[str] = []
         if markers:
             observed.append(f"日志出现依赖访问错误（{', '.join(markers)}）")
         if probe is not None and probe < 1:
             observed.append(f"业务探针成功值为 {probe:g}")
+        absence = "命名空间内没有命中 OOMKilled 或观察窗内的模板变更；" if complete else ""
         return _Hit(
             rule="dependency-chain",
             hypothesis="dependency",
             conclusion=(
                 "固定规则判定："
                 + "；".join(observed)
-                + "。命名空间内没有命中 OOMKilled 或观察窗内的模板变更；"
-                "现有动作不能移除依赖链路故障，需要人工核实下游服务与网络路径。"
+                + "。"
+                + absence
+                + "现有动作不能移除依赖链路故障，需要人工核实下游服务与网络路径。"
             ),
             action="none",
             evidence_keys=("logs", "probe"),
-            signals={**common, "markers": markers, "probe_success": probe},
+            signals={
+                **common,
+                "markers": markers,
+                "probe_success": probe,
+                "coverage_complete": complete,
+            },
         )
 
     async def _apply(
