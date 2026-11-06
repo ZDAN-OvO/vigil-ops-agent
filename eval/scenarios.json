@@ -285,5 +285,128 @@
       "failed_proposal_id": "act-b7906299003e",
       "next_proposal_id": "act-9a2fb0355a72"
     }
+  ],
+  "approval_runs": [
+    {
+      "run_id": "v05-resume",
+      "expected": "resumed",
+      "proposal_id": "act-83ecd5d53f68",
+      "attempt_id": "att-6fdd65ccc940",
+      "evidence": "demos/ms02/outputs/06-resume.txt",
+      "markers": [
+        "新进程",
+        "verified"
+      ]
+    },
+    {
+      "run_id": "v05-expired",
+      "expected": "expired",
+      "proposal_id": "act-79ff5b02dcd0",
+      "evidence": "demos/ms02/outputs/09-expired.txt",
+      "markers": [
+        "expired",
+        "resume_exit=1"
+      ]
+    },
+    {
+      "run_id": "v05-rejected",
+      "expected": "rejected",
+      "proposal_id": "act-7455515e0767",
+      "evidence": "demos/ms02/outputs/10b-rejected-current.txt",
+      "markers": [
+        "rejected",
+        "reject_exit=0"
+      ]
+    }
+  ],
+  "idempotency_runs": [
+    {
+      "run_id": "v07-concurrent-approval",
+      "kind": "approval",
+      "proposal_id": "act-58394bfae960",
+      "expected_approvals": 1,
+      "expected_attempts": 1,
+      "evidence": "demos/ms02/outputs/11-concurrent-approval.txt",
+      "markers": [
+        "not_pending",
+        "只应有一条 action.approved"
+      ]
+    },
+    {
+      "run_id": "v07-duplicate-resume",
+      "kind": "resume",
+      "proposal_id": "act-83ecd5d53f68",
+      "expected_approvals": 1,
+      "expected_attempts": 1,
+      "evidence": "demos/ms02/outputs/07-duplicate-and-recovery.txt",
+      "markers": [
+        "already_executed",
+        "exit=1",
+        "att-6fdd65ccc940 verified"
+      ]
+    }
+  ],
+  "deduplication_runs": [
+    {
+      "run_id": "v07-alert-dedup",
+      "incident_id": "inc-1b7afb60bb91",
+      "investigation_id": "inv-919644e08833",
+      "fingerprint": "ab769bbcfb100879",
+      "window_minutes": 10,
+      "evidence": "demos/ms01/outputs/03-alert-entry.txt",
+      "markers": [
+        "deduplicated"
+      ]
+    }
+  ],
+  "context_runs": [
+    {
+      "run_id": "v08-context-refuted",
+      "investigation_id": "inv-2facf6216bc0",
+      "context_hint": "节点磁盘写满",
+      "refuted_hypothesis": "磁盘",
+      "evidence": "demos/ms06/README.md",
+      "markers": [
+        "错误 Context 的反例"
+      ]
+    }
+  ],
+  "runbook_runs": [
+    {
+      "run_id": "v08-runbook",
+      "investigation_id": "inv-4ce0757b47b0",
+      "accepted": "rb-oom-limit",
+      "rejected": [
+        "rb-dns-resolution",
+        "rb-readiness-probe"
+      ],
+      "proposal_id": "act-d0b364a79ffd",
+      "evidence": "demos/ms06/README.md",
+      "markers": [
+        "rb-oom-limit",
+        "rejected"
+      ]
+    }
+  ],
+  "explain_runs": [
+    {
+      "run_id": "v08-explain",
+      "investigation_id": "inv-2facf6216bc0",
+      "evidence": "demos/ms07/README.md",
+      "markers": [
+        "只读核对"
+      ]
+    }
+  ],
+  "trace_runs": [
+    {
+      "run_id": "v07-trace",
+      "investigation_id": "inv-4ce0757b47b0",
+      "evidence": "demos/ms06/README.md",
+      "markers": [
+        "8 条证据",
+        "9 次工具调用"
+      ]
+    }
   ]
 }

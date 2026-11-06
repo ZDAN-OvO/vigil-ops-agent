@@ -12,7 +12,9 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from aiops.actions.executor import proposal_hash
 from aiops.actions.policy import decide
+from aiops.investigation.snapshot import state_snapshot
 
 
 class ScenarioRun(BaseModel):
@@ -73,6 +75,96 @@ class StopGateRun(BaseModel):
     next_proposal_id: str
 
 
+class ApprovalRun(BaseModel):
+    """V05 的审批用例；resumed 要跨命令恢复并执行，expired 不许留下执行记录。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    expected: Literal["resumed", "expired", "rejected"]
+    proposal_id: str
+    attempt_id: str = ""
+    evidence: str = ""
+    markers: list[str] = Field(default_factory=list)
+
+
+class IdempotencyRun(BaseModel):
+    """V07 的重复审批／重复继续用例，按审批与执行记录条数核对。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    kind: Literal["approval", "resume"]
+    proposal_id: str
+    expected_approvals: int = Field(ge=0)
+    expected_attempts: int = Field(ge=0, le=1)
+    evidence: str = ""
+    markers: list[str] = Field(default_factory=list)
+
+
+class DeduplicationRun(BaseModel):
+    """V07 的告警去重用例；同一指纹在窗口内只能有一个事件。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    incident_id: str
+    investigation_id: str
+    fingerprint: str
+    window_minutes: int = Field(gt=0)
+    evidence: str = ""
+    markers: list[str] = Field(default_factory=list)
+
+
+class TraceRun(BaseModel):
+    """V07 的原始观测回查用例；证据文件和工具调用都要能落到实际产物。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    investigation_id: str
+    evidence: str = ""
+    markers: list[str] = Field(default_factory=list)
+
+
+class ContextRun(BaseModel):
+    """V08 的背景核实用例；Context 中的说法要能被假设与反证记录核对。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    investigation_id: str
+    context_hint: str
+    refuted_hypothesis: str
+    evidence: str = ""
+    markers: list[str] = Field(default_factory=list)
+
+
+class RunbookRun(BaseModel):
+    """V08 的 runbook 用例；引用要能回查条目，且不进入动作证据。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    investigation_id: str
+    accepted: str
+    rejected: list[str] = Field(default_factory=list)
+    proposal_id: str = ""
+    evidence: str = ""
+    markers: list[str] = Field(default_factory=list)
+
+
+class ExplainRun(BaseModel):
+    """V08 的只读追问用例；引用必须落在已有证据上，追问后不新增取证或动作。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    investigation_id: str
+    evidence: str = ""
+    markers: list[str] = Field(default_factory=list)
+
+
 class Manifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -81,6 +173,14 @@ class Manifest(BaseModel):
     baseline: list[BaselineRun] = Field(default_factory=list)
     safety_runs: list[SafetyRun] = Field(default_factory=list)
     stop_gate: list[StopGateRun] = Field(default_factory=list)
+    approval_runs: list[ApprovalRun] = Field(default_factory=list)
+    idempotency_runs: list[IdempotencyRun] = Field(default_factory=list)
+    deduplication_runs: list[DeduplicationRun] = Field(default_factory=list)
+    trace_runs: list[TraceRun] = Field(default_factory=list)
+    context_runs: list[ContextRun] = Field(default_factory=list)
+    runbook_runs: list[RunbookRun] = Field(default_factory=list)
+    explain_runs: list[ExplainRun] = Field(default_factory=list)
+    evidence_root: str = "runtime"
     demo_packs: list[str] = Field(default_factory=list)
 
 
@@ -108,6 +208,18 @@ class StoreProtocol(Protocol):
     async def get_attempt(self, proposal_id: str) -> Any: ...
     async def get_followup_by_attempt(self, attempt_id: str) -> Any: ...
     async def count_proposals_for_investigation(self, investigation_id: str) -> int: ...
+    async def get_approval(self, proposal_id: str) -> Any: ...
+    async def count_approvals(self, proposal_id: str) -> int: ...
+    async def list_audit(self, correlation_id: str) -> list[Any]: ...
+    async def get_incident(self, incident_id: str) -> Any: ...
+    async def get_incident_created_at(self, incident_id: str) -> Any: ...
+    async def list_incident_receipts(self, fingerprint: str) -> list[Any]: ...
+    async def list_proposals_for_investigation(self, investigation_id: str) -> list[Any]: ...
+    async def list_incidents(self, limit: int = 20) -> list[Any]: ...
+    async def list_hypotheses(self, investigation_id: str) -> list[Any]: ...
+    async def list_evidence(self, investigation_id: str) -> list[Any]: ...
+    async def list_tool_calls(self, investigation_id: str) -> list[Any]: ...
+    async def get_runbook(self, runbook_id: str) -> Any: ...
 
 
 def load_manifest(path: Path) -> Manifest:
@@ -116,6 +228,51 @@ def load_manifest(path: Path) -> Manifest:
 
 def _distinct(values: list[str]) -> int:
     return len({value for value in values if value})
+
+
+def _value(item: Any) -> str:
+    """枚举或字符串统一成文本；None 记为缺失。"""
+    return str(getattr(item, "value", item) or "")
+
+
+def _rejection_cause(event: Any, evidence_ids: set[str]) -> str:
+    """只承认带回答形态、且形态与理由一致的拒绝；旧记录不作证据。"""
+    payload = event.payload or {}
+    if "citations" not in payload:
+        return ""
+    citations = payload.get("citations") or []
+    unknown = payload.get("unknown_citations") or []
+    if unknown:
+        if not set(unknown) <= set(citations) or set(unknown) & evidence_ids:
+            return ""
+        return "unknown_citations"
+    reason = (payload.get("reason") or "").strip()
+    missing = payload.get("missing") or []
+    if reason == "missing_without_new_query":
+        if citations or not missing or payload.get("needs_new_query"):
+            return ""
+        return reason
+    if reason == "unsupported_answer":
+        if citations or missing:
+            return ""
+        return reason
+    return ""
+
+
+def _named(events: list[Any], name: str) -> list[Any]:
+    return [event for event in events if event.event == name]
+
+
+def _evidence_problems(
+    run_id: str, evidence: str, markers: list[str] | tuple[str, ...] = ()
+) -> list[str]:
+    if not evidence:
+        return [f"{run_id}:未登记证据文件"]
+    path = Path(evidence)
+    if not path.is_file():
+        return [f"{run_id}:证据文件不存在 {evidence}"]
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return [f"{run_id}:证据缺少「{marker}」" for marker in markers if marker not in text]
 
 
 async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport:
@@ -250,14 +407,451 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
         )
     )
 
-    for criterion in ("V05", "V07", "V08"):
-        criteria.append(
-            CriterionResult(
-                criterion,
-                False,
-                "本切片未自动核对，人工核对记录见 demos/ms08/README.md",
-            )
+    approval_problems: list[str] = []
+    seen_approval: set[str] = set()
+    for run in manifest.approval_runs:
+        seen_approval.add(run.expected)
+        approval_problems.extend(_evidence_problems(run.run_id, run.evidence, run.markers))
+        proposal = await store.get_proposal(run.proposal_id)
+        approval = await store.get_approval(run.proposal_id)
+        attempt = await store.get_attempt(run.proposal_id)
+        audits = await store.list_audit(run.proposal_id)
+
+        if proposal is None or approval is None:
+            approval_problems.append(f"{run.run_id}:缺提案或审批记录")
+            continue
+        if not approval.actor.strip():
+            approval_problems.append(f"{run.run_id}:审批缺操作者")
+            continue
+        if approval.proposal_hash != proposal_hash(proposal):
+            approval_problems.append(f"{run.run_id}:审批没有绑定当前提案")
+            continue
+        decision = _value(approval.decision)
+        if run.expected == "rejected":
+            if decision != "rejected" or _value(proposal.status) != "rejected":
+                approval_problems.append(f"{run.run_id}:拒绝记录不一致")
+            elif attempt is not None:
+                approval_problems.append(f"{run.run_id}:拒绝后仍有执行记录")
+            elif not _named(audits, "action.rejected"):
+                approval_problems.append(f"{run.run_id}:缺拒绝审计")
+            continue
+        if decision != "approved":
+            approval_problems.append(f"{run.run_id}:不是批准记录")
+            continue
+        if approval.expires_at is None:
+            approval_problems.append(f"{run.run_id}:批准没有有效期")
+            continue
+        if run.expected == "expired":
+            resumed = _named(audits, "action.resumed")
+            expired = _named(audits, "action.expired")
+            if _value(proposal.status) != "expired":
+                approval_problems.append(f"{run.run_id}:提案终态={_value(proposal.status)}")
+            elif attempt is not None:
+                approval_problems.append(f"{run.run_id}:过期授权仍执行")
+            elif not resumed or not expired:
+                approval_problems.append(f"{run.run_id}:缺过期或继续命令的审计")
+            elif resumed[-1].payload.get("approval_id") != approval.id:
+                approval_problems.append(f"{run.run_id}:继续命令没有引用该授权")
+            elif resumed[-1].occurred_at <= approval.expires_at:
+                approval_problems.append(f"{run.run_id}:继续发生在截止时间之前")
+            elif expired[-1].occurred_at < resumed[-1].occurred_at:
+                approval_problems.append(f"{run.run_id}:过期审计早于继续命令")
+            continue
+        approved = _named(audits, "action.approved")
+        resumed = _named(audits, "action.resumed")
+        succeeded = _named(audits, "action.succeeded")
+        if attempt is None or attempt.id != run.attempt_id:
+            approval_problems.append(f"{run.run_id}:执行记录不匹配")
+        elif _value(attempt.status) != "verified":
+            approval_problems.append(f"{run.run_id}:执行终态={_value(attempt.status)}")
+        elif attempt.finished_at is None or attempt.finished_at < attempt.started_at:
+            approval_problems.append(f"{run.run_id}:执行没有有效结束时间")
+        elif (attempt.snapshot or {}).get("approval_hash") != approval.proposal_hash:
+            approval_problems.append(f"{run.run_id}:执行没有绑定该授权")
+        elif attempt.started_at <= approval.decided_at:
+            approval_problems.append(f"{run.run_id}:执行不晚于批准")
+        elif attempt.started_at > approval.expires_at:
+            approval_problems.append(f"{run.run_id}:执行时授权已过期")
+        elif _value(proposal.status) != "succeeded":
+            approval_problems.append(f"{run.run_id}:提案终态={_value(proposal.status)}")
+        elif not approved or not resumed:
+            approval_problems.append(f"{run.run_id}:缺批准或继续命令的审计")
+        elif approved[-1].payload.get("approval_id") != approval.id:
+            approval_problems.append(f"{run.run_id}:批准审计没有引用该授权")
+        elif resumed[-1].payload.get("approval_id") != approval.id:
+            approval_problems.append(f"{run.run_id}:继续命令没有引用该授权")
+        elif approved[-1].occurred_at < approval.decided_at:
+            approval_problems.append(f"{run.run_id}:批准审计早于审批记录")
+        elif not (approved[-1].occurred_at <= resumed[-1].occurred_at <= attempt.started_at):
+            approval_problems.append(f"{run.run_id}:继续命令与执行顺序不符")
+        elif not any(item.payload.get("attempt_id") == attempt.id for item in succeeded):
+            approval_problems.append(f"{run.run_id}:成功审计没有引用该执行")
+        elif succeeded[-1].occurred_at < attempt.finished_at:
+            approval_problems.append(f"{run.run_id}:成功审计早于执行结束")
+    missing_approval = sorted({"resumed", "expired", "rejected"} - seen_approval)
+    criteria.append(
+        CriterionResult(
+            "V05",
+            bool(manifest.approval_runs) and not missing_approval and not approval_problems,
+            f"审批用例 {len(manifest.approval_runs)} 条；"
+            f"缺用例 {missing_approval or '无'}；问题 {approval_problems or '无'}；"
+            f"漂移分支仅单测",
         )
+    )
+
+    idempotency_problems: list[str] = []
+    idempotency_kinds = {run.kind for run in manifest.idempotency_runs}
+    for run in manifest.idempotency_runs:
+        idempotency_problems.extend(_evidence_problems(run.run_id, run.evidence, run.markers))
+        proposal = await store.get_proposal(run.proposal_id)
+        if proposal is None:
+            idempotency_problems.append(f"{run.run_id}:提案不存在")
+            continue
+        if not proposal.idempotency_key:
+            idempotency_problems.append(f"{run.run_id}:缺幂等键")
+            continue
+        approvals = await store.count_approvals(run.proposal_id)
+        if approvals != run.expected_approvals:
+            idempotency_problems.append(f"{run.run_id}:审批记录 {approvals} 条")
+        attempt = await store.get_attempt(run.proposal_id)
+        attempts = 0 if attempt is None else 1
+        if attempts != run.expected_attempts:
+            idempotency_problems.append(f"{run.run_id}:执行记录 {attempts} 条")
+        audits = await store.list_audit(run.proposal_id)
+        approved = sum(1 for event in audits if event.event == "action.approved")
+        if approved != run.expected_approvals:
+            idempotency_problems.append(f"{run.run_id}:批准审计 {approved} 条")
+
+    dedup_problems: list[str] = []
+    for run in manifest.deduplication_runs:
+        dedup_problems.extend(_evidence_problems(run.run_id, run.evidence, run.markers))
+        incident = await store.get_incident(run.incident_id)
+        if incident is None:
+            dedup_problems.append(f"{run.run_id}:事件不存在")
+            continue
+        if run.fingerprint not in incident.alert_ids:
+            dedup_problems.append(f"{run.run_id}:指纹不在事件中")
+        audits = await store.list_audit(run.investigation_id)
+        received = [
+            event
+            for event in audits
+            if event.event == "alert.received"
+            and run.fingerprint in (event.payload.get("fingerprints") or [])
+        ]
+        if not received:
+            dedup_problems.append(f"{run.run_id}:缺告警接收审计")
+        stamp = await store.get_incident_created_at(run.incident_id)
+        receipts = await store.list_incident_receipts(run.fingerprint)
+        if stamp is None:
+            dedup_problems.append(f"{run.run_id}:缺事件创建时间")
+        else:
+            window = run.window_minutes * 60
+            nearby = [item for item in receipts if abs((item - stamp).total_seconds()) <= window]
+            if len(nearby) != 1:
+                dedup_problems.append(f"{run.run_id}:窗口内事件 {len(nearby)} 个")
+    trace_problems: list[str] = []
+    for run in manifest.trace_runs:
+        trace_problems.extend(_evidence_problems(run.run_id, run.evidence, run.markers))
+        evidence = await store.list_evidence(run.investigation_id)
+        calls = {call.id: call for call in await store.list_tool_calls(run.investigation_id)}
+        cluster = [item for item in evidence if item.source != "knowledge"]
+        if not cluster:
+            trace_problems.append(f"{run.run_id}:没有集群观测证据")
+        root = Path(manifest.evidence_root).resolve()
+        for item in cluster:
+            if not (item.observation or "").strip():
+                trace_problems.append(f"{run.run_id}:证据 {item.id} 没有观测内容")
+            if not item.raw_ref or Path(item.raw_ref).is_absolute():
+                trace_problems.append(f"{run.run_id}:证据 {item.id} 的原始引用不是相对路径")
+            else:
+                raw = (root / item.raw_ref).resolve()
+                if not raw.is_relative_to(root) or not raw.is_file() or raw.stat().st_size == 0:
+                    trace_problems.append(f"{run.run_id}:证据 {item.id} 的原始引用不存在或越界")
+            call = calls.get(item.tool_call_id)
+            if call is None:
+                trace_problems.append(f"{run.run_id}:证据 {item.id} 的工具调用不存在")
+            elif getattr(call, "error_code", None):
+                trace_problems.append(f"{run.run_id}:证据 {item.id} 来自失败的调用")
+            elif getattr(call, "finished_at", None) is None:
+                trace_problems.append(f"{run.run_id}:证据 {item.id} 的工具调用未完成")
+            elif getattr(call, "raw_ref", None) != item.raw_ref:
+                trace_problems.append(f"{run.run_id}:证据 {item.id} 与工具调用引用不一致")
+    criteria.append(
+        CriterionResult(
+            "V07",
+            {"approval", "resume"} <= idempotency_kinds
+            and bool(manifest.deduplication_runs)
+            and bool(manifest.trace_runs)
+            and not idempotency_problems
+            and not dedup_problems
+            and not trace_problems,
+            f"重复审批／继续用例 {len(manifest.idempotency_runs)} 条；"
+            f"告警去重用例 {len(manifest.deduplication_runs)} 条；"
+            f"回查用例 {len(manifest.trace_runs)} 条；"
+            f"重复问题 {idempotency_problems or '无'}；去重问题 {dedup_problems or '无'}；"
+            f"回查问题 {trace_problems or '无'}",
+        )
+    )
+
+    context_problems: list[str] = []
+    for run in manifest.context_runs:
+        context_problems.extend(_evidence_problems(run.run_id, run.evidence, run.markers))
+        investigation = await store.get_investigation(run.investigation_id)
+        if investigation is None:
+            context_problems.append(f"{run.run_id}:调查不存在")
+            continue
+        if (
+            _value(investigation.status) != "completed"
+            or not (investigation.conclusion or "").strip()
+        ):
+            context_problems.append(f"{run.run_id}:调查不是 completed 结论")
+            continue
+        incident = await store.get_incident(investigation.incident_id)
+        if incident is None or not any(run.context_hint in item for item in incident.context):
+            context_problems.append(f"{run.run_id}:Context 未登记")
+        hypotheses = await store.list_hypotheses(run.investigation_id)
+        refuted = [
+            hypothesis
+            for hypothesis in hypotheses
+            if _value(hypothesis.status) == "refuted"
+            and run.refuted_hypothesis in hypothesis.statement
+        ]
+        if not refuted:
+            context_problems.append(f"{run.run_id}:假设没有被反驳记录")
+        evidence = await store.list_evidence(run.investigation_id)
+        refuted_ids = {hypothesis.id for hypothesis in refuted}
+        if not any(
+            item.relation == "refuting" and item.hypothesis_id in refuted_ids for item in evidence
+        ):
+            context_problems.append(f"{run.run_id}:反驳证据没有指向该假设")
+
+    runbook_problems: list[str] = []
+    for run in manifest.runbook_runs:
+        runbook_problems.extend(_evidence_problems(run.run_id, run.evidence, run.markers))
+        investigation = await store.get_investigation(run.investigation_id)
+        if investigation is None:
+            runbook_problems.append(f"{run.run_id}:调查不存在")
+            continue
+        runbook = await store.get_runbook(run.accepted)
+        if runbook is None:
+            runbook_problems.append(f"{run.run_id}:条目不存在")
+        audits = await store.list_audit(run.investigation_id)
+        accepted = {
+            event.payload.get("runbook_id") for event in audits if event.event == "runbook.accepted"
+        }
+        rejected = {
+            event.payload.get("runbook_id") for event in audits if event.event == "runbook.rejected"
+        }
+        judged = [
+            event for event in audits if event.event in ("runbook.accepted", "runbook.rejected")
+        ]
+        if not all((event.payload.get("reason") or "").strip() for event in judged):
+            runbook_problems.append(f"{run.run_id}:判定缺理由")
+        if run.accepted not in accepted:
+            runbook_problems.append(f"{run.run_id}:没有采纳记录")
+        missing_rejected = sorted(set(run.rejected) - rejected)
+        if missing_rejected:
+            runbook_problems.append(f"{run.run_id}:缺拒绝记录 {missing_rejected}")
+        if any(event.event == "runbook.unknown" for event in audits):
+            runbook_problems.append(f"{run.run_id}:引用了未取回的条目")
+        if run.proposal_id:
+            proposal = await store.get_proposal(run.proposal_id)
+            evidence = await store.list_evidence(run.investigation_id)
+            sources = {item.id: item.source for item in evidence}
+            if proposal is None:
+                runbook_problems.append(f"{run.run_id}:动作提案不存在")
+            elif not proposal.evidence_ids:
+                runbook_problems.append(f"{run.run_id}:动作提案没有证据")
+            else:
+                knowledge = [
+                    evidence_id
+                    for evidence_id in proposal.evidence_ids
+                    if sources.get(evidence_id) == "knowledge"
+                ]
+                unknown = [
+                    evidence_id
+                    for evidence_id in proposal.evidence_ids
+                    if evidence_id not in sources
+                ]
+                if knowledge:
+                    runbook_problems.append(f"{run.run_id}:runbook 进入动作证据")
+                if unknown:
+                    runbook_problems.append(f"{run.run_id}:动作证据不存在 {unknown}")
+
+    explain_problems: list[str] = []
+    for run in manifest.explain_runs:
+        explain_problems.extend(_evidence_problems(run.run_id, run.evidence, run.markers))
+        investigation = await store.get_investigation(run.investigation_id)
+        if investigation is None:
+            explain_problems.append(f"{run.run_id}:调查不存在")
+            continue
+        if (
+            _value(investigation.status) != "completed"
+            or not (investigation.conclusion or "").strip()
+        ):
+            explain_problems.append(f"{run.run_id}:追问前结论不完整")
+            continue
+        audits = await store.list_audit(run.investigation_id)
+        requests = [event for event in audits if event.event == "explain.requested"]
+        answered = [event for event in audits if event.event == "explain.answered"]
+        rejected = [event for event in audits if event.event == "explain.rejected"]
+        completed = [event for event in audits if event.event == "investigation.completed"]
+        if not requests:
+            explain_problems.append(f"{run.run_id}:没有追问记录")
+            continue
+        if not completed or completed[0].occurred_at > requests[0].occurred_at:
+            explain_problems.append(f"{run.run_id}:结论不是追问之前完成")
+        # 第一条 v2 请求之前的记录没有请求 ID 和内容摘要；之后必须逐条配对。
+        v2_requests = [
+            event
+            for event in requests
+            if event.payload.get("request_id")
+            and isinstance(event.payload.get("snapshot"), dict)
+            and event.payload["snapshot"].get("version") == 2
+        ]
+        if not v2_requests:
+            explain_problems.append(f"{run.run_id}:没有带请求 ID 的追问")
+        else:
+            boundary = v2_requests[0].occurred_at
+            request_ids = [event.payload.get("request_id") for event in v2_requests]
+            if any(not request_id for request_id in request_ids) or len(set(request_ids)) != len(
+                request_ids
+            ):
+                explain_problems.append(f"{run.run_id}:追问请求 ID 缺失或重复")
+            by_id = {
+                event.payload["request_id"]: event
+                for event in v2_requests
+                if event.payload.get("request_id")
+            }
+            if any(
+                event.payload.get("request_id") not in by_id
+                for event in requests
+                if event.occurred_at >= boundary
+            ):
+                explain_problems.append(f"{run.run_id}:追问请求缺少可比快照")
+            modern_answers = [event for event in answered if event.occurred_at >= boundary]
+            modern_rejected = [event for event in rejected if event.occurred_at >= boundary]
+            paired = []
+            unpaired = []
+            for event in modern_answers:
+                request = by_id.get(event.payload.get("request_id"))
+                if request is None:
+                    unpaired.append(event)
+                    continue
+                paired.append((request, event))
+                snapshot = event.payload.get("snapshot")
+                if not isinstance(snapshot, dict) or snapshot.get("version") != 2:
+                    explain_problems.append(f"{run.run_id}:回答缺少当前状态快照")
+                elif snapshot != request.payload["snapshot"]:
+                    explain_problems.append(f"{run.run_id}:追问前后状态快照不一致")
+            if unpaired:
+                explain_problems.append(f"{run.run_id}:回答没有配对的请求 ID")
+            for event in modern_rejected:
+                request = by_id.get(event.payload.get("request_id"))
+                if request is None:
+                    explain_problems.append(f"{run.run_id}:拒绝记录没有配对的请求 ID")
+                    continue
+                snapshot = event.payload.get("snapshot")
+                if not isinstance(snapshot, dict) or snapshot.get("version") != 2:
+                    explain_problems.append(f"{run.run_id}:拒绝记录缺少当前状态快照")
+                elif snapshot != request.payload["snapshot"]:
+                    explain_problems.append(f"{run.run_id}:拒绝前后状态快照不一致")
+            grounded = [event for event in modern_answers if event.payload.get("citations")]
+            if not grounded:
+                explain_problems.append(f"{run.run_id}:没有带引用的成功回答")
+            missing_answers = [
+                event
+                for event in modern_answers
+                if not (event.payload.get("citations") or [])
+                and event.payload.get("needs_new_query")
+                and (event.payload.get("missing") or [])
+            ]
+            if not missing_answers:
+                explain_problems.append(f"{run.run_id}:缺证据时没有说明缺什么并要求新取证")
+            unsupported = [
+                event
+                for event in modern_answers
+                if event not in missing_answers and not (event.payload.get("citations") or [])
+            ]
+            if unsupported:
+                explain_problems.append(f"{run.run_id}:存在没有引用的无据回答")
+            evidence_ids_now = {item.id for item in await store.list_evidence(run.investigation_id)}
+            if any(
+                not _rejection_cause(event, evidence_ids_now)
+                for event in modern_rejected
+                if "citations" in (event.payload or {})
+            ):
+                explain_problems.append(f"{run.run_id}:拒绝记录与回答形态不一致")
+            comparable = [
+                (request, event)
+                for request, event in paired
+                if isinstance(event.payload.get("snapshot"), dict)
+                and event.payload["snapshot"].get("version") == 2
+            ]
+            if not comparable:
+                explain_problems.append(f"{run.run_id}:回答没有可比的状态快照")
+            else:
+                latest = max(
+                    (event for _, event in comparable), key=lambda event: event.occurred_at
+                )
+                fresh = await store.get_investigation(run.investigation_id) or investigation
+                current_state = await state_snapshot(
+                    store,
+                    fresh,
+                    await store.list_hypotheses(run.investigation_id),
+                    await store.list_evidence(run.investigation_id),
+                )
+                if latest.payload["snapshot"] != current_state:
+                    explain_problems.append(f"{run.run_id}:追问后结论、证据或授权已变化")
+            evidence_ids = evidence_ids_now
+            citations = [
+                citation
+                for event in grounded
+                for citation in (event.payload.get("citations") or [])
+            ]
+            unknown = sorted({citation for citation in citations if citation not in evidence_ids})
+            if unknown:
+                explain_problems.append(f"{run.run_id}:引用不在证据中 {unknown}")
+        first_request = min(event.occurred_at for event in requests)
+        calls = await store.list_tool_calls(run.investigation_id)
+        late_calls = [call.id for call in calls if call.started_at > first_request]
+        if late_calls:
+            explain_problems.append(f"{run.run_id}:追问后新增工具调用 {late_calls}")
+        late_actions = [
+            event.event
+            for event in audits
+            if event.occurred_at > first_request
+            and (event.event.startswith("action.") or event.event.startswith("investigation."))
+        ]
+        if late_actions:
+            explain_problems.append(f"{run.run_id}:追问后仍有动作或状态记录 {late_actions}")
+        for proposal in await store.list_proposals_for_investigation(run.investigation_id):
+            if proposal.created_at > first_request:
+                explain_problems.append(f"{run.run_id}:追问后新增提案 {proposal.id}")
+            proposal_attempt = await store.get_attempt(proposal.id)
+            if proposal_attempt is not None and proposal_attempt.started_at > first_request:
+                explain_problems.append(f"{run.run_id}:追问后新增执行 {proposal_attempt.id}")
+            proposal_approval = await store.get_approval(proposal.id)
+            if proposal_approval is not None and proposal_approval.decided_at > first_request:
+                explain_problems.append(f"{run.run_id}:追问后新增审批 {proposal_approval.id}")
+            for event in await store.list_audit(proposal.id):
+                if event.occurred_at > first_request and event.event.startswith("action."):
+                    explain_problems.append(f"{run.run_id}:追问后新增动作审计 {event.event}")
+    criteria.append(
+        CriterionResult(
+            "V08",
+            bool(manifest.context_runs)
+            and bool(manifest.runbook_runs)
+            and bool(manifest.explain_runs)
+            and not context_problems
+            and not runbook_problems
+            and not explain_problems,
+            f"Context 用例 {len(manifest.context_runs)} 条；runbook 用例 "
+            f"{len(manifest.runbook_runs)} 条；追问用例 {len(manifest.explain_runs)} 条；"
+            f"Context 问题 {context_problems or '无'}；runbook 问题 {runbook_problems or '无'}；"
+            f"追问问题 {explain_problems or '无'}",
+        )
+    )
 
     safety_expected = {"no_improvement", "worsened", "unknown", "insufficient_evidence"}
     seen_safety: set[str] = set()
