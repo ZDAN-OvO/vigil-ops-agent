@@ -24,6 +24,7 @@ from aiops.contracts import (
     InvestigationStatus,
     TimeRange,
     ToolCall,
+    ToolError,
     ToolResult,
 )
 from aiops.investigation.runtime import ActionProposer, Report
@@ -111,13 +112,15 @@ def _text(value: Any) -> str:
 
 
 def _as_time(value: Any) -> datetime | None:
+    """统一成带时区的 UTC 时间；集群接口偶尔省略偏移量，不能让它和窗内时间直接比较。"""
     if isinstance(value, datetime):
-        return value
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     if isinstance(value, str) and value:
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
     return None
 
 
@@ -126,14 +129,14 @@ def _revisions(deployment: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: row.get("revision") or 0)
 
 
-def _oom_container(pod: dict[str, Any], window_start: datetime) -> dict[str, Any] | None:
+def _oom_container(pod: dict[str, Any], window: TimeRange) -> dict[str, Any] | None:
     """只认落在观察窗内的 OOMKilled；历史单次退出不能当成当前根因。"""
     for container in pod.get("containers") or []:
         last = container.get("last_terminated") or {}
         if last.get("reason") != "OOMKilled" and container.get("reason") != "OOMKilled":
             continue
         finished = _as_time(last.get("finished_at"))
-        if finished is None or finished < window_start:
+        if finished is None or not window.start <= finished <= window.end:
             continue
         return container
     return None
@@ -177,14 +180,16 @@ def _deployment_for_pod(pod: dict[str, Any], deployments: list[dict[str, Any]]) 
     matched = [item for item in deployments if _selector_match(pod, item)]
     if matched:
         return max(matched, key=lambda item: len(item.get("selector") or {}))
+    # 选择器存在却不匹配时，Pod 不属于该 Deployment（例如同名 Job 的 Pod）；
+    # 只在 Deployment 没有选择器时才退回 app 标签。
     app = (pod.get("labels") or {}).get("app")
     for deployment in deployments:
-        if deployment.get("name") == app:
+        if deployment.get("name") == app and not deployment.get("selector"):
             return deployment
     return None
 
 
-def _fresh_start(pod: dict[str, Any], window_start: datetime) -> bool:
+def _fresh_start(pod: dict[str, Any], window: TimeRange) -> bool:
     """新 Pod 的容器在观察窗内首次启动：没有重启计数，也没有上一次终止。
 
     回退或重放旧模板时会复用旧 ReplicaSet，创建时间停在过去；
@@ -193,7 +198,7 @@ def _fresh_start(pod: dict[str, Any], window_start: datetime) -> bool:
     """
     for container in pod.get("containers") or []:
         start = _as_time(container.get("started_at"))
-        if start is None or start < window_start:
+        if start is None or not window.start <= start <= window.end:
             continue
         if (container.get("restart_count") or 0) == 0 and not container.get("last_terminated"):
             return True
@@ -296,6 +301,7 @@ class RulesBaseline:
         hypotheses = await self._create_hypotheses()
         evidence_keys: dict[str, list[str]] = {}
         datasets: dict[str, Any] = {}
+        truncated: set[str] = set()
         failures: list[dict[str, Any]] = []
         aborted: str | None = None
         for item in self._plan():
@@ -305,15 +311,30 @@ class RulesBaseline:
                 break
             context = self._tool_context()
             started_at = datetime.now(UTC)
-            # 工具自己的截止时间不被所有实现遵守（知识库查询就没有），这里再加一层硬超时。
+            # 工具自己的截止时间不被所有实现遵守（知识库查询就没有），这里再加一层超时。
+            # wait_for 只能协作取消，工具可能仍在后台跑；单次超时按查询失败记录，墙钟耗尽才中止。
             timeout = max(0.05, context.deadline - time.monotonic()) + 0.05
             try:
                 result = await asyncio.wait_for(
                     self._toolbox.run(context, self._window, item.request), timeout=timeout
                 )
             except TimeoutError:
-                aborted = "wall_clock"
-                break
+                finished_at = datetime.now(UTC)
+                if time.monotonic() >= self._deadline:
+                    aborted = "wall_clock"
+                    break
+                result = ToolResult(
+                    tool_call_id=f"tc-{uuid.uuid4().hex[:12]}",
+                    source=item.request.tool,
+                    query=item.request.model_dump(mode="json"),
+                    time_range=self._window,
+                    collected_at=finished_at,
+                    error=ToolError(
+                        code="timeout",
+                        message=f"工具调用超过 {self._tool_timeout:g} 秒未返回",
+                        retryable=True,
+                    ),
+                )
             finished_at = datetime.now(UTC)
             await self._record_tool_call(item.request, result, started_at, finished_at)
             if result.error is not None:
@@ -327,6 +348,8 @@ class RulesBaseline:
                 )
                 continue
             datasets[item.key] = result.data
+            if result.truncated:
+                truncated.add(item.key)
             evidence_keys[item.key] = [
                 await self._record_evidence(item, hypotheses[item.hypothesis]["id"], result)
             ]
@@ -343,7 +366,7 @@ class RulesBaseline:
                 proposal_id=None,
             )
 
-        hit = self._decide(datasets, failures)
+        hit = self._decide(datasets, failures, truncated)
         if time.monotonic() >= self._deadline:
             return await self._finish(
                 InvestigationStatus.ABORTED,
@@ -364,6 +387,16 @@ class RulesBaseline:
             )
 
         await self._apply(hit, hypotheses, evidence_keys)
+        # 记账写入也可能耗尽墙钟预算；超出后不能再产生新的提案。
+        if time.monotonic() >= self._deadline:
+            return await self._finish(
+                InvestigationStatus.ABORTED,
+                conclusion=None,
+                termination="预算耗尽：wall_clock",
+                hypotheses=hypotheses,
+                evidence_keys=evidence_keys,
+                proposal_id=None,
+            )
         supporting = [
             evidence_id for key in hit.evidence_keys for evidence_id in evidence_keys.get(key, [])
         ]
@@ -551,7 +584,12 @@ class RulesBaseline:
         await self._store.save_evidence(evidence)
         return evidence.id
 
-    def _decide(self, datasets: dict[str, Any], failures: list[dict[str, Any]]) -> _Hit | None:
+    def _decide(
+        self,
+        datasets: dict[str, Any],
+        failures: list[dict[str, Any]],
+        truncated: set[str],
+    ) -> _Hit | None:
         deployments = _items(datasets.get("deployments"))
         pods = _items(datasets.get("pods"))
         events = _items(datasets.get("events"))
@@ -564,11 +602,14 @@ class RulesBaseline:
         common = {
             "probe_success": probe,
             "missing_queries": missing,
+            "truncated_queries": sorted(truncated),
             "runbooks": runbooks,
             "failures": failures,
             "event_count": len(events),
         }
-        complete = all(key in datasets for key in ("deployments", "pods", "logs"))
+        complete = all(
+            key in datasets and key not in truncated for key in ("deployments", "pods", "logs")
+        )
         hit = self._match_oom(deployments, pods, common)
         if hit is None:
             hit = self._match_change(deployments, pods, logs, common)
@@ -580,7 +621,7 @@ class RulesBaseline:
         self, deployments: list[dict], pods: list[dict], common: dict[str, Any]
     ) -> _Hit | None:
         for pod in pods:
-            container = _oom_container(pod, self._window.start)
+            container = _oom_container(pod, self._window)
             if container is None:
                 continue
             deployment = _deployment_for_pod(pod, deployments)
@@ -649,7 +690,7 @@ class RulesBaseline:
         self, deployments: list[dict], pods: list[dict], logs: list[dict], common: dict[str, Any]
     ) -> _Hit | None:
         """观察窗内重新启动、且模板与上一版不同的工作负载；必须有失败关联。"""
-        window_start = self._window.start
+        window = self._window
         candidates: list[tuple[datetime, dict, dict, dict | None, str, datetime | None]] = []
         for deployment in deployments:
             revisions = _revisions(deployment)
@@ -659,17 +700,21 @@ class RulesBaseline:
             previous = revisions[-2] if len(revisions) > 1 else None
             pods_for = _pods_for(deployment, pods)
             starts = [start for pod in pods_for if (start := _started_at(pod)) is not None]
-            starts = [start for start in starts if start >= window_start]
+            starts = [start for start in starts if window.start <= start <= window.end]
             if not starts:
                 continue
             started = max(starts)
             created = _as_time(latest.get("created_at"))
+            created_in_window = created is not None and window.start <= created <= window.end
             # 容器今天重启不代表模板今天改过。新增负载必须是模板本身在窗内创建；
             # 有上一版时，复用旧 ReplicaSet 的回退或重放可以靠“无重启历史的新 Pod”识别。
-            if created is None or created < window_start:
+            if not created_in_window:
                 if previous is None:
                     continue
-                if not any(_fresh_start(item, window_start) for item in pods_for):
+                # 模板创建时间在窗后属于数据不一致，不能再拿新 Pod 反推窗内变更。
+                if created is not None and created > window.end:
+                    continue
+                if not any(_fresh_start(item, window) for item in pods_for):
                     continue
             name = _text(deployment.get("name"))
             hint = _log_hint(name, logs)

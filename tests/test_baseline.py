@@ -154,7 +154,7 @@ class RecordingProposer:
         )
 
 
-def result(data, *, source="kubernetes", error=None):
+def result(data, *, source="kubernetes", error=None, truncated=False):
     return ToolResult(
         tool_call_id=f"tc-{uuid4().hex[:8]}",
         source=source,
@@ -164,6 +164,7 @@ def result(data, *, source="kubernetes", error=None):
         data=None if error else data,
         error=error,
         raw_ref=None if error else "evidence/synthetic.json",
+        truncated=truncated,
     )
 
 
@@ -189,7 +190,7 @@ def deployment(name, revisions, *, limits="128Mi", app=None, selector=None):
     }
 
 
-def pod(name, app, *, oom=False, restarts=0, ready=True, finished=None, started=None):
+def pod(name, app, *, oom=False, restarts=0, ready=True, finished=None, started=None, labels=None):
     terminated = None
     if oom:
         terminated = {
@@ -205,7 +206,9 @@ def pod(name, app, *, oom=False, restarts=0, ready=True, finished=None, started=
         "last_terminated": terminated,
         "started_at": (started or START + timedelta(minutes=10)).isoformat(),
     }
-    return {"name": name, "labels": {"app": app}, "containers": [container]}
+    pod_labels = {"app": app}
+    pod_labels.update(labels or {})
+    return {"name": name, "labels": pod_labels, "containers": [container]}
 
 
 def plan(deployments=None, pods=None, events=None, logs=None, probe=None, runbooks=None):
@@ -252,7 +255,13 @@ def build(*, budget_tool_calls=16, budget_wall_seconds=120, proposer=None):
 
 
 def run_case(
-    results, *, budget_tool_calls=16, budget_wall_seconds=120, proposer=None, toolbox=None
+    results,
+    *,
+    budget_tool_calls=16,
+    budget_wall_seconds=120,
+    proposer=None,
+    toolbox=None,
+    tool_timeout_seconds=10.0,
 ):
     incident, investigation = build(
         budget_tool_calls=budget_tool_calls,
@@ -269,6 +278,7 @@ def run_case(
         observation_window=WINDOW,
         runtime_path=None,
         proposer=proposer,
+        tool_timeout_seconds=tool_timeout_seconds,
     )
     report = asyncio.run(baseline.run())
     return report, store, toolbox, investigation
@@ -619,3 +629,126 @@ def test_single_revision_reactivated_is_not_new_workload():
 
     assert report.status is InvestigationStatus.INCONCLUSIVE
     assert store.events("baseline.rule") == []
+
+
+def test_job_pod_label_mismatch_is_not_attributed_to_deployment():
+    proposer = RecordingProposer()
+    results = plan(
+        deployments=[
+            deployment(
+                "cart",
+                [revision(1, memory="128Mi"), revision(2, memory="16Mi")],
+                limits="16Mi",
+                selector={"app": "cart", "role": "api"},
+            )
+        ],
+        pods=[
+            pod(
+                "cart-job-x",
+                "cart",
+                oom=True,
+                restarts=1,
+                ready=False,
+                labels={"role": "worker"},
+            )
+        ],
+        probe=0,
+    )
+
+    report, store, _, _ = run_case(results, proposer=proposer)
+
+    # 同名 Job 的 Pod 不满足 Deployment 选择器，不能被归给 cart 并据此回退。
+    assert report.status is InvestigationStatus.COMPLETED
+    assert store.events("baseline.rule")[0].payload["deployment"] == ""
+    assert proposer.calls == []
+
+
+def test_oom_finished_after_window_is_not_a_hit():
+    results = plan(
+        deployments=[
+            deployment(
+                "currencyservice",
+                [revision(1, created=START - timedelta(days=2))],
+                limits="16Mi",
+            )
+        ],
+        pods=[
+            pod(
+                "currencyservice-abc",
+                "currencyservice",
+                oom=True,
+                started=START - timedelta(hours=1),
+                finished=START + timedelta(minutes=20),
+            )
+        ],
+        probe=1,
+    )
+
+    report, store, _, _ = run_case(results)
+
+    assert report.status is InvestigationStatus.INCONCLUSIVE
+    assert store.events("baseline.rule") == []
+
+
+def test_pod_started_after_window_is_not_a_recent_rollout():
+    results = plan(
+        deployments=[
+            deployment(
+                "productcatalogservice",
+                [
+                    revision(20, created=START + timedelta(minutes=16)),
+                    revision(21, image="repo/app:canary", created=START + timedelta(minutes=16)),
+                ],
+            )
+        ],
+        pods=[pod("productcatalogservice-abc", "productcatalogservice", ready=False)],
+        probe=1,
+    )
+
+    report, store, _, _ = run_case(results)
+
+    # 模板创建时间落在观察窗之后属于数据不一致，不能当作窗内变更。
+    assert report.status is InvestigationStatus.INCONCLUSIVE
+    assert store.events("baseline.rule") == []
+
+
+def test_single_tool_timeout_is_recorded_without_aborting():
+    toolbox = SlowToolbox(0.5)
+
+    report, store, _, _ = run_case([], toolbox=toolbox, tool_timeout_seconds=0.1)
+
+    # 单次工具超时是一次查询失败，不是全局墙钟耗尽；六次调用都要记账。
+    assert report.status is InvestigationStatus.INCONCLUSIVE
+    assert "预算耗尽" not in report.termination_reason
+    assert len(store.calls) == 6
+    assert [call.error_code for call in store.calls] == ["timeout"] * 6
+    assert store.usage["tool_calls"] == 6
+    assert store.evidence == []
+    assert store.events("baseline.rule") == []
+
+
+def test_truncated_datasets_cannot_claim_complete_coverage():
+    results = plan(deployments=[], pods=[], probe=0)
+    results[0] = result({"items": [], "count": 0}, truncated=True)
+
+    report, store, _, _ = run_case(results)
+
+    # 数据集被截断时不能声称已排除其他根因，也不能只用探针下依赖结论。
+    assert report.status is InvestigationStatus.INCONCLUSIVE
+    assert store.events("baseline.rule") == []
+
+
+def test_naive_template_timestamp_does_not_break_decision():
+    proposer = RecordingProposer()
+    latest = revision(21, image="repo/app:canary")
+    latest["created_at"] = "2026-11-06T10:05:00"
+    results = plan(
+        deployments=[deployment("productcatalogservice", [revision(20), latest])],
+        pods=[pod("productcatalogservice-abc", "productcatalogservice", ready=False)],
+        probe=1,
+    )
+
+    report, _, _, _ = run_case(results, proposer=proposer)
+
+    assert report.status is InvestigationStatus.COMPLETED
+    assert proposer.calls[0]["deployment"] == "productcatalogservice"
