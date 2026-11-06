@@ -1,0 +1,822 @@
+"""固定规则基线：零模型调用，用固定查询与规则表产生可对照的调查记录。"""
+
+from __future__ import annotations
+
+import re
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Protocol
+
+from aiops.actions.executor import AutoExecutionError
+from aiops.actions.policy import ALLOWED_KINDS, POLICY_VERSION
+from aiops.actions.rollout_undo import ActionError
+from aiops.contracts import (
+    ActionOrigin,
+    AuditEvent,
+    Evidence,
+    Hypothesis,
+    Incident,
+    Investigation,
+    InvestigationStatus,
+    TimeRange,
+    ToolCall,
+    ToolResult,
+)
+from aiops.investigation.runtime import ActionProposer, Report
+from aiops.investigation.schemas import QueryRequest
+from aiops.investigation.toolbox import ToolboxProtocol, observation
+from aiops.tools.base import ToolContext
+
+RULES_VERSION = "rules-1"
+ACTOR = "rules-baseline"
+
+HYPOTHESES = (
+    (
+        "resource",
+        "容器因资源配置不足或进程按错误码退出",
+        ["last_terminated.reason 与 exit_code", "restart_count"],
+    ),
+    (
+        "change",
+        "观察窗内的工作负载模板变更或新增工作负载",
+        ["revision 与上一版的镜像和内存规格差异", "revision 创建时间落在观察窗"],
+    ),
+    (
+        "dependency",
+        "入口服务访问依赖时出现连接、解析或超时错误",
+        ["入口服务日志中的连接错误", "业务探针成功值"],
+    ),
+)
+
+DEPENDENCY_MARKERS = (
+    "connection refused",
+    "no such host",
+    "econnrefused",
+    "etimedout",
+    "i/o timeout",
+    "name resolution",
+    "dial tcp",
+    "temporarily unavailable",
+)
+
+ERROR_MARKERS = ("error", "failed", "exception", "unavailable", "refused", "timeout", "500")
+
+
+class StoreProtocol(Protocol):
+    async def get_investigation(self, investigation_id: str) -> Investigation | None: ...
+    async def save_hypothesis(self, hypothesis: Hypothesis) -> None: ...
+    async def set_hypothesis_status(self, hypothesis_id: str, status: Any) -> None: ...
+    async def save_tool_call(self, call: ToolCall) -> None: ...
+    async def save_evidence(self, evidence: Evidence) -> None: ...
+    async def set_evidence_relation(self, evidence_id: str, relation: str) -> None: ...
+    async def add_usage(
+        self, investigation_id: str, *, tool_calls: int = 0, model_calls: int = 0
+    ) -> None: ...
+    async def set_investigation_status(
+        self,
+        investigation_id: str,
+        status: InvestigationStatus,
+        *,
+        conclusion: str | None = None,
+        termination_reason: str | None = None,
+        finished_at: Any = None,
+    ) -> None: ...
+    async def append_audit(self, events: list[AuditEvent]) -> None: ...
+
+
+@dataclass(frozen=True)
+class _Query:
+    key: str
+    hypothesis: int
+    request: QueryRequest
+
+
+@dataclass
+class _Hit:
+    rule: str
+    hypothesis: str
+    conclusion: str
+    action: str
+    deployment: str = ""
+    evidence_keys: tuple[str, ...] = ()
+    signals: dict[str, Any] = field(default_factory=dict)
+
+
+def _text(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _as_time(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def _revisions(deployment: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = [row for row in deployment.get("revisions") or [] if isinstance(row, dict)]
+    return sorted(rows, key=lambda row: row.get("revision") or 0)
+
+
+def _oom_container(pod: dict[str, Any], window_start: datetime) -> dict[str, Any] | None:
+    """只认落在观察窗内的 OOMKilled；历史单次退出不能当成当前根因。"""
+    for container in pod.get("containers") or []:
+        last = container.get("last_terminated") or {}
+        if last.get("reason") != "OOMKilled" and container.get("reason") != "OOMKilled":
+            continue
+        finished = _as_time(last.get("finished_at"))
+        if finished is None or finished < window_start:
+            continue
+        return container
+    return None
+
+
+def _deployment_for_pod(pod: dict[str, Any], deployments: list[dict[str, Any]]) -> dict | None:
+    app = (pod.get("labels") or {}).get("app")
+    for deployment in deployments:
+        if deployment.get("name") == app:
+            return deployment
+    prefix = (pod.get("name") or "").rsplit("-", 2)[0]
+    for deployment in deployments:
+        if deployment.get("name") == prefix:
+            return deployment
+    return None
+
+
+def _started_at(pod: dict[str, Any]) -> datetime | None:
+    starts = [
+        start
+        for container in pod.get("containers") or []
+        if (start := _as_time(container.get("started_at"))) is not None
+    ]
+    return max(starts) if starts else None
+
+
+def _pods_for(deployment: dict[str, Any], pods: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    name = _text(deployment.get("name"))
+    return [
+        pod
+        for pod in pods
+        if (pod.get("labels") or {}).get("app") == name
+        or (pod.get("name") or "").startswith(f"{name}-")
+    ]
+
+
+def _log_hint(name: str, logs: list[dict[str, Any]]) -> str:
+    """入口日志里同时出现错误标记和该工作负载名称前缀时，作为变更的失败关联。"""
+    compact_name = re.sub(r"[^a-z0-9]", "", name.lower())
+    if len(compact_name) < 8:
+        return ""
+    for item in logs:
+        for line in item.get("lines") or []:
+            low = str(line).lower()
+            if not any(marker in low for marker in ERROR_MARKERS):
+                continue
+            compact = re.sub(r"[^a-z0-9]", "", low)
+            for size in range(len(compact_name), 7, -1):
+                if compact_name[:size] in compact:
+                    return str(line)[:200]
+    return ""
+
+
+def _probe_value(dataset: Any) -> float | None:
+    if not isinstance(dataset, dict):
+        return None
+    for series in dataset.get("series") or []:
+        points = series.get("points") or []
+        if not points:
+            continue
+        raw = points[-1][1]
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+class RulesBaseline:
+    """固定版本、固定顺序的规则调查；任何结论都必须来自本轮取到的证据。"""
+
+    def __init__(
+        self,
+        *,
+        store: StoreProtocol,
+        toolbox: ToolboxProtocol,
+        incident: Incident,
+        investigation: Investigation,
+        observation_window: TimeRange,
+        runtime_path: Path,
+        proposer: ActionProposer | None = None,
+        tool_timeout_seconds: float = 10.0,
+        max_observation_chars: int = 4000,
+    ) -> None:
+        self._store = store
+        self._toolbox = toolbox
+        self._incident = incident
+        self._investigation = investigation
+        self._investigation_id = investigation.id
+        self._budget = investigation.budget
+        self._window = observation_window
+        self._runtime_path = runtime_path
+        self._proposer = proposer
+        self._tool_timeout = tool_timeout_seconds
+        self._max_observation_chars = max_observation_chars
+        self._used_tool_calls = investigation.usage.tool_calls
+        self._deadline = time.monotonic() + investigation.budget.max_wall_clock_seconds
+
+    async def run(self) -> Report:
+        await self._audit(
+            "baseline.started",
+            {
+                "rules_version": RULES_VERSION,
+                "budget": self._budget.model_dump(mode="json"),
+                "tools": [item.request.tool for item in self._plan()],
+                "policy_version": POLICY_VERSION,
+                "authorized_kinds": sorted(kind.value for kind in ALLOWED_KINDS),
+                "service": self._incident.service,
+                "namespace": self._incident.namespace,
+            },
+        )
+        hypotheses = await self._create_hypotheses()
+        evidence_keys: dict[str, list[str]] = {}
+        datasets: dict[str, Any] = {}
+        failures: list[dict[str, Any]] = []
+        aborted: str | None = None
+        for item in self._plan():
+            block = self._tool_budget_block()
+            if block is not None:
+                aborted = block
+                break
+            context = self._tool_context()
+            started_at = datetime.now(UTC)
+            result = await self._toolbox.run(context, self._window, item.request)
+            finished_at = datetime.now(UTC)
+            await self._record_tool_call(item.request, result, started_at, finished_at)
+            if result.error is not None:
+                failures.append(
+                    {
+                        "query": item.key,
+                        "tool": item.request.tool,
+                        "error": result.error.code,
+                        "message": result.error.message,
+                    }
+                )
+                continue
+            datasets[item.key] = result.data
+            evidence_keys[item.key] = [
+                await self._record_evidence(item, hypotheses[item.hypothesis]["id"], result)
+            ]
+
+        if aborted is not None:
+            return await self._finish(
+                InvestigationStatus.ABORTED,
+                conclusion=None,
+                termination=f"预算耗尽：{aborted}",
+                hypotheses=hypotheses,
+                evidence_keys=evidence_keys,
+                proposal_id=None,
+            )
+
+        hit = self._decide(datasets, failures)
+        if hit is None:
+            return await self._finish(
+                InvestigationStatus.INCONCLUSIVE,
+                conclusion=None,
+                termination="固定规则未命中，证据不足以判定根因",
+                hypotheses=hypotheses,
+                evidence_keys=evidence_keys,
+                proposal_id=None,
+            )
+
+        await self._apply(hit, hypotheses, evidence_keys)
+        supporting = [
+            evidence_id for key in hit.evidence_keys for evidence_id in evidence_keys.get(key, [])
+        ]
+        proposal_id = None
+        if hit.action == "rollout_undo" and hit.deployment:
+            conclusion = hit.conclusion
+            if supporting:
+                conclusion = f"{conclusion} 证据：{', '.join(supporting)}。"
+            else:
+                conclusion = f"{conclusion} 没有可作为动作依据的集群证据。"
+            proposal_id = await self._propose_rollback(hit, supporting)
+        else:
+            conclusion = hit.conclusion
+        return await self._finish(
+            InvestigationStatus.COMPLETED,
+            conclusion=conclusion,
+            termination=None,
+            hypotheses=hypotheses,
+            evidence_keys=evidence_keys,
+            proposal_id=proposal_id,
+        )
+
+    def _plan(self) -> list[_Query]:
+        lookback = max(60, min(3600, int((self._window.end - self._window.start).total_seconds())))
+        service = self._incident.service
+        symptoms = self._incident.symptoms[:500]
+        return [
+            _Query(
+                "deployments",
+                1,
+                QueryRequest(
+                    hypothesis=1,
+                    tool="kubernetes.list_deployments",
+                    purpose="列出全部工作负载与最近模板，检查观察窗内的变更",
+                    expression="",
+                    lookback_seconds=lookback,
+                    step_seconds=30,
+                    selector="",
+                    involved_name="",
+                ),
+            ),
+            _Query(
+                "pods",
+                0,
+                QueryRequest(
+                    hypothesis=0,
+                    tool="kubernetes.list_pods",
+                    purpose="检查容器终止原因、退出码与重启次数",
+                    expression="",
+                    lookback_seconds=lookback,
+                    step_seconds=30,
+                    selector="",
+                    involved_name="",
+                ),
+            ),
+            _Query(
+                "events",
+                1,
+                QueryRequest(
+                    hypothesis=1,
+                    tool="kubernetes.list_events",
+                    purpose="核对探针失败、驱逐与调度事件",
+                    expression="",
+                    lookback_seconds=lookback,
+                    step_seconds=30,
+                    selector="",
+                    involved_name="",
+                ),
+            ),
+            _Query(
+                "logs",
+                2,
+                QueryRequest(
+                    hypothesis=2,
+                    tool="kubernetes.list_logs",
+                    purpose="读取入口服务日志中的依赖访问错误",
+                    expression="",
+                    lookback_seconds=lookback,
+                    step_seconds=30,
+                    selector=f"app={service}",
+                    involved_name="",
+                ),
+            ),
+            _Query(
+                "probe",
+                2,
+                QueryRequest(
+                    hypothesis=2,
+                    tool="prometheus.query_range",
+                    purpose="读取业务探针成功值，作为独立业务信号",
+                    expression='probe_success{job="frontend-probe"}',
+                    lookback_seconds=max(60, min(3600, lookback)),
+                    step_seconds=30,
+                    selector="",
+                    involved_name="",
+                ),
+            ),
+            _Query(
+                "runbooks",
+                0,
+                QueryRequest(
+                    hypothesis=0,
+                    tool="knowledge.list_runbooks",
+                    purpose="按症状检索固定 runbook，仅作参考",
+                    expression=symptoms,
+                    lookback_seconds=lookback,
+                    step_seconds=30,
+                    selector=service,
+                    involved_name="",
+                ),
+            ),
+        ]
+
+    async def _create_hypotheses(self) -> list[dict[str, Any]]:
+        hypotheses = []
+        for key, statement, expected in HYPOTHESES:
+            hypothesis = Hypothesis(
+                id=f"hyp-{uuid.uuid4().hex[:12]}",
+                investigation_id=self._investigation_id,
+                statement=statement,
+                expected_observations=list(expected),
+                origin="runbook",
+            )
+            await self._store.save_hypothesis(hypothesis)
+            hypotheses.append(
+                {
+                    "key": key,
+                    "id": hypothesis.id,
+                    "statement": statement,
+                    "status": hypothesis.status.value,
+                }
+            )
+        return hypotheses
+
+    def _tool_budget_block(self) -> str | None:
+        if self._used_tool_calls >= self._budget.max_tool_calls:
+            return "tool_calls"
+        if time.monotonic() >= self._deadline:
+            return "wall_clock"
+        return None
+
+    def _tool_context(self) -> ToolContext:
+        remaining = self._deadline - time.monotonic()
+        return ToolContext(
+            investigation_id=self._investigation_id,
+            cluster=self._incident.cluster,
+            namespace=self._incident.namespace,
+            runtime_path=self._runtime_path,
+            deadline=time.monotonic() + min(self._tool_timeout, max(0.0, remaining)),
+        )
+
+    async def _record_tool_call(
+        self, request: QueryRequest, result: ToolResult, started_at, finished_at
+    ) -> None:
+        self._used_tool_calls += 1
+        await self._store.add_usage(self._investigation_id, tool_calls=1)
+        await self._store.save_tool_call(
+            ToolCall(
+                id=result.tool_call_id,
+                investigation_id=self._investigation_id,
+                tool=request.tool,
+                parameters=request.model_dump(),
+                time_range=result.time_range,
+                started_at=started_at,
+                finished_at=finished_at,
+                error_code=result.error.code if result.error else None,
+                truncated=result.truncated,
+                raw_ref=result.raw_ref,
+            )
+        )
+
+    async def _record_evidence(self, item: _Query, hypothesis_id: str, result: ToolResult) -> str:
+        evidence = Evidence(
+            id=f"ev-{uuid.uuid4().hex[:12]}",
+            investigation_id=self._investigation_id,
+            hypothesis_id=hypothesis_id,
+            tool_call_id=result.tool_call_id,
+            source=result.source,
+            independence_key=f"{result.source}:{item.request.tool}",
+            observation=observation(result, max_chars=self._max_observation_chars),
+            relation="neutral",
+            raw_ref=result.raw_ref or "",
+            time_range=result.time_range,
+        )
+        await self._store.save_evidence(evidence)
+        return evidence.id
+
+    def _decide(self, datasets: dict[str, Any], failures: list[dict[str, Any]]) -> _Hit | None:
+        deployments = _items(datasets.get("deployments"))
+        pods = _items(datasets.get("pods"))
+        events = _items(datasets.get("events"))
+        logs = _items(datasets.get("logs"))
+        probe = _probe_value(datasets.get("probe"))
+        runbooks = [
+            str(item.get("id")) for item in _items(datasets.get("runbooks")) if item.get("id")
+        ]
+        missing = [item["query"] for item in failures]
+        common = {
+            "probe_success": probe,
+            "missing_queries": missing,
+            "runbooks": runbooks,
+            "failures": failures,
+            "event_count": len(events),
+        }
+        hit = self._match_oom(deployments, pods, common)
+        if hit is None:
+            hit = self._match_change(deployments, pods, logs, common)
+        if hit is None:
+            hit = self._match_dependency(logs, probe, common)
+        return hit
+
+    def _match_oom(
+        self, deployments: list[dict], pods: list[dict], common: dict[str, Any]
+    ) -> _Hit | None:
+        for pod in pods:
+            container = _oom_container(pod, self._window.start)
+            if container is None:
+                continue
+            deployment = _deployment_for_pod(pod, deployments)
+            name = _text(deployment.get("name") if deployment else "")
+            revisions = _revisions(deployment) if deployment else []
+            current = revisions[-1] if revisions else None
+            previous = revisions[-2] if len(revisions) > 1 else None
+            limits = ""
+            requests = ""
+            if deployment:
+                for item in deployment.get("containers") or []:
+                    if item.get("name") == container.get("name"):
+                        limits = _text((item.get("limits") or {}).get("memory"))
+                        requests = _text((item.get("requests") or {}).get("memory"))
+            last = container.get("last_terminated") or {}
+            detail = (
+                f"{name or pod.get('name')} 的 Pod {pod.get('name')} 以 OOMKilled 退出"
+                f"（exit_code={last.get('exit_code')}，restart_count={container.get('restart_count')}），"
+                f"当前内存 limits={limits or '未取到'}、requests={requests or '未取到'}"
+            )
+            if previous is None:
+                detail += "；没有可比较的历史模板，不能确认回退适用"
+                action = "none"
+            elif previous.get("memory_limit") == (current or {}).get("memory_limit"):
+                detail += (
+                    f"；上一版 revision {previous.get('revision')} 的内存限额相同，"
+                    "回退不能修复资源规格"
+                )
+                action = "none"
+            else:
+                detail += (
+                    f"；上一版 revision {previous.get('revision')} 的内存限额为 "
+                    f"{previous.get('memory_limit') or '未取到'}"
+                )
+                action = "rollout_undo" if deployment else "none"
+                if not deployment:
+                    detail += "；没有匹配到 Deployment，无法提案"
+            return _Hit(
+                rule="oom-limit",
+                hypothesis="resource",
+                conclusion=f"固定规则判定：{detail}。",
+                action=action,
+                deployment=name,
+                evidence_keys=("pods", "deployments"),
+                signals={
+                    **common,
+                    "pod": pod.get("name"),
+                    "deployment": name,
+                    "last_reason": last.get("reason"),
+                    "current_revision": (current or {}).get("revision"),
+                    "previous_revision": (previous or {}).get("revision"),
+                },
+            )
+        return None
+
+    def _match_change(
+        self, deployments: list[dict], pods: list[dict], logs: list[dict], common: dict[str, Any]
+    ) -> _Hit | None:
+        """观察窗内重新启动、且模板与上一版不同的工作负载；必须有失败关联。"""
+        window_start = self._window.start
+        candidates: list[tuple[datetime, dict, dict, dict | None, str, datetime | None]] = []
+        for deployment in deployments:
+            revisions = _revisions(deployment)
+            if not revisions:
+                continue
+            latest = revisions[-1]
+            previous = revisions[-2] if len(revisions) > 1 else None
+            pods_for = _pods_for(deployment, pods)
+            starts = [start for pod in pods_for if (start := _started_at(pod)) is not None]
+            starts = [start for start in starts if start >= window_start]
+            if not starts:
+                continue
+            started = max(starts)
+            created = _as_time(latest.get("created_at"))
+            name = _text(deployment.get("name"))
+            hint = _log_hint(name, logs)
+            unhealthy = bool(deployment.get("unavailable_replicas")) or any(
+                container.get("ready") is False
+                for pod in pods_for
+                for container in pod.get("containers") or []
+            )
+            if previous is None:
+                if created is None or created < window_start:
+                    continue
+                candidates.append((started, deployment, latest, None, hint, created))
+                continue
+            if (
+                previous.get("image") == latest.get("image")
+                and previous.get("memory_limit") == latest.get("memory_limit")
+                and previous.get("memory_request") == latest.get("memory_request")
+            ):
+                continue
+            if not hint and not unhealthy:
+                continue
+            candidates.append((started, deployment, latest, previous, hint, created))
+        if not candidates:
+            return None
+        started, deployment, latest, previous, hint, created = max(
+            candidates, key=lambda row: row[0]
+        )
+        name = _text(deployment.get("name"))
+        if previous is None:
+            return _Hit(
+                rule="new-workload",
+                hypothesis="change",
+                conclusion=(
+                    f"固定规则判定：观察窗内新增工作负载 {name}"
+                    f"（revision {latest.get('revision')}，镜像 {latest.get('image')}，"
+                    f"创建于 {created.isoformat() if created else '未取到'}）。"
+                    "现有动作没有可回退的历史模板，需要人工核实该变更是否与故障相关。"
+                ),
+                action="none",
+                deployment=name,
+                evidence_keys=("deployments", "pods"),
+                signals={
+                    **common,
+                    "deployment": name,
+                    "rule_revision": latest.get("revision"),
+                    "created_at": created.isoformat() if created else None,
+                    "started_at": started.isoformat(),
+                },
+            )
+        return _Hit(
+            rule="recent-rollout",
+            hypothesis="change",
+            conclusion=(
+                f"固定规则判定：{name} 的 Pod 在观察窗内启动"
+                f"（{started.isoformat()}），当前模板 revision {latest.get('revision')}"
+                f"（镜像 {latest.get('image')}，内存限额 {latest.get('memory_limit') or '未取到'}）"
+                f"与上一版 revision {previous.get('revision')} 不同"
+                f"（镜像 {previous.get('image')}，内存限额 "
+                f"{previous.get('memory_limit') or '未取到'}）；"
+                + ("入口日志出现该工作负载的错误。" if hint else "该工作负载当前不健康。")
+            ),
+            action="rollout_undo",
+            deployment=name,
+            evidence_keys=("deployments", "pods"),
+            signals={
+                **common,
+                "deployment": name,
+                "rule_revision": latest.get("revision"),
+                "previous_revision": previous.get("revision"),
+                "started_at": started.isoformat(),
+                "log_hint": hint,
+                "unhealthy": unhealthy,
+            },
+        )
+
+    def _match_dependency(
+        self, logs: list[dict], probe: float | None, common: dict[str, Any]
+    ) -> _Hit | None:
+        markers: list[str] = []
+        for item in logs:
+            for line in item.get("lines") or []:
+                lowered = str(line).lower()
+                for marker in DEPENDENCY_MARKERS:
+                    if marker in lowered and marker not in markers:
+                        markers.append(marker)
+        if not markers and not (probe is not None and probe < 1):
+            return None
+        observed: list[str] = []
+        if markers:
+            observed.append(f"日志出现依赖访问错误（{', '.join(markers)}）")
+        if probe is not None and probe < 1:
+            observed.append(f"业务探针成功值为 {probe:g}")
+        return _Hit(
+            rule="dependency-chain",
+            hypothesis="dependency",
+            conclusion=(
+                "固定规则判定："
+                + "；".join(observed)
+                + "。命名空间内没有命中 OOMKilled 或观察窗内的模板变更；"
+                "现有动作不能移除依赖链路故障，需要人工核实下游服务与网络路径。"
+            ),
+            action="none",
+            evidence_keys=("logs", "probe"),
+            signals={**common, "markers": markers, "probe_success": probe},
+        )
+
+    async def _apply(
+        self,
+        hit: _Hit,
+        hypotheses: list[dict[str, Any]],
+        evidence_keys: dict[str, list[str]],
+    ) -> None:
+        for hypothesis in hypotheses:
+            status = "supported" if hypothesis["key"] == hit.hypothesis else "inconclusive"
+            hypothesis["status"] = status
+            await self._store.set_hypothesis_status(hypothesis["id"], status)
+        supporting = set(hit.evidence_keys)
+        for key, ids in evidence_keys.items():
+            relation = "supporting" if key in supporting else "neutral"
+            for evidence_id in ids:
+                await self._store.set_evidence_relation(evidence_id, relation)
+        await self._audit(
+            "baseline.rule",
+            {
+                "rules_version": RULES_VERSION,
+                "rule": hit.rule,
+                "hypothesis": hit.hypothesis,
+                "action": hit.action,
+                "deployment": hit.deployment,
+                "signals": hit.signals,
+            },
+        )
+
+    async def _propose_rollback(self, hit: _Hit, supporting: list[str]) -> str | None:
+        if self._proposer is None:
+            await self._skip_action("proposer_unavailable", hit.deployment)
+            return None
+        if not supporting:
+            await self._skip_action("no_supporting_evidence", hit.deployment)
+            return None
+        try:
+            proposal, decision = await self._proposer.propose_rollback(
+                deployment=hit.deployment,
+                reason=hit.conclusion,
+                actor=ACTOR,
+                namespace=self._incident.namespace,
+                investigation_id=self._investigation_id,
+                origin=ActionOrigin.RULES,
+                evidence_ids=supporting,
+            )
+        except AutoExecutionError as exc:
+            await self._audit(
+                "action.proposed_but_not_executed",
+                {"proposal_id": exc.proposal_id, "code": exc.code},
+            )
+            return exc.proposal_id
+        except ActionError as exc:
+            await self._skip_action(exc.code, hit.deployment)
+            return None
+        await self._audit(
+            "action.proposed_by_rules",
+            {
+                "proposal_id": proposal.id,
+                "kind": proposal.kind.value,
+                "target": hit.deployment,
+                "disposition": decision.disposition.value,
+                "evidence_ids": supporting,
+            },
+        )
+        return proposal.id
+
+    async def _skip_action(self, reason: str, deployment: str) -> None:
+        await self._audit("action.skipped", {"reason": reason, "deployment": deployment})
+
+    async def _finish(
+        self,
+        status: InvestigationStatus,
+        *,
+        conclusion: str | None,
+        termination: str | None,
+        hypotheses: list[dict[str, Any]],
+        evidence_keys: dict[str, list[str]],
+        proposal_id: str | None,
+    ) -> Report:
+        finished_at = datetime.now(UTC)
+        await self._store.set_investigation_status(
+            self._investigation_id,
+            status,
+            conclusion=conclusion,
+            termination_reason=termination,
+            finished_at=finished_at,
+        )
+        await self._audit(
+            f"investigation.{status.value}",
+            {
+                "rules_version": RULES_VERSION,
+                "hypotheses": len(hypotheses),
+                "evidence": sum(len(ids) for ids in evidence_keys.values()),
+                "tool_calls": self._used_tool_calls,
+                "model_calls": 0,
+                "termination": termination,
+            },
+        )
+        saved = await self._store.get_investigation(self._investigation_id)
+        return Report(
+            investigation_id=self._investigation_id,
+            status=saved.status if saved is not None else status,
+            conclusion=saved.conclusion if saved is not None else conclusion,
+            termination_reason=saved.termination_reason if saved is not None else termination,
+            hypotheses=hypotheses,
+            evidence_count=sum(len(ids) for ids in evidence_keys.values()),
+            tool_call_count=self._used_tool_calls,
+            proposal_id=proposal_id,
+        )
+
+    async def _audit(self, event: str, payload: dict[str, Any]) -> None:
+        await self._store.append_audit(
+            [
+                AuditEvent(
+                    id=f"audit-{uuid.uuid4().hex[:12]}",
+                    correlation_id=self._investigation_id,
+                    actor=ACTOR,
+                    event=event,
+                    occurred_at=datetime.now(UTC),
+                    payload=payload,
+                )
+            ]
+        )
+
+
+def _items(dataset: Any) -> list[dict[str, Any]]:
+    if not isinstance(dataset, dict):
+        return []
+    items = dataset.get("items")
+    return [item for item in items or [] if isinstance(item, dict)]
