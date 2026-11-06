@@ -261,6 +261,7 @@ def run_case(
     budget_wall_seconds=120,
     proposer=None,
     toolbox=None,
+    store_factory=MemoryStore,
     tool_timeout_seconds=10.0,
 ):
     incident, investigation = build(
@@ -268,7 +269,7 @@ def run_case(
         budget_wall_seconds=budget_wall_seconds,
         proposer=proposer,
     )
-    store = MemoryStore(investigation)
+    store = store_factory(investigation)
     toolbox = toolbox or ScriptedToolbox(results)
     baseline = RulesBaseline(
         store=store,
@@ -752,3 +753,42 @@ def test_naive_template_timestamp_does_not_break_decision():
 
     assert report.status is InvestigationStatus.COMPLETED
     assert proposer.calls[0]["deployment"] == "productcatalogservice"
+
+
+class SlowStatusStore(MemoryStore):
+    def __init__(self, investigation, delay):
+        super().__init__(investigation)
+        self.delay = delay
+
+    async def set_hypothesis_status(self, hypothesis_id, status):
+        await asyncio.sleep(self.delay)
+        await super().set_hypothesis_status(hypothesis_id, status)
+
+
+def test_wall_clock_exhausted_during_apply_stops_before_proposal():
+    proposer = RecordingProposer()
+    results = plan(
+        deployments=[
+            deployment(
+                "currencyservice",
+                [revision(1, memory="128Mi"), revision(2, memory="16Mi")],
+                limits="16Mi",
+            )
+        ],
+        pods=[pod("currencyservice-abc", "currencyservice", oom=True, restarts=4, ready=False)],
+        probe=0,
+    )
+
+    report, store, _, _ = run_case(
+        results,
+        budget_wall_seconds=1,
+        proposer=proposer,
+        store_factory=lambda investigation: SlowStatusStore(investigation, 0.5),
+    )
+
+    # 记账写入耗尽墙钟后不能再提案，但已经写入的规则判定要保留。
+    assert report.status is InvestigationStatus.ABORTED
+    assert "预算耗尽：wall_clock" in report.termination_reason
+    assert proposer.calls == []
+    assert report.proposal_id is None
+    assert len(store.events("baseline.rule")) == 1
