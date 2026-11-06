@@ -182,7 +182,9 @@ def revision(
     }
 
 
-def deployment(name, revisions, *, limits="128Mi", app=None, selector=None, image="repo/app:1"):
+def deployment(
+    name, revisions, *, limits="128Mi", app=None, selector=None, image="repo/app:1", requests=None
+):
     return {
         "name": name,
         "labels": {"app": app or name},
@@ -192,7 +194,7 @@ def deployment(name, revisions, *, limits="128Mi", app=None, selector=None, imag
                 "name": "server",
                 "image": image,
                 "limits": {"memory": limits},
-                "requests": {"memory": limits},
+                "requests": {"memory": requests or limits},
             }
         ],
         "revisions": revisions,
@@ -982,6 +984,29 @@ def test_live_limit_mismatch_does_not_propose_a_rollback():
     report, store, _, _ = run_case(results, proposer=proposer)
 
     # 实时模板 256Mi 与历史模板都不一致，不能拿 128Mi 当当前版本判断回退方向。
+    assert report.status is InvestigationStatus.COMPLETED
+    assert "实时模板的内存限额与历史模板不一致" in report.conclusion
+    assert proposer.calls == []
+
+
+def test_missing_live_limit_does_not_propose_a_capped_rollback():
+    proposer = RecordingProposer()
+    results = plan(
+        deployments=[
+            deployment(
+                "productcatalogservice",
+                [revision(1, memory="128Mi"), revision(2, memory="16Mi")],
+                limits=None,
+                requests="8Mi",
+            )
+        ],
+        pods=[pod("productcatalogservice-abc", "productcatalogservice", oom=True, restarts=1)],
+        probe=0,
+    )
+
+    report, store, _, _ = run_case(results, proposer=proposer)
+
+    # 实时模板没有限额，历史模板 16Mi/128Mi 都不是当前模板；回退等于新加一个上限。
     assert report.status is InvestigationStatus.COMPLETED
     assert "实时模板的内存限额与历史模板不一致" in report.conclusion
     assert proposer.calls == []

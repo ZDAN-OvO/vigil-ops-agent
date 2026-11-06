@@ -740,7 +740,7 @@ class RulesBaseline:
                     "不能确认回退能缓解资源不足"
                 )
                 action = "none"
-            elif live_limit is not None and current_limit != live_limit:
+            elif live is None or live_limit != current_limit:
                 detail += "；实时模板的内存限额与历史模板不一致，不能判断回退方向"
                 action = "none"
             elif previous_limit <= current_limit:
