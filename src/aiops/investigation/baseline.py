@@ -205,11 +205,13 @@ def _fresh_start(pod: dict[str, Any], window: TimeRange) -> bool:
     return False
 
 
-def _started_at(pod: dict[str, Any]) -> datetime | None:
+def _started_at(pod: dict[str, Any], window: TimeRange) -> datetime | None:
+    """窗内最晚的容器启动时间；先按容器过滤，避免窗后启动的 sidecar 掩盖窗内主容器。"""
     starts = [
         start
         for container in pod.get("containers") or []
         if (start := _as_time(container.get("started_at"))) is not None
+        and window.start <= start <= window.end
     ]
     return max(starts) if starts else None
 
@@ -699,8 +701,7 @@ class RulesBaseline:
             latest = revisions[-1]
             previous = revisions[-2] if len(revisions) > 1 else None
             pods_for = _pods_for(deployment, pods)
-            starts = [start for pod in pods_for if (start := _started_at(pod)) is not None]
-            starts = [start for start in starts if window.start <= start <= window.end]
+            starts = [start for pod in pods_for if (start := _started_at(pod, window)) is not None]
             if not starts:
                 continue
             started = max(starts)

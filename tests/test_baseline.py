@@ -691,7 +691,7 @@ def test_oom_finished_after_window_is_not_a_hit():
     assert store.events("baseline.rule") == []
 
 
-def test_pod_started_after_window_is_not_a_recent_rollout():
+def test_template_created_after_window_is_not_a_recent_rollout():
     results = plan(
         deployments=[
             deployment(
@@ -792,3 +792,62 @@ def test_wall_clock_exhausted_during_apply_stops_before_proposal():
     assert proposer.calls == []
     assert report.proposal_id is None
     assert len(store.events("baseline.rule")) == 1
+
+
+def test_pod_started_after_window_is_not_a_recent_rollout():
+    results = plan(
+        deployments=[
+            deployment(
+                "productcatalogservice",
+                [revision(20), revision(21, image="repo/app:canary")],
+            )
+        ],
+        pods=[
+            pod(
+                "productcatalogservice-abc",
+                "productcatalogservice",
+                ready=False,
+                started=START + timedelta(minutes=20),
+            )
+        ],
+        probe=1,
+    )
+
+    report, store, _, _ = run_case(results)
+
+    assert report.status is InvestigationStatus.INCONCLUSIVE
+    assert store.events("baseline.rule") == []
+
+
+def test_later_sidecar_start_does_not_hide_in_window_rollout():
+    proposer = RecordingProposer()
+    running = pod(
+        "productcatalogservice-abc",
+        "productcatalogservice",
+        ready=False,
+        started=START + timedelta(minutes=14, seconds=30),
+    )
+    running["containers"].append(
+        {
+            "name": "sidecar",
+            "ready": True,
+            "restart_count": 0,
+            "started_at": (START + timedelta(minutes=15, seconds=1)).isoformat(),
+        }
+    )
+    results = plan(
+        deployments=[
+            deployment(
+                "productcatalogservice",
+                [revision(20), revision(21, image="repo/app:canary")],
+            )
+        ],
+        pods=[running],
+        probe=1,
+    )
+
+    report, _, _, _ = run_case(results, proposer=proposer)
+
+    # 主容器在窗内启动，sidecar 晚一秒启动不能把整次发布移出观察窗。
+    assert report.status is InvestigationStatus.COMPLETED
+    assert proposer.calls[0]["deployment"] == "productcatalogservice"
