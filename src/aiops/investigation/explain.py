@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from aiops.contracts import AuditEvent, Evidence, Hypothesis, Investigation
+from aiops.investigation.snapshot import state_snapshot
 
 
 class ExplainError(RuntimeError):
@@ -66,6 +67,8 @@ class StoreProtocol(Protocol):
     async def get_incident(self, incident_id: str) -> Any: ...
     async def list_hypotheses(self, investigation_id: str) -> list[Hypothesis]: ...
     async def list_evidence(self, investigation_id: str) -> list[Evidence]: ...
+    async def list_proposals_for_investigation(self, investigation_id: str) -> list[Any]: ...
+    async def get_approval(self, proposal_id: str) -> Any: ...
     async def append_audit(self, events: list[AuditEvent]) -> None: ...
 
 
@@ -89,7 +92,13 @@ class ExplainService:
         if not evidence:
             raise ExplainError("no_evidence", "该调查没有记录任何证据，无法追问")
 
-        await self._audit(investigation_id, "explain.requested", {"question": question[:500]})
+        request_id = f"expl-{uuid.uuid4().hex[:12]}"
+        before = await state_snapshot(self._store, investigation, hypotheses, evidence)
+        await self._audit(
+            investigation_id,
+            "explain.requested",
+            {"request_id": request_id, "question": question[:500], "snapshot": before},
+        )
         payload = {
             "investigation": {
                 "id": investigation.id,
@@ -126,22 +135,58 @@ class ExplainService:
         except Exception as exc:  # noqa: BLE001 - 模型失败按错误上报，不写结论
             raise ExplainError("model_failed", exc.__class__.__name__) from exc
 
+        # 回答前后各取一次状态，拒绝路径也要留下调用后的快照。
+        current = await self._store.get_investigation(investigation_id) or investigation
+        after = await state_snapshot(
+            self._store,
+            current,
+            await self._store.list_hypotheses(investigation_id),
+            await self._store.list_evidence(investigation_id),
+        )
         visible = {item.id for item in evidence}
         unknown = sorted({citation for citation in call.value.citations if citation not in visible})
         if unknown:
-            await self._audit(investigation_id, "explain.rejected", {"unknown_citations": unknown})
+            await self._audit(
+                investigation_id,
+                "explain.rejected",
+                {
+                    "request_id": request_id,
+                    "snapshot": after,
+                    "unknown_citations": unknown,
+                    "citations": call.value.citations,
+                    "question": question[:500],
+                },
+            )
             raise ExplainError("unknown_citation", f"引用了不在记录中的证据：{','.join(unknown)}")
         # 有引用的回答可以附带边界说明；没有引用又声明缺信息时，必须同时要求新取证。
         if not call.value.citations and call.value.missing and not call.value.needs_new_query:
             await self._audit(
-                investigation_id, "explain.rejected", {"reason": "missing_without_new_query"}
+                investigation_id,
+                "explain.rejected",
+                {
+                    "request_id": request_id,
+                    "snapshot": after,
+                    "reason": "missing_without_new_query",
+                    "citations": call.value.citations,
+                    "missing": call.value.missing,
+                    "needs_new_query": call.value.needs_new_query,
+                },
             )
             raise ExplainError(
                 "inconsistent_answer", "没有任何引用却声明缺信息时，必须要求新的取证"
             )
         if not call.value.citations and not call.value.missing:
             await self._audit(
-                investigation_id, "explain.rejected", {"reason": "unsupported_answer"}
+                investigation_id,
+                "explain.rejected",
+                {
+                    "request_id": request_id,
+                    "snapshot": after,
+                    "reason": "unsupported_answer",
+                    "citations": call.value.citations,
+                    "missing": call.value.missing,
+                    "needs_new_query": call.value.needs_new_query,
+                },
             )
             raise ExplainError("unsupported_answer", "回答既没有引用证据也没有说明缺什么")
 
@@ -157,9 +202,12 @@ class ExplainService:
             investigation_id,
             "explain.answered",
             {
+                "request_id": request_id,
                 "citations": result.citations,
+                "missing": result.missing,
                 "needs_new_query": result.needs_new_query,
                 "model": result.model,
+                "snapshot": after,
             },
         )
         return result

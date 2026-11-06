@@ -9,9 +9,10 @@ from aiops.investigation.explain import ExplainError, ExplainService, Explanatio
 
 
 class FakeStore:
-    def __init__(self, *, evidence=None, investigation=True, status="completed"):
+    def __init__(self, *, evidence=None, investigation=True, status="completed", proposals=None):
         self.calls = []
         self.audit = []
+        self._proposals = proposals or []
         self._evidence = evidence if evidence is not None else [evidence_row("ev-1")]
         self._investigation = (
             SimpleNamespace(
@@ -40,6 +41,14 @@ class FakeStore:
     async def list_evidence(self, investigation_id):
         self.calls.append("list_evidence")
         return self._evidence
+
+    async def list_proposals_for_investigation(self, investigation_id):
+        self.calls.append("list_proposals_for_investigation")
+        return self._proposals
+
+    async def get_approval(self, proposal_id):
+        self.calls.append("get_approval")
+        return None
 
     async def append_audit(self, events):
         self.calls.append("append_audit")
@@ -92,8 +101,58 @@ def test_explain_answers_with_existing_evidence_only():
         "get_incident",
         "list_hypotheses",
         "list_evidence",
+        "list_proposals_for_investigation",
+        "get_approval",
         "append_audit",
     }
+
+
+def test_explain_audits_record_the_same_state_snapshot():
+    store = FakeStore()
+    model = FakeModel(explanation())
+
+    asyncio.run(ExplainService(store=store, model=model).answer("inv-1", "为什么？"))
+
+    requested, answered = store.audit
+    assert requested.payload["snapshot"] == answered.payload["snapshot"]
+    snapshot = requested.payload["snapshot"]
+    assert snapshot["version"] == 2
+    assert [item["id"] for item in snapshot["evidence"]] == ["ev-1"]
+    assert len(snapshot["conclusion_hash"]) == 64
+
+
+class MutatingModel(FakeModel):
+    def __init__(self, explanation, store):
+        super().__init__(explanation)
+        self._store = store
+
+    async def complete_json(self, *args, **kwargs):
+        result = await super().complete_json(*args, **kwargs)
+        self._store._evidence.append(evidence_row("ev-2"))
+        return result
+
+
+def test_explain_records_post_call_state_when_something_changes():
+    store = FakeStore()
+    model = MutatingModel(explanation(), store)
+
+    asyncio.run(ExplainService(store=store, model=model).answer("inv-1", "为什么？"))
+
+    requested, answered = store.audit
+    assert requested.payload["snapshot"]["evidence"] != answered.payload["snapshot"]["evidence"]
+
+
+def test_rejection_also_records_the_post_call_snapshot():
+    store = FakeStore()
+    model = FakeModel(explanation(citations=["ev-404"]))
+
+    with pytest.raises(ExplainError):
+        asyncio.run(ExplainService(store=store, model=model).answer("inv-1", "为什么？"))
+
+    requested, rejected = store.audit
+    assert rejected.event == "explain.rejected"
+    assert rejected.payload["request_id"] == requested.payload["request_id"]
+    assert rejected.payload["snapshot"] == requested.payload["snapshot"]
 
 
 def test_unknown_citation_is_rejected():

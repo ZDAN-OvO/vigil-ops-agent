@@ -213,6 +213,28 @@ class Store:
             context=row["context"],
         )
 
+    async def get_incident_created_at(self, incident_id: str) -> datetime | None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT created_at FROM incidents WHERE id = %s", (incident_id,)
+            )
+            row = await cursor.fetchone()
+        return row["created_at"] if row else None
+
+    async def list_incident_receipts(self, fingerprint: str) -> list[datetime]:
+        """同一告警指纹的全部事件接收时间，与 webhook 去重使用 created_at。"""
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT created_at FROM incidents
+                 WHERE %s = ANY (alert_ids)
+                 ORDER BY created_at
+                """,
+                (fingerprint,),
+            )
+            rows = await cursor.fetchall()
+        return [row["created_at"] for row in rows]
+
     async def list_incidents(self, limit: int = 20) -> list[Incident]:
         async with self._pool.connection() as conn:
             cursor = await conn.execute(
@@ -717,6 +739,19 @@ class Store:
             row = await cursor.fetchone()
         return _proposal_from_row(row) if row else None
 
+    async def list_proposals_for_investigation(self, investigation_id: str) -> list[ActionProposal]:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM action_proposals
+                 WHERE investigation_id = %s
+                 ORDER BY created_at, id
+                """,
+                (investigation_id,),
+            )
+            rows = await cursor.fetchall()
+        return [_proposal_from_row(row) for row in rows]
+
     async def list_proposals(
         self, *, status: ProposalStatus | None = None, limit: int = 50
     ) -> list[ActionProposal]:
@@ -969,6 +1004,15 @@ class Store:
             cursor = await conn.execute(
                 "SELECT count(*) AS total FROM action_proposals WHERE investigation_id = %s",
                 (investigation_id,),
+            )
+            row = await cursor.fetchone()
+        return int(row["total"]) if row else 0
+
+    async def count_approvals(self, proposal_id: str) -> int:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT count(*) AS total FROM approvals WHERE proposal_id = %s",
+                (proposal_id,),
             )
             row = await cursor.fetchone()
         return int(row["total"]) if row else 0

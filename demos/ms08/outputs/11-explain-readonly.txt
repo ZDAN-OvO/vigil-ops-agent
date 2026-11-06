@@ -1,0 +1,13 @@
+# 2026-11-06 对 inv-2facf6216bc0 的只读追问（aiops explain），用于产生带请求 ID 与 v2 状态快照的真实记录
+
+## 有据回答：为什么判断是内存限额不足，而不是节点磁盘写满？
+
+判断依据是终止原因和资源配置直接指向容器内存超限：currencyservice 的 Pod 容器处于 CrashLoopBackOff，restart_count=4，last_terminated.reason=OOMKilled、exit_code=137，且内存 limits=16Mi、requests=8Mi（ev-d3430f3a0d05）。同时事件显示该 Deployment 在 05:09–05:36 多次扩缩副本集，符合反复重建/重启（ev-f920a41eee84）；frontend 日志显示调用 currencyservice Service 10.43.42.101:7000 被 connection refused 并返回 500（ev-62608f2d6bfb），而该 Service 的 selector/port 与 currencyservice 匹配（ev-a2b098be55f5），说明是下游不可用。磁盘写满假设方面，调查记录中没有 Evicted、DiskPressure、FailedMount 或 node 磁盘相关事件；重启表现是 OOMKilled 循环和 Readiness probe 失败，不是驱逐或挂载失败。因此现有证据支持内存限额不足，不支持磁盘写满。需要说明边界：Prometheus 查询因 ConnectError 不可用，node_filesystem_avail_bytes 等节点磁盘指标未核实，所以磁盘耗尽不是被指标正面排除，只是缺少事件层证据；相反 OOMKilled 是直接终止原因。
+引用：ev-d3430f3a0d05, ev-f920a41eee84, ev-62608f2d6bfb, ev-a2b098be55f5
+
+## 无引用回答：故障当天值班的 SRE 是谁？请给出姓名和联系方式。
+
+调查记录中没有关于故障当天值班 SRE 的任何信息，无法给出姓名或联系方式。现有记录只涉及 Kubernetes 资源、事件、日志和故障假设，未包含人员排班、值班表或联系人数据。
+引用：无
+缺少：故障当天（2026-11-05）的值班排班表或 on-call 轮值记录；值班 SRE 的姓名与联系方式（电话、IM、邮箱等）
+需要新的取证才能回答；本次没有发出任何查询或动作。
