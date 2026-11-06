@@ -184,6 +184,22 @@ def _deployment_for_pod(pod: dict[str, Any], deployments: list[dict[str, Any]]) 
     return None
 
 
+def _fresh_start(pod: dict[str, Any], window_start: datetime) -> bool:
+    """新 Pod 的容器在观察窗内首次启动：没有重启计数，也没有上一次终止。
+
+    回退或重放旧模板时会复用旧 ReplicaSet，创建时间停在过去；
+    而旧版本 Pod 因依赖故障重启时 started_at 同样落在窗内。
+    用“无重启历史”把复用的新 Pod 和原地重启区分开。
+    """
+    for container in pod.get("containers") or []:
+        start = _as_time(container.get("started_at"))
+        if start is None or start < window_start:
+            continue
+        if (container.get("restart_count") or 0) == 0 and not container.get("last_terminated"):
+            return True
+    return False
+
+
 def _started_at(pod: dict[str, Any]) -> datetime | None:
     starts = [
         start
@@ -648,9 +664,11 @@ class RulesBaseline:
                 continue
             started = max(starts)
             created = _as_time(latest.get("created_at"))
-            # 容器今天重启不代表模板今天改过。模板创建时间不在观察窗内时，
-            # 五天前的发布碰巧今天重启不能被当成近期坏发布。
-            if created is None or created < window_start:
+            # 容器今天重启不代表模板今天改过。创建时间不在窗内的旧版本，
+            # 只有出现“无重启历史的新 Pod”时才认为是复用旧模板的回退或重放。
+            if (created is None or created < window_start) and not any(
+                _fresh_start(item, window_start) for item in pods_for
+            ):
                 continue
             name = _text(deployment.get("name"))
             hint = _log_hint(name, logs)

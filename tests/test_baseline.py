@@ -354,7 +354,7 @@ def test_dependency_errors_without_restarts_stop_without_action():
     proposer = RecordingProposer()
     results = plan(
         deployments=[deployment("redis-cart", [revision(1, created=START - timedelta(hours=2))])],
-        pods=[pod("redis-cart-abc", "redis-cart")],
+        pods=[pod("redis-cart-abc", "redis-cart", started=START - timedelta(hours=1))],
         logs=[{"pod": "frontend-abc", "lines": ["GET /cart 500 dial tcp: connection refused"]}],
         probe=0,
     )
@@ -392,7 +392,7 @@ def test_oom_outside_the_window_is_ignored():
 def test_no_rule_hit_stays_inconclusive():
     results = plan(
         deployments=[deployment("redis-cart", [revision(1, created=START - timedelta(hours=2))])],
-        pods=[pod("redis-cart-abc", "redis-cart")],
+        pods=[pod("redis-cart-abc", "redis-cart", started=START - timedelta(hours=1))],
         probe=1,
     )
 
@@ -502,7 +502,14 @@ def test_template_created_before_window_is_not_a_recent_rollout():
                 ],
             )
         ],
-        pods=[pod("productcatalogservice-abc", "productcatalogservice", ready=False)],
+        pods=[
+            pod(
+                "productcatalogservice-abc",
+                "productcatalogservice",
+                restarts=2,
+                ready=False,
+            )
+        ],
         logs=[
             {
                 "pod": "frontend-abc",
@@ -516,6 +523,36 @@ def test_template_created_before_window_is_not_a_recent_rollout():
 
     assert report.status is InvestigationStatus.INCONCLUSIVE
     assert store.events("baseline.rule") == []
+
+
+def test_reactivated_old_revision_with_fresh_pod_is_recent_rollout():
+    old = START - timedelta(days=5)
+    proposer = RecordingProposer()
+    results = plan(
+        deployments=[
+            deployment(
+                "productcatalogservice",
+                [
+                    revision(1, image="repo/a", created=old),
+                    revision(2, image="repo/b", created=old),
+                ],
+            )
+        ],
+        pods=[pod("productcatalogservice-abc", "productcatalogservice")],
+        logs=[
+            {
+                "pod": "frontend-abc",
+                "lines": ['{"message":"productcatalogservice returned error code 13"}'],
+            }
+        ],
+        probe=1,
+    )
+
+    report, store, _, _ = run_case(results, proposer=proposer)
+
+    assert report.status is InvestigationStatus.COMPLETED
+    assert store.events("baseline.rule")[0].payload["rule"] == "recent-rollout"
+    assert proposer.calls[0]["deployment"] == "productcatalogservice"
 
 
 def test_probe_failure_with_missing_workload_data_is_inconclusive():
