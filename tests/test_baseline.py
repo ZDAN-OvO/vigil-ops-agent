@@ -605,3 +605,17 @@ def test_log_hint_is_bound_to_the_proposal():
     assert log_evidence
     assert log_evidence[0].relation == "supporting"
     assert log_evidence[0].id in proposer.calls[0]["evidence_ids"]
+
+
+def test_single_revision_reactivated_is_not_new_workload():
+    old = START - timedelta(days=2)
+    results = plan(
+        deployments=[deployment("cartservice", [revision(1, created=old)])],
+        pods=[pod("cartservice-abc", "cartservice")],
+        probe=1,
+    )
+
+    report, store, _, _ = run_case(results)
+
+    assert report.status is InvestigationStatus.INCONCLUSIVE
+    assert store.events("baseline.rule") == []

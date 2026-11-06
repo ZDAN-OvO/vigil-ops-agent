@@ -664,12 +664,13 @@ class RulesBaseline:
                 continue
             started = max(starts)
             created = _as_time(latest.get("created_at"))
-            # 容器今天重启不代表模板今天改过。创建时间不在窗内的旧版本，
-            # 只有出现“无重启历史的新 Pod”时才认为是复用旧模板的回退或重放。
-            if (created is None or created < window_start) and not any(
-                _fresh_start(item, window_start) for item in pods_for
-            ):
-                continue
+            # 容器今天重启不代表模板今天改过。新增负载必须是模板本身在窗内创建；
+            # 有上一版时，复用旧 ReplicaSet 的回退或重放可以靠“无重启历史的新 Pod”识别。
+            if created is None or created < window_start:
+                if previous is None:
+                    continue
+                if not any(_fresh_start(item, window_start) for item in pods_for):
+                    continue
             name = _text(deployment.get("name"))
             hint = _log_hint(name, logs)
             unhealthy = bool(deployment.get("unavailable_replicas")) or any(
