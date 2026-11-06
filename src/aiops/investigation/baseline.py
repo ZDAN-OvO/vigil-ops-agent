@@ -129,6 +129,63 @@ def _revisions(deployment: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: row.get("revision") or 0)
 
 
+def _template(row: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return (row.get("image"), row.get("memory_limit"), row.get("memory_request"))
+
+
+def _shape(row: dict[str, Any]) -> tuple[Any, Any]:
+    return (row.get("image"), row.get("memory_limit"))
+
+
+def _live_shape(deployment: dict[str, Any]) -> tuple[Any, Any] | None:
+    containers = deployment.get("containers") or []
+    if not containers:
+        return None
+    container = containers[0]
+    return (container.get("image"), (container.get("limits") or {}).get("memory"))
+
+
+def _templates(deployment: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """当前模板取 Deployment 的实时定义，而不是 revision 号最大的 ReplicaSet。
+
+    rollout undo 会复用旧 ReplicaSet，旧 RS 的 revision 号小于被回退掉的 RS；
+    只看最大 revision 会把已经不在用的坏模板当成当前模板，回退方向随之反过来。
+    按镜像与内存限额匹配实时模板，再取 revision 号最大的不同模板作为上一版。
+    """
+    revisions = _revisions(deployment)
+    if not revisions:
+        return None, None
+    live = _live_shape(deployment)
+    matches = [row for row in revisions if live is not None and _shape(row) == live]
+    current = (
+        max(matches, key=lambda row: (row.get("replicas") or 0, row.get("revision") or 0))
+        if matches
+        else revisions[-1]
+    )
+    key = _template(current)
+    previous = next(
+        (row for row in reversed(revisions) if row is not current and _template(row) != key),
+        None,
+    )
+    if previous is None:
+        index = revisions.index(current)
+        previous = revisions[index - 1] if index > 0 else None
+    return current, previous
+
+
+def _oom_finished_at(pod: dict[str, Any], window: TimeRange) -> datetime:
+    """窗内最近一次 OOMKilled 的终止时间；没有就返回最早时间，便于稳定排序。"""
+    times = []
+    for container in pod.get("containers") or []:
+        last = container.get("last_terminated") or {}
+        if last.get("reason") != "OOMKilled" and container.get("reason") != "OOMKilled":
+            continue
+        finished = _as_time(last.get("finished_at"))
+        if finished is not None and window.start <= finished <= window.end:
+            times.append(finished)
+    return max(times) if times else datetime.min.replace(tzinfo=UTC)
+
+
 def _oom_container(pod: dict[str, Any], window: TimeRange) -> dict[str, Any] | None:
     """只认落在观察窗内的 OOMKilled；历史单次退出不能当成当前根因。"""
     for container in pod.get("containers") or []:
@@ -226,19 +283,28 @@ def _pods_for(deployment: dict[str, Any], pods: list[dict[str, Any]]) -> list[di
 
 
 def _log_hint(name: str, logs: list[dict[str, Any]]) -> str:
-    """入口日志里同时出现错误标记和该工作负载名称前缀时，作为变更的失败关联。"""
+    """入口日志里同时出现错误标记和该工作负载名称时，作为变更的失败关联。
+
+    按完整词匹配，短名字（cart）也能命中；避免把 cartservice 当成 cart，
+    也避免给短名字设长度门槛后漏掉错误关联。
+    """
     compact_name = re.sub(r"[^a-z0-9]", "", name.lower())
-    if len(compact_name) < 8:
+    if not compact_name:
         return ""
+    short = len(compact_name) < 8
+    pattern = re.compile(rf"(?<![a-z0-9]){re.escape(compact_name)}(?![a-z0-9])")
     for item in logs:
         for line in item.get("lines") or []:
             low = str(line).lower()
             if not any(marker in low for marker in ERROR_MARKERS):
                 continue
-            compact = re.sub(r"[^a-z0-9]", "", low)
-            for size in range(len(compact_name), 7, -1):
-                if compact_name[:size] in compact:
+            if short:
+                if pattern.search(low):
                     return str(line)[:200]
+                continue
+            compact = re.sub(r"[^a-z0-9]", "", low)
+            if any(compact_name[:size] in compact for size in range(len(compact_name), 7, -1)):
+                return str(line)[:200]
     return ""
 
 
@@ -622,15 +688,16 @@ class RulesBaseline:
     def _match_oom(
         self, deployments: list[dict], pods: list[dict], common: dict[str, Any]
     ) -> _Hit | None:
-        for pod in pods:
+        # 多个 Pod 同时 OOM 时按最近一次终止时间选，结果不依赖接口返回顺序。
+        for pod in sorted(
+            pods, key=lambda item: _oom_finished_at(item, self._window), reverse=True
+        ):
             container = _oom_container(pod, self._window)
             if container is None:
                 continue
             deployment = _deployment_for_pod(pod, deployments)
             name = _text(deployment.get("name") if deployment else "")
-            revisions = _revisions(deployment) if deployment else []
-            current = revisions[-1] if revisions else None
-            previous = revisions[-2] if len(revisions) > 1 else None
+            current, previous = _templates(deployment) if deployment else (None, None)
             limits = ""
             requests = ""
             if deployment:
@@ -695,11 +762,9 @@ class RulesBaseline:
         window = self._window
         candidates: list[tuple[datetime, dict, dict, dict | None, str, datetime | None]] = []
         for deployment in deployments:
-            revisions = _revisions(deployment)
-            if not revisions:
+            latest, previous = _templates(deployment)
+            if latest is None:
                 continue
-            latest = revisions[-1]
-            previous = revisions[-2] if len(revisions) > 1 else None
             pods_for = _pods_for(deployment, pods)
             starts = [start for pod in pods_for if (start := _started_at(pod, window)) is not None]
             if not starts:

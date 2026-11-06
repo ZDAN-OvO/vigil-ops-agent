@@ -180,12 +180,12 @@ def revision(number, *, image="repo/app:1", memory="128Mi", created=None):
     }
 
 
-def deployment(name, revisions, *, limits="128Mi", app=None, selector=None):
+def deployment(name, revisions, *, limits="128Mi", app=None, selector=None, image="repo/app:1"):
     return {
         "name": name,
         "labels": {"app": app or name},
         "selector": selector if selector is not None else {"app": app or name},
-        "containers": [{"name": "server", "image": "repo/app:1", "limits": {"memory": limits}}],
+        "containers": [{"name": "server", "image": image, "limits": {"memory": limits}}],
         "revisions": revisions,
     }
 
@@ -851,3 +851,79 @@ def test_later_sidecar_start_does_not_hide_in_window_rollout():
     # 主容器在窗内启动，sidecar 晚一秒启动不能把整次发布移出观察窗。
     assert report.status is InvestigationStatus.COMPLETED
     assert proposer.calls[0]["deployment"] == "productcatalogservice"
+
+
+def test_oom_after_rollback_uses_the_live_template_as_current():
+    proposer = RecordingProposer()
+    results = plan(
+        deployments=[
+            deployment(
+                "productcatalogservice",
+                [
+                    revision(16, memory="64Mi"),
+                    revision(56, image="repo/app:canary", memory="16Mi"),
+                    revision(57, memory="128Mi"),
+                ],
+                limits="16Mi",
+                image="repo/app:canary",
+            )
+        ],
+        pods=[pod("productcatalogservice-abc", "productcatalogservice", oom=True, restarts=3)],
+        probe=0,
+    )
+
+    report, store, _, _ = run_case(results, proposer=proposer)
+
+    # 回退到 revision 56 后，revision 57 的 ReplicaSet 已不在用；
+    # 当前模板是 16Mi，上一版 128Mi，回退方向成立。
+    assert report.status is InvestigationStatus.COMPLETED
+    assert "上一版 revision 57" in report.conclusion
+    assert proposer.calls[0]["deployment"] == "productcatalogservice"
+
+
+def test_oom_selection_uses_the_latest_termination():
+    results = plan(
+        deployments=[
+            deployment("svc-a", [revision(1, memory="128Mi"), revision(2, memory="16Mi")]),
+            deployment("svc-b", [revision(1, memory="128Mi"), revision(2, memory="16Mi")]),
+        ],
+        pods=[
+            pod(
+                "svc-a-abc",
+                "svc-a",
+                oom=True,
+                restarts=1,
+                finished=START + timedelta(minutes=5),
+            ),
+            pod(
+                "svc-b-abc",
+                "svc-b",
+                oom=True,
+                restarts=1,
+                finished=START + timedelta(minutes=12),
+            ),
+        ],
+        probe=0,
+    )
+
+    report, store, _, _ = run_case(results)
+
+    assert report.status is InvestigationStatus.COMPLETED
+    assert store.events("baseline.rule")[0].payload["deployment"] == "svc-b"
+
+
+def test_short_deployment_name_matches_log_hint():
+    proposer = RecordingProposer()
+    results = plan(
+        deployments=[
+            deployment("cart", [revision(1, image="repo/cart:1"), revision(2, image="repo/cart:2")])
+        ],
+        pods=[pod("cart-abc", "cart")],
+        logs=[{"pod": "frontend-abc", "lines": ['{"message":"connection refused to cart"}']}],
+        probe=1,
+    )
+
+    report, store, _, _ = run_case(results, proposer=proposer)
+
+    assert report.status is InvestigationStatus.COMPLETED
+    assert proposer.calls[0]["deployment"] == "cart"
