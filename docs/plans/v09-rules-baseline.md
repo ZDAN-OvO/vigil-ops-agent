@@ -70,54 +70,54 @@ PR-1 的代码已经在工作区未提交。执行时按 **Build** 与 **Verify*
 
 **Files.**
 
-- [ ] 新建 `src/aiops/investigation/baseline.py`。
-- [ ] 新建 `src/aiops/migrations/0009_action_origin_rules.sql`。
-- [ ] 新建 `tests/test_baseline.py`。
-- [ ] 修改 `src/aiops/contracts.py`。
-- [ ] 修改 `src/aiops/investigation/factory.py`。
-- [ ] 修改 `src/aiops/cli.py`。
+- [x] 新建 `src/aiops/investigation/baseline.py`。
+- [x] 新建 `src/aiops/migrations/0009_action_origin_rules.sql`。
+- [x] 新建 `tests/test_baseline.py`。
+- [x] 修改 `src/aiops/contracts.py`。
+- [x] 修改 `src/aiops/investigation/factory.py`。
+- [x] 修改 `src/aiops/cli.py`。
 
 **Build.**
 
-- [ ] `ActionOrigin` 增加 `RULES`，`ActionProposal` 的证据必填校验覆盖模型与规则两类自动提案。文件 `contracts.py`。
-- [ ] 迁移 0009 放宽 `action_proposals.origin` 的 CHECK，允许 `rules`。
-- [ ] `RulesBaseline` 固定三条假设、六条查询与有序规则表，写 `baseline.started`、`baseline.rule` 和终态审计。文件 `baseline.py`。
-- [ ] `_open_io` 抽出共用装配，新增 `open_baseline`，不构造模型客户端。文件 `factory.py`。
-- [ ] `investigate` 增加 `--mode rules`，模型名写 `rules:rules-1`，启动审计带 mode。文件 `cli.py`。
+- [x] `ActionOrigin` 增加 `RULES`，`ActionProposal` 的证据必填校验覆盖模型与规则两类自动提案。文件 `contracts.py`。
+- [x] 迁移 0009 放宽 `action_proposals.origin` 的 CHECK，允许 `rules`。
+- [x] `RulesBaseline` 固定三条假设、六条查询与有序规则表，写 `baseline.started`、`baseline.rule` 和终态审计。文件 `baseline.py`。
+- [x] `_open_io` 抽出共用装配，新增 `open_baseline`，不构造模型客户端。文件 `factory.py`。
+- [x] `investigate` 增加 `--mode rules`，模型名写 `rules:rules-1`，启动审计带 mode。文件 `cli.py`。
 
 **You see.**
 
-- [ ] `uv run aiops investigate --mode rules ...` 打印「调查 inv-…：completed」和以「固定规则判定」开头的根因候选。
-- [ ] 该调查在库里 model 为 `rules:rules-1`，used_model_calls 为 0，used_tool_calls 为 6。
+- [x] `uv run aiops investigate --mode rules ...` 打印「调查 inv-…：completed」和以「固定规则判定」开头的根因候选。
+- [x] 该调查在库里 model 为 `rules:rules-1`，used_model_calls 为 0，used_tool_calls 为 6。
 
 **Verify, unit.** 只跑测试不算验证。一个 PR 只有单元、实机、性能三类框全部勾上，才算验证完成。
 
-- [ ] `tests/test_baseline.py` 覆盖三类规则命中、无命中、窗口外 OOM 忽略、工具失败不算证据、预算耗尽中止、提案归因。运行 `make check-all`。
+- [x] `tests/test_baseline.py` 覆盖三类规则命中、无命中、窗口外 OOM 忽略、工具失败不算证据、预算耗尽中止、提案归因。运行 `make check-all`。
 
 **Verify, live.** 只跑测试不算验证。一个 PR 只有单元、实机、性能三类框全部勾上，才算验证完成。十条 lane 在 `sonnet max` 上针对 PR head 执行，按上面的启动步骤串行跑。
 
-- [ ] Lane 1. 回归 lane，对照主干。主干没有 `--mode`，记录这个事实。同一次 F02 注入下，head 跑 `--mode rules`，主干跑 `--mode agent`。截图存 `demos/ms08/screenshots/v09/pr-1-lane-1-trunk.png`。通过条件是 head 在 0 次模型调用下终态 completed 并给出提案，主干的 `aiops investigate --help` 里没有 `--mode`。
-- [ ] Lane 2. 注入 F02 内存限额 16Mi 后跑规则调查。截图存 `demos/ms08/screenshots/v09/pr-1-lane-2-f02-oom.png`。通过条件是结论含 OOMKilled、`16Mi` 与 `128Mi`，并给出 `rollout_undo` 提案。
-- [ ] Lane 3. 注入 F01 坏发布后跑规则调查，观察窗用 30 分钟。截图存 `demos/ms08/screenshots/v09/pr-1-lane-3-f01-rollout.png`。通过条件是结论含「观察窗内启动」与 canary 镜像名，并给出回退提案。
-- [ ] Lane 4. 注入 F03 Redis 代理后跑规则调查。截图存 `demos/ms08/screenshots/v09/pr-1-lane-4-f03-new-workload.png`。通过条件是结论含「新增工作负载 redis-access-proxy」，且没有提案。
-- [ ] Lane 5. F01 注入下把观察窗缩到 5 分钟再跑一次。截图存 `demos/ms08/screenshots/v09/pr-1-lane-5-window-miss.png`。通过条件是结论不指向模板变更、没有回退提案，输出里能看到观察窗把 Pod 启动排除在外。
-- [ ] Lane 6. 把 `VIGIL_INVESTIGATION_BUDGET_TOOL_CALLS` 设成 2 再跑一次。截图存 `demos/ms08/screenshots/v09/pr-1-lane-6-budget.png`。通过条件是终态 aborted、终止原因含「预算耗尽」，且没有提案。
-- [ ] Lane 7. 查该调查的审计事件。截图存 `demos/ms08/screenshots/v09/pr-1-lane-7-audit.png`。通过条件是 `baseline.started`、`baseline.rule`、`investigation.completed` 三条齐全，`baseline.started` 里的规则版本、预算三档、工具名与生效策略都是实值。
-- [ ] Lane 8. 查提案的归因。截图存 `demos/ms08/screenshots/v09/pr-1-lane-8-origin.png`。通过条件是 `origin` 为 `rules`、`evidence_ids` 非空、风险判定为人工审批。
-- [ ] Lane 9. 跑 `faults/f01-bad-release/repeat.sh cleanup` 等恢复。截图存 `demos/ms08/screenshots/v09/pr-1-lane-9-cleanup.png`。通过条件是首页 200、Pod 重启数为 0、F03 代理负载已删除。
-- [ ] Lane 10. 无故障状态下同一命令连跑两次。截图存 `demos/ms08/screenshots/v09/pr-1-lane-10-replay.png`。通过条件是两次都 inconclusive、都没有提案、工具调用都是 6 次。
+- [x] Lane 1. 回归 lane，对照主干。主干没有 `--mode`，记录这个事实。同一次 F02 注入下，head 跑 `--mode rules`，主干跑 `--mode agent`。截图存 `demos/ms08/screenshots/v09/pr-1-lane-1-trunk.png`。通过条件是 head 在 0 次模型调用下终态 completed 并给出提案，主干的 `aiops investigate --help` 里没有 `--mode`。
+- [x] Lane 2. 注入 F02 内存限额 16Mi 后跑规则调查。截图存 `demos/ms08/screenshots/v09/pr-1-lane-2-f02-oom.png`。通过条件是结论含 OOMKilled、`16Mi` 与 `128Mi`，并给出 `rollout_undo` 提案。
+- [x] Lane 3. 注入 F01 坏发布后跑规则调查，观察窗用 30 分钟。截图存 `demos/ms08/screenshots/v09/pr-1-lane-3-f01-rollout.png`。通过条件是结论含「观察窗内启动」与 canary 镜像名，并给出回退提案。
+- [x] Lane 4. 注入 F03 Redis 代理后跑规则调查。截图存 `demos/ms08/screenshots/v09/pr-1-lane-4-f03-new-workload.png`。通过条件是结论含「新增工作负载 redis-access-proxy」，且没有提案。
+- [x] Lane 5. F01 注入下把观察窗缩到 5 分钟再跑一次。截图存 `demos/ms08/screenshots/v09/pr-1-lane-5-window-miss.png`。通过条件是结论不指向模板变更、没有回退提案，输出里能看到观察窗把 Pod 启动排除在外。
+- [x] Lane 6. 把 `VIGIL_INVESTIGATION_BUDGET_TOOL_CALLS` 设成 2 再跑一次。截图存 `demos/ms08/screenshots/v09/pr-1-lane-6-budget.png`。通过条件是终态 aborted、终止原因含「预算耗尽」，且没有提案。
+- [x] Lane 7. 查该调查的审计事件。截图存 `demos/ms08/screenshots/v09/pr-1-lane-7-audit.png`。通过条件是 `baseline.started`、`baseline.rule`、`investigation.completed` 三条齐全，`baseline.started` 里的规则版本、预算三档、工具名与生效策略都是实值。
+- [x] Lane 8. 查提案的归因。截图存 `demos/ms08/screenshots/v09/pr-1-lane-8-origin.png`。通过条件是 `origin` 为 `rules`、`evidence_ids` 非空、风险判定为人工审批。
+- [x] Lane 9. 跑 `faults/f01-bad-release/repeat.sh cleanup` 等恢复。截图存 `demos/ms08/screenshots/v09/pr-1-lane-9-cleanup.png`。通过条件是首页 200、Pod 重启数为 0、F03 代理负载已删除。
+- [x] Lane 10. 无故障状态下同一命令连跑两次。截图存 `demos/ms08/screenshots/v09/pr-1-lane-10-replay.png`。通过条件是两次都 inconclusive、都没有提案、工具调用都是 6 次。
 
 **Verify, perf.** 只跑测试不算验证。一个 PR 只有单元、实机、性能三类框全部勾上，才算验证完成。
 
-- [ ] 指标。单次规则调查的模型调用数、工具调用数和起止时间。主干没有该模式，记录缺失。
-- [ ] 探针。`docker exec -e PGPASSWORD=... vigil-postgres psql -U vigil -d vigil -c "select id, model, used_model_calls, used_tool_calls, started_at, finished_at from investigations where model like 'rules:%'"`，head 三次运行后各查一次，主干跑同一条查询。
-- [ ] 基线。先记录主干的结果，预期 0 行，因为特性不存在。
-- [ ] 规则。主干没有该特性，不给比值。head 三次运行必须都是模型调用 0、工具调用 6、墙钟在 480 秒预算内。任一次超出即失败。
+- [x] 指标。单次规则调查的模型调用数、工具调用数和起止时间。主干没有该模式，记录缺失。
+- [x] 探针。`docker exec -e PGPASSWORD=... vigil-postgres psql -U vigil -d vigil -c "select id, model, used_model_calls, used_tool_calls, started_at, finished_at from investigations where model like 'rules:%'"`，head 三次运行后各查一次，主干跑同一条查询。
+- [x] 基线。先记录主干的结果，预期 0 行，因为特性不存在。
+- [x] 规则。主干没有该特性，不给比值。head 三次运行必须都是模型调用 0、工具调用 6、墙钟在 480 秒预算内。任一次超出即失败。
 
 **Review gate.** 操作者在合入前审查。
 
-- [ ] 把 lane 2、lane 3、lane 4 的截图汇总到一组，路径为 `demos/ms08/screenshots/v09/pr-1-review-rules.png`，确认能打开。
-- [ ] 录一段 30 到 60 秒的视频，覆盖一次规则运行和一次预算截断运行。存为 `demos/ms08/screenshots/v09/pr-1-review.mp4`。
+- [x] 把 lane 2、lane 3、lane 4 的截图汇总到一组，路径为 `demos/ms08/screenshots/v09/pr-1-review-rules.png`，确认能打开。
+- [x] 录一段 30 到 60 秒的视频，覆盖一次规则运行和一次预算截断运行。存为 `demos/ms08/screenshots/v09/pr-1-review.mp4`。
 - [ ] 在对话里发出截图与视频。停在 merge-ready，等操作者确认。
 
 **Merge.**
