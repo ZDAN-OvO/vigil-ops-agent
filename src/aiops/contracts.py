@@ -198,6 +198,7 @@ class ActionTarget(Contract):
 class ActionOrigin(StrEnum):
     OPERATOR = "operator"
     MODEL = "model"
+    RULES = "rules"
 
 
 class ProposalStatus(StrEnum):
@@ -248,9 +249,9 @@ class ActionProposal(Contract):
     status: ProposalStatus = ProposalStatus.PENDING_APPROVAL
 
     @model_validator(mode="after")
-    def model_proposal_needs_evidence(self) -> Self:
-        if self.origin is ActionOrigin.MODEL and not self.evidence_ids:
-            raise ValueError("模型提案必须绑定证据；人工提案记录操作者")
+    def automatic_proposal_needs_evidence(self) -> Self:
+        if self.origin in {ActionOrigin.MODEL, ActionOrigin.RULES} and not self.evidence_ids:
+            raise ValueError("自动提案必须绑定证据；人工提案记录操作者")
         return self
 
 

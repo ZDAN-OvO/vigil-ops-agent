@@ -28,8 +28,9 @@ from aiops.contracts import (
 )
 from aiops.db import Store, StoreUnavailable
 from aiops.eval import evaluate, load_manifest
+from aiops.investigation.baseline import RULES_VERSION
 from aiops.investigation.explain import ExplainError, ExplainService
-from aiops.investigation.factory import open_runtime
+from aiops.investigation.factory import open_baseline, open_runtime
 from aiops.investigation.runtime import Report
 from aiops.knowledge import load_runbooks
 from aiops.model import ModelClient
@@ -48,6 +49,11 @@ app.add_typer(db_app, name="db")
 class OutputFormat(StrEnum):
     TEXT = "text"
     JSON = "json"
+
+
+class InvestigationMode(StrEnum):
+    AGENT = "agent"
+    RULES = "rules"
 
 
 def _require_dsn() -> str:
@@ -154,11 +160,17 @@ def investigate(
     cluster: str = typer.Option("vigil-lab", help="集群名，仅用于记录"),
     lookback_minutes: int = typer.Option(15, min=1, max=180, help="取证时间窗"),
     context: Annotated[list[str] | None, typer.Option(help="人工补充的上下文，可重复")] = None,
+    mode: Annotated[
+        InvestigationMode, typer.Option(help="agent 调用模型；rules 运行固定规则基线")
+    ] = InvestigationMode.AGENT,
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
     """运行一次调查；命中自动规则的可丢弃 Pod 重建会立即执行，其余只提案等待审批。"""
     settings = Settings()
-    if not settings.model_name:
+    model_name = (
+        f"rules:{RULES_VERSION}" if mode is InvestigationMode.RULES else settings.model_name
+    )
+    if not model_name:
         typer.echo("未配置 VIGIL_MODEL_NAME，无法调用模型。", err=True)
         raise typer.Exit(code=2)
     dsn = _require_dsn()
@@ -179,7 +191,7 @@ def investigate(
         id=f"inv-{uuid.uuid4().hex[:12]}",
         incident_id=incident.id,
         status=InvestigationStatus.RUNNING,
-        model=settings.model_name,
+        model=model_name,
         policy_version="mvp-1",
         budget=Budget(
             max_tool_calls=settings.investigation_budget_tool_calls,
@@ -202,10 +214,18 @@ def investigate(
                         actor="cli",
                         event="investigation.started",
                         occurred_at=now,
-                        payload={"service": service, "model": settings.model_name},
+                        payload={"service": service, "model": model_name, "mode": mode.value},
                     )
                 ]
             )
+            if mode is InvestigationMode.RULES:
+                async with open_baseline(
+                    settings=settings,
+                    store=store,
+                    incident=incident,
+                    investigation=investigation,
+                ) as baseline:
+                    return await baseline.run()
             async with open_runtime(
                 settings=settings,
                 store=store,
