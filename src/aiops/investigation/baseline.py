@@ -137,12 +137,17 @@ def _shape(row: dict[str, Any]) -> tuple[Any, Any]:
     return (row.get("image"), row.get("memory_limit"))
 
 
-def _live_shape(deployment: dict[str, Any]) -> tuple[Any, Any] | None:
+def _live_template(deployment: dict[str, Any]) -> tuple[Any, Any, Any] | None:
+    """只取首个容器，与工具对 ReplicaSet 模板的裁剪口径一致。"""
     containers = deployment.get("containers") or []
     if not containers:
         return None
     container = containers[0]
-    return (container.get("image"), (container.get("limits") or {}).get("memory"))
+    return (
+        container.get("image"),
+        (container.get("limits") or {}).get("memory"),
+        (container.get("requests") or {}).get("memory"),
+    )
 
 
 def _templates(deployment: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -150,18 +155,24 @@ def _templates(deployment: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[
 
     rollout undo 会复用旧 ReplicaSet，旧 RS 的 revision 号小于被回退掉的 RS；
     只看最大 revision 会把已经不在用的坏模板当成当前模板，回退方向随之反过来。
-    按镜像与内存限额匹配实时模板，再取 revision 号最大的不同模板作为上一版。
+    先按镜像、限额与请求精确匹配，再退到镜像和限额，最后才退回最高 revision。
     """
     revisions = _revisions(deployment)
     if not revisions:
         return None, None
-    live = _live_shape(deployment)
-    matches = [row for row in revisions if live is not None and _shape(row) == live]
-    current = (
-        max(matches, key=lambda row: (row.get("replicas") or 0, row.get("revision") or 0))
-        if matches
-        else revisions[-1]
-    )
+    live = _live_template(deployment)
+    exact = [row for row in revisions if live is not None and _template(row) == live]
+    if exact:
+        current = max(exact, key=lambda row: row.get("revision") or 0)
+    elif live is not None:
+        same_shape = [row for row in revisions if _shape(row) == (live[0], live[1])]
+        current = (
+            max(same_shape, key=lambda row: row.get("revision") or 0)
+            if same_shape
+            else revisions[-1]
+        )
+    else:
+        current = revisions[-1]
     key = _template(current)
     previous = next(
         (row for row in reversed(revisions) if row is not current and _template(row) != key),
@@ -187,7 +198,9 @@ def _oom_finished_at(pod: dict[str, Any], window: TimeRange) -> datetime:
 
 
 def _oom_container(pod: dict[str, Any], window: TimeRange) -> dict[str, Any] | None:
-    """只认落在观察窗内的 OOMKilled；历史单次退出不能当成当前根因。"""
+    """只认落在观察窗内的 OOMKilled，取最近一次；历史单次退出不能当成当前根因。"""
+    latest = None
+    latest_at = None
     for container in pod.get("containers") or []:
         last = container.get("last_terminated") or {}
         if last.get("reason") != "OOMKilled" and container.get("reason") != "OOMKilled":
@@ -195,8 +208,9 @@ def _oom_container(pod: dict[str, Any], window: TimeRange) -> dict[str, Any] | N
         finished = _as_time(last.get("finished_at"))
         if finished is None or not window.start <= finished <= window.end:
             continue
-        return container
-    return None
+        if latest_at is None or finished > latest_at:
+            latest, latest_at = container, finished
+    return latest
 
 
 _MEMORY_SUFFIX = {
@@ -688,9 +702,11 @@ class RulesBaseline:
     def _match_oom(
         self, deployments: list[dict], pods: list[dict], common: dict[str, Any]
     ) -> _Hit | None:
-        # 多个 Pod 同时 OOM 时按最近一次终止时间选，结果不依赖接口返回顺序。
+        # 多个 Pod 同时 OOM 时按最近一次终止时间选，同一时间用 Pod 名兜底，结果稳定。
         for pod in sorted(
-            pods, key=lambda item: _oom_finished_at(item, self._window), reverse=True
+            pods,
+            key=lambda item: (_oom_finished_at(item, self._window), _text(item.get("name"))),
+            reverse=True,
         ):
             container = _oom_container(pod, self._window)
             if container is None:
@@ -713,6 +729,8 @@ class RulesBaseline:
             )
             previous_limit = _memory_bytes(previous.get("memory_limit")) if previous else None
             current_limit = _memory_bytes((current or {}).get("memory_limit"))
+            live = _live_template(deployment) if deployment else None
+            live_limit = _memory_bytes(live[1]) if live else None
             if previous is None:
                 detail += "；没有可比较的历史模板，不能确认回退适用"
                 action = "none"
@@ -721,6 +739,9 @@ class RulesBaseline:
                     f"；当前或上一版 revision {previous.get('revision')} 的内存限额无法解析，"
                     "不能确认回退能缓解资源不足"
                 )
+                action = "none"
+            elif live_limit is not None and current_limit != live_limit:
+                detail += "；实时模板的内存限额与历史模板不一致，不能判断回退方向"
                 action = "none"
             elif previous_limit <= current_limit:
                 detail += (

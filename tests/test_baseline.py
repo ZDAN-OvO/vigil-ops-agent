@@ -168,14 +168,16 @@ def result(data, *, source="kubernetes", error=None, truncated=False):
     )
 
 
-def revision(number, *, image="repo/app:1", memory="128Mi", created=None):
+def revision(
+    number, *, image="repo/app:1", memory="128Mi", requests=None, replicas=1, created=None
+):
     return {
         "revision": number,
         "image": image,
         "memory_limit": memory,
-        "memory_request": memory,
-        "replicas": 1,
-        "ready_replicas": 1,
+        "memory_request": requests or memory,
+        "replicas": replicas,
+        "ready_replicas": replicas,
         "created_at": (created or START + timedelta(minutes=5)).isoformat(),
     }
 
@@ -185,7 +187,14 @@ def deployment(name, revisions, *, limits="128Mi", app=None, selector=None, imag
         "name": name,
         "labels": {"app": app or name},
         "selector": selector if selector is not None else {"app": app or name},
-        "containers": [{"name": "server", "image": image, "limits": {"memory": limits}}],
+        "containers": [
+            {
+                "name": "server",
+                "image": image,
+                "limits": {"memory": limits},
+                "requests": {"memory": limits},
+            }
+        ],
         "revisions": revisions,
     }
 
@@ -322,6 +331,7 @@ def test_template_change_maps_to_recent_rollout():
             deployment(
                 "productcatalogservice",
                 [revision(20), revision(21, image="repo/app:canary")],
+                image="repo/app:canary",
             )
         ],
         pods=[pod("productcatalogservice-abc", "productcatalogservice")],
@@ -339,6 +349,7 @@ def test_template_change_maps_to_recent_rollout():
     report, store, _, _ = run_case(results, proposer=proposer)
 
     assert report.status is InvestigationStatus.COMPLETED
+    assert "当前模板 revision 21" in report.conclusion
     assert "观察窗内启动" in report.conclusion and "canary" in report.conclusion
     assert store.events("baseline.rule")[0].payload["rule"] == "recent-rollout"
     assert proposer.calls[0]["deployment"] == "productcatalogservice"
@@ -927,3 +938,50 @@ def test_short_deployment_name_matches_log_hint():
 
     assert report.status is InvestigationStatus.COMPLETED
     assert proposer.calls[0]["deployment"] == "cart"
+
+
+def test_template_identity_includes_memory_request():
+    proposer = RecordingProposer()
+    results = plan(
+        deployments=[
+            deployment(
+                "productcatalogservice",
+                [
+                    revision(1, memory="128Mi", requests="64Mi", replicas=3),
+                    revision(2, memory="128Mi", requests="128Mi", replicas=1),
+                ],
+                limits="128Mi",
+            )
+        ],
+        pods=[pod("productcatalogservice-abc", "productcatalogservice", ready=False)],
+        probe=1,
+    )
+
+    report, store, _, _ = run_case(results, proposer=proposer)
+
+    # 镜像和限额相同、请求不同，副本数更多的是旧版；实时模板按请求精确匹配新版。
+    assert report.status is InvestigationStatus.COMPLETED
+    assert "当前模板 revision 2" in report.conclusion
+    assert proposer.calls[0]["deployment"] == "productcatalogservice"
+
+
+def test_live_limit_mismatch_does_not_propose_a_rollback():
+    proposer = RecordingProposer()
+    results = plan(
+        deployments=[
+            deployment(
+                "productcatalogservice",
+                [revision(1, memory="512Mi"), revision(2, memory="128Mi")],
+                limits="256Mi",
+            )
+        ],
+        pods=[pod("productcatalogservice-abc", "productcatalogservice", oom=True, restarts=2)],
+        probe=0,
+    )
+
+    report, store, _, _ = run_case(results, proposer=proposer)
+
+    # 实时模板 256Mi 与历史模板都不一致，不能拿 128Mi 当当前版本判断回退方向。
+    assert report.status is InvestigationStatus.COMPLETED
+    assert "实时模板的内存限额与历史模板不一致" in report.conclusion
+    assert proposer.calls == []
