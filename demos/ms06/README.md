@@ -49,7 +49,7 @@ aiops knowledge list
 - 查询过候选却没有任何判定时同样中止，避免「查了却不表态」。
 - 只有 `knowledge` 来源的支撑证据时，结论不会被采纳，记为 inconclusive。
 
-这些规则在 `demos/ms06/outputs/` 的记录之后生效，所以前两条运行记录仍按当时的代码展示；闸门本身由 `tests/test_investigation.py` 的四个用例覆盖。
+这些规则在 `demos/ms06/outputs/` 的记录之后生效，所以前两条运行记录仍按当时的代码展示；闸门本身由 `tests/test_investigation_runbook.py` 的四个用例覆盖。
 
 ## 缺口
 
