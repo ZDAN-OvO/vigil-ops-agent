@@ -1,10 +1,10 @@
-        id        |     model     | used |  budget  | audit_policy |       proposals       
-------------------+---------------+------+----------+--------------+-----------------------
- inv-01747d5f38e4 | rules:rules-1 | 6/0  | 16/8/480 | mvp-policy-2 | rollout_undo:approval
- inv-720090d4ea4d | rules:rules-1 | 6/0  | 16/8/480 | mvp-policy-2 | rollout_undo:approval
+        id        |     model     | used |  budget  | audit_policy |             proposals              
+------------------+---------------+------+----------+--------------+------------------------------------
+ inv-01747d5f38e4 | rules:rules-1 | 6/0  | 16/8/480 | mvp-policy-2 | rollout_undo:approval@mvp-policy-2
+ inv-720090d4ea4d | rules:rules-1 | 6/0  | 16/8/480 | mvp-policy-2 | rollout_undo:approval@mvp-policy-2
  inv-7e6d114d5eb6 | rules:rules-1 | 6/0  | 16/8/480 | mvp-policy-2 | -
  inv-1d9ea52ecbbb | agent         | 16/4 | 16/8/480 | -            | -
- inv-46222d41c0fa | agent         | 9/4  | 16/8/480 | -            | rollout_undo:approval
+ inv-46222d41c0fa | agent         | 9/4  | 16/8/480 | -            | rollout_undo:approval@mvp-policy-2
  inv-567f756c8ff4 | agent         | 14/4 | 16/8/480 | -            | -
 (6 rows)
 
