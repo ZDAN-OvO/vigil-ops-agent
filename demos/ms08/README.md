@@ -83,7 +83,7 @@ F03 原来只有一次有效运行，这次补两次，均先核验延迟再清�
 
 评估核对基线：终态、模型标记 `rules:rules-1`、模型调用为 0、工具调用大于 0、`baseline.started` 审计的规则版本与策略版本、run_id 与调查不重复。核对对照：运行已登记且有效、调查独立、不是规则运行、终态 completed 或 inconclusive（aborted 不算对照）、有模型调用和工具调用、预算一致、资源一致、观察窗一致、Context 一致、现象描述一致。两侧提案都必须在场景允许的动作内；同名动作的风险判定必须一致，只在一侧出现的提案记为备注；核心场景必须有基线。
 
-策略版本在评估接口里只对基线侧可读。`baseline.started` 审计记录 `mvp-policy-2`；`ActionProposal` 合同与评估器使用的 Store 协议都不带提案策略版本，只有库表 `action_proposals.policy_version` 有该列，两侧提案都是 `mvp-policy-2`（`outputs/21-v09-compare.txt` 与 `pr-2-lane-7-compare.png`）。`investigations.policy_version` 是 CLI 固定写入的 `mvp-1` 占位，不是策略版本。V09 不直接读库表，所以按字段比较策略版本会越出本 PR 的文件边界；清单把这一维写成不可比，改为比较 `risk_disposition`。
+策略版本在评估接口里只对基线侧可读。`baseline.started` 审计记录 `mvp-policy-2`；`ActionProposal` 合同与评估器使用的 Store 协议都不带提案策略版本，只有库表 `action_proposals.policy_version` 有该列，有提案的记录都是 `mvp-policy-2`（`outputs/21-v09-compare.txt` 与 `pr-2-lane-7-compare.png`）。`investigations.policy_version` 是 CLI 固定写入的 `mvp-1` 占位，不是策略版本。V09 不直接读库表，所以按字段比较策略版本会越出本 PR 的文件边界；清单把这一维写成不可比，改为比较 `risk_disposition`。
 
 | 场景 | 基线调查 | 对照运行 | 预算（工具/模型/秒） | 观察窗 | 两侧提案判定 |
 |---|---|---|---|---|---|
