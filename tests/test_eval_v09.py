@@ -431,6 +431,41 @@ def test_v09_rejects_an_aborted_baseline(tmp_path):
     assert "终态=aborted" in result.detail
 
 
+def test_v09_rejects_duplicate_run_ids_in_the_scenario(tmp_path):
+    fake = store()
+    item = scenario(
+        "f01",
+        [
+            run("a", valid=False, investigation="inv-missing"),
+            run("a", investigation="inv-agent"),
+        ],
+    )
+    item["allowed_actions"] = ["rollout_undo"]
+
+    result = v09(tmp_path, baseline_run(), fake, [item])
+
+    assert result.passed is False
+    assert "场景运行 id 重复" in result.detail
+
+
+def test_v09_reports_missing_input_fields_instead_of_crashing(tmp_path):
+    fake = store()
+    broken = incident()
+    del broken.environment
+    del broken.trigger
+    broken.alert_ids = None
+    broken.context = None
+    del broken.symptoms
+    fake._incidents["inc-agent"] = broken
+
+    result = v09(tmp_path, baseline_run(), fake)
+
+    assert result.passed is False
+    assert "环境不一致" in result.detail
+    assert "触发方式不一致" in result.detail
+    assert "现象描述不一致" in result.detail
+
+
 def test_manifest_rejects_duplicate_scenario_ids():
     payload = manifest([f01_scenario(), f01_scenario()], baseline=[baseline_run()])
 

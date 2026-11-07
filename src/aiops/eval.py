@@ -1028,6 +1028,9 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
             problems.append(f"场景不存在 {run.scenario}")
             baseline_problems.extend(f"{label}:{item}" for item in problems)
             continue
+        scenario_run_ids = [item.run_id for item in scenario.runs]
+        if len(scenario_run_ids) != len(set(scenario_run_ids)):
+            problems.append("场景运行 id 重复")
         if not run.rules_version:
             problems.append("缺规则版本")
         if not run.investigation_id:
@@ -1127,15 +1130,23 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
                 problems.append(f"观察窗缺失 {agent_run_id}")
             elif abs(agent_window - window) > 1:
                 problems.append(f"观察窗不一致 {agent_run_id}")
-            if agent_incident.environment != incident.environment:
+            if getattr(agent_incident, "environment", None) != getattr(
+                incident, "environment", None
+            ):
                 problems.append(f"环境不一致 {agent_run_id}")
-            if agent_incident.trigger != incident.trigger:
+            if getattr(agent_incident, "trigger", None) != getattr(incident, "trigger", None):
                 problems.append(f"触发方式不一致 {agent_run_id}")
-            if sorted(agent_incident.alert_ids) != sorted(incident.alert_ids):
+            agent_alerts = getattr(agent_incident, "alert_ids", None) or []
+            baseline_alerts = getattr(incident, "alert_ids", None) or []
+            if sorted(agent_alerts) != sorted(baseline_alerts):
                 problems.append(f"关联告警不一致 {agent_run_id}")
-            if list(agent_incident.context) != list(incident.context):
+            agent_context = getattr(agent_incident, "context", None) or []
+            baseline_context = getattr(incident, "context", None) or []
+            if list(agent_context) != list(baseline_context):
                 problems.append(f"Context 不一致 {agent_run_id}")
-            if agent_incident.symptoms.strip() != incident.symptoms.strip():
+            agent_symptoms = getattr(agent_incident, "symptoms", "") or ""
+            baseline_symptoms = getattr(incident, "symptoms", "") or ""
+            if agent_symptoms.strip() != baseline_symptoms.strip():
                 problems.append(f"现象描述不一致 {agent_run_id}")
             control_verdicts: dict[str, set[str]] = {}
             for proposal in await store.list_proposals_for_investigation(
