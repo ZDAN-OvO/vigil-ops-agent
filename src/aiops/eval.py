@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from aiops.actions.executor import proposal_hash
 from aiops.actions.policy import decide
@@ -187,6 +187,13 @@ class Manifest(BaseModel):
     evidence_root: str = "runtime"
     demo_packs: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def scenario_ids_are_unique(self) -> Manifest:
+        identifiers = [item.id for item in self.scenarios]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("场景 id 重复")
+        return self
+
 
 @dataclass(frozen=True)
 class CriterionResult:
@@ -205,11 +212,11 @@ class EvaluationReport:
         return all(item.passed for item in self.criteria)
 
 
-def _window_minutes(incident: Any) -> int | None:
+def _window_seconds(incident: Any) -> float | None:
     time_range = getattr(incident, "time_range", None)
     if time_range is None:
         return None
-    return round((time_range.end - time_range.start).total_seconds() / 60)
+    return (time_range.end - time_range.start).total_seconds()
 
 
 class StoreProtocol(Protocol):
@@ -1066,13 +1073,15 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
         baseline_verdicts: dict[str, set[str]] = {}
         for proposal in baseline_proposals:
             kind = getattr(getattr(proposal, "kind", None), "value", "")
+            origin = _value(getattr(proposal, "origin", None))
+            if origin != "rules":
+                problems.append(f"基线提案来源={origin or '未知'} {kind or proposal.id}")
             if kind and kind not in scenario.allowed_actions:
                 problems.append(f"提案超出场景动作 {kind}")
             if kind:
                 verdict = await store.get_proposal_disposition(proposal.id) or ""
                 baseline_verdicts.setdefault(kind, set()).add(verdict)
         runs_by_id = {item.run_id: item for item in scenario.runs}
-        control_verdicts: dict[str, set[str]] = {}
         for agent_run_id in run.agent_run_ids:
             agent_run = runs_by_id.get(agent_run_id)
             if agent_run is None:
@@ -1112,32 +1121,49 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
                 agent_incident.service,
             ) != (incident.cluster, incident.namespace, incident.service):
                 problems.append(f"资源不一致 {agent_run_id}")
-            if _window_minutes(agent_incident) != _window_minutes(incident):
+            window = _window_seconds(incident)
+            agent_window = _window_seconds(agent_incident)
+            if window is None or agent_window is None:
+                problems.append(f"观察窗缺失 {agent_run_id}")
+            elif abs(agent_window - window) > 1:
                 problems.append(f"观察窗不一致 {agent_run_id}")
-            if set(agent_incident.context) != set(incident.context):
+            if agent_incident.environment != incident.environment:
+                problems.append(f"环境不一致 {agent_run_id}")
+            if agent_incident.trigger != incident.trigger:
+                problems.append(f"触发方式不一致 {agent_run_id}")
+            if sorted(agent_incident.alert_ids) != sorted(incident.alert_ids):
+                problems.append(f"关联告警不一致 {agent_run_id}")
+            if list(agent_incident.context) != list(incident.context):
                 problems.append(f"Context 不一致 {agent_run_id}")
             if agent_incident.symptoms.strip() != incident.symptoms.strip():
                 problems.append(f"现象描述不一致 {agent_run_id}")
+            control_verdicts: dict[str, set[str]] = {}
             for proposal in await store.list_proposals_for_investigation(
                 agent_run.investigation_id
             ):
                 kind = getattr(getattr(proposal, "kind", None), "value", "")
                 if not kind:
                     continue
+                origin = _value(getattr(proposal, "origin", None))
+                if origin != "model":
+                    problems.append(f"对照提案来源={origin or '未知'} {kind}")
                 if kind not in scenario.allowed_actions:
                     problems.append(f"对照提案超出场景动作 {kind}")
                 verdict = await store.get_proposal_disposition(proposal.id) or ""
                 control_verdicts.setdefault(kind, set()).add(verdict)
-        for kind, verdicts in baseline_verdicts.items():
-            other = control_verdicts.get(kind)
-            if other is None:
-                baseline_notes.append(f"{label}:{kind} 仅基线提出")
-            elif other != verdicts:
-                problems.append(f"授权判定不一致 {kind} {sorted(verdicts)}/{sorted(other)}")
-        for kind in control_verdicts.keys() - baseline_verdicts.keys():
-            baseline_notes.append(f"{label}:{kind} 仅对照提出")
-        if not baseline_verdicts and not control_verdicts:
-            baseline_notes.append(f"{label}:授权判定未触发")
+            pair = f"{label}/{agent_run_id}"
+            for kind, verdicts in baseline_verdicts.items():
+                other = control_verdicts.get(kind)
+                if other is None:
+                    baseline_notes.append(f"{pair}:{kind} 仅基线提出")
+                elif other != verdicts:
+                    problems.append(
+                        f"授权判定不一致 {kind} {sorted(verdicts)}/{sorted(other)} {agent_run_id}"
+                    )
+            for kind in control_verdicts.keys() - baseline_verdicts.keys():
+                baseline_notes.append(f"{pair}:{kind} 仅对照提出")
+            if not baseline_verdicts and not control_verdicts:
+                baseline_notes.append(f"{pair}:授权判定未触发")
         if problems:
             baseline_problems.extend(f"{label}:{item}" for item in problems)
         else:

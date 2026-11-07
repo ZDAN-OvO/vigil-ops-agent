@@ -3,9 +3,12 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from eval_fakes import FakeStore, audit, check, criterion, manifest, run, scenario
+from pydantic import ValidationError
 
-from aiops.contracts import ActionKind, Budget, BudgetUsage
+from aiops.contracts import ActionKind, ActionOrigin, Budget, BudgetUsage
+from aiops.eval import Manifest
 
 SYMPTOMS = "首页 500，productcatalogservice 刚发布新镜像"
 
@@ -28,23 +31,47 @@ def investigation(identifier, incident_id, *, model="mythos", status="completed"
     return SimpleNamespace(**values)
 
 
-def incident(*, service="frontend", minutes=15, context=(), symptoms=SYMPTOMS):
-    end = datetime(2026, 11, 6, 8, 0, tzinfo=UTC)
+def incident(
+    *,
+    service="frontend",
+    minutes=15,
+    end_skew_seconds=0,
+    environment="local",
+    trigger="manual",
+    alert_ids=(),
+    context=(),
+    symptoms=SYMPTOMS,
+):
+    end = datetime(2026, 11, 6, 8, 0, tzinfo=UTC) + timedelta(seconds=end_skew_seconds)
     return SimpleNamespace(
+        environment=environment,
         cluster="vigil-lab",
         namespace="vigil-shop",
         service=service,
-        time_range=SimpleNamespace(start=end - timedelta(minutes=minutes), end=end),
+        trigger=trigger,
+        time_range=SimpleNamespace(
+            start=datetime(2026, 11, 6, 8, 0, tzinfo=UTC) - timedelta(minutes=minutes),
+            end=end,
+        ),
+        alert_ids=list(alert_ids),
         context=list(context),
         symptoms=symptoms,
     )
 
 
-def proposal(identifier, investigation_id, *, kind=ActionKind.ROLLOUT_UNDO, policy="mvp-policy-2"):
+def proposal(
+    identifier,
+    investigation_id,
+    *,
+    kind=ActionKind.ROLLOUT_UNDO,
+    origin=ActionOrigin.RULES,
+    policy="mvp-policy-2",
+):
     return SimpleNamespace(
         id=identifier,
         kind=kind,
         investigation_id=investigation_id,
+        origin=origin,
         policy_version=policy,
     )
 
@@ -84,16 +111,16 @@ def store(**overrides):
             ]
         },
         "proposals": {
-            "act-rules": proposal("act-rules", "inv-rules"),
-            "act-agent": proposal("act-agent", "inv-agent"),
+            "act-rules": proposal("act-rules", "inv-rules", origin=ActionOrigin.RULES),
+            "act-agent": proposal("act-agent", "inv-agent", origin=ActionOrigin.MODEL),
         },
     }
     values.update(overrides)
     return FakeStore(**values)
 
 
-def f01_scenario(allowed=("rollout_undo",)):
-    item = scenario("f01", [run("a", investigation="inv-agent")])
+def f01_scenario(allowed=("rollout_undo",), extra_runs=()):
+    item = scenario("f01", [run("a", investigation="inv-agent"), *extra_runs])
     item["allowed_actions"] = list(allowed)
     return item
 
@@ -362,7 +389,9 @@ def test_v09_rejects_a_proposal_outside_the_scenario(tmp_path):
 
 def test_v09_rejects_a_control_proposal_outside_the_scenario(tmp_path):
     fake = store()
-    fake._proposals["act-agent"] = proposal("act-agent", "inv-agent", kind=ActionKind.RESTART_POD)
+    fake._proposals["act-agent"] = proposal(
+        "act-agent", "inv-agent", kind=ActionKind.RESTART_POD, origin=ActionOrigin.MODEL
+    )
 
     result = v09(tmp_path, baseline_run(), fake)
 
@@ -400,3 +429,123 @@ def test_v09_rejects_an_aborted_baseline(tmp_path):
 
     assert result.passed is False
     assert "终态=aborted" in result.detail
+
+
+def test_manifest_rejects_duplicate_scenario_ids():
+    payload = manifest([f01_scenario(), f01_scenario()], baseline=[baseline_run()])
+
+    with pytest.raises(ValidationError, match="场景 id 重复"):
+        Manifest.model_validate(payload)
+
+
+def test_v09_rejects_an_environment_mismatch(tmp_path):
+    fake = store()
+    fake._incidents["inc-agent"] = incident(environment="staging")
+
+    result = v09(tmp_path, baseline_run(), fake)
+
+    assert result.passed is False
+    assert "环境不一致" in result.detail
+
+
+def test_v09_rejects_a_trigger_mismatch(tmp_path):
+    fake = store()
+    fake._incidents["inc-agent"] = incident(trigger="alert")
+
+    result = v09(tmp_path, baseline_run(), fake)
+
+    assert result.passed is False
+    assert "触发方式不一致" in result.detail
+
+
+def test_v09_rejects_an_alert_mismatch(tmp_path):
+    fake = store()
+    fake._incidents["inc-agent"] = incident(alert_ids=["alert-1"])
+
+    result = v09(tmp_path, baseline_run(), fake)
+
+    assert result.passed is False
+    assert "关联告警不一致" in result.detail
+
+
+def test_v09_rejects_reordered_context(tmp_path):
+    fake = store()
+    fake._incidents["inc-rules"] = incident(context=["告警来自前端探针", "刚发布新镜像"])
+    fake._incidents["inc-agent"] = incident(context=["刚发布新镜像", "告警来自前端探针"])
+
+    result = v09(tmp_path, baseline_run(), fake)
+
+    assert result.passed is False
+    assert "Context 不一致" in result.detail
+
+
+def test_v09_rejects_repeated_context(tmp_path):
+    fake = store()
+    fake._incidents["inc-rules"] = incident(context=["告警来自前端探针", "告警来自前端探针"])
+    fake._incidents["inc-agent"] = incident(context=["告警来自前端探针"])
+
+    result = v09(tmp_path, baseline_run(), fake)
+
+    assert result.passed is False
+    assert "Context 不一致" in result.detail
+
+
+def test_v09_rejects_a_window_difference_under_a_minute(tmp_path):
+    fake = store()
+    fake._incidents["inc-agent"] = incident(end_skew_seconds=24)
+
+    result = v09(tmp_path, baseline_run(), fake)
+
+    assert result.passed is False
+    assert "观察窗不一致" in result.detail
+
+
+def test_v09_rejects_an_operator_proposal_in_the_baseline(tmp_path):
+    fake = store()
+    fake._proposals["act-rules"] = proposal("act-rules", "inv-rules", origin=ActionOrigin.OPERATOR)
+
+    result = v09(tmp_path, baseline_run(), fake)
+
+    assert result.passed is False
+    assert "基线提案来源=operator" in result.detail
+
+
+def test_v09_rejects_an_operator_proposal_in_the_control(tmp_path):
+    fake = store()
+    fake._proposals["act-agent"] = proposal("act-agent", "inv-agent", origin=ActionOrigin.OPERATOR)
+
+    result = v09(tmp_path, baseline_run(), fake)
+
+    assert result.passed is False
+    assert "对照提案来源=operator" in result.detail
+
+
+def test_v09_compares_each_control_separately(tmp_path):
+    fake = store()
+    fake._investigations["inv-agent-b"] = investigation("inv-agent-b", "inc-agent-b")
+    fake._incidents["inc-agent-b"] = incident()
+
+    scenarios = [f01_scenario(extra_runs=[run("b", investigation="inv-agent-b")])]
+
+    result = v09(tmp_path, baseline_run(agent_run_ids=["a", "b"]), fake, scenarios)
+
+    assert result.passed is True
+    assert "f01-rules/b:rollout_undo 仅基线提出" in result.detail
+    assert "f01-rules/a:rollout_undo 仅基线提出" not in result.detail
+
+
+def test_v09_rejects_a_verdict_mismatch_on_one_of_two_controls(tmp_path):
+    fake = store()
+    fake._investigations["inv-agent-b"] = investigation("inv-agent-b", "inc-agent-b")
+    fake._incidents["inc-agent-b"] = incident()
+    fake._proposals["act-agent-b"] = proposal(
+        "act-agent-b", "inv-agent-b", origin=ActionOrigin.MODEL
+    )
+    fake._dispositions["act-agent-b"] = "deny"
+
+    scenarios = [f01_scenario(extra_runs=[run("b", investigation="inv-agent-b")])]
+
+    result = v09(tmp_path, baseline_run(agent_run_ids=["a", "b"]), fake, scenarios)
+
+    assert result.passed is False
+    assert "授权判定不一致 rollout_undo ['approval']/['deny'] b" in result.detail
