@@ -1,0 +1,7 @@
+调查 inv-720090d4ea4d：completed
+动作提案：act-f02af95bc7a7
+根因候选：固定规则判定：currencyservice 的 Pod currencyservice-f6d9b8f46-2tchq 以 OOMKilled 退出（exit_code=137，restart_count=4），当前内存 limits=16Mi、requests=8Mi；上一版 revision 13 的内存限额为 128Mi。 证据：ev-9fd9056c2e78, ev-9677c47e79c9。
+证据 5 条，工具调用 6 次
+  - [supported] 容器因资源配置不足或进程按错误码退出
+  - [inconclusive] 观察窗内的工作负载模板变更或新增工作负载
+  - [inconclusive] 入口服务访问依赖时出现连接、解析或超时错误

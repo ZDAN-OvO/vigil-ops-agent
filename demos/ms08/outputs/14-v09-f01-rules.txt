@@ -1,0 +1,7 @@
+调查 inv-dc8931a8dc38：completed
+动作提案：act-4b5959d7a609
+根因候选：固定规则判定：productcatalogservice 的 Pod 在观察窗内启动（2026-11-06T07:27:40+00:00），当前模板 revision 48（镜像 vigil/productcatalogservice:canary-20261104，内存限额 128Mi）与上一版 revision 47 不同（镜像 gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef，内存限额 128Mi）；入口日志出现该工作负载的错误。 证据：ev-97963fa681a5, ev-06a67544b783。
+证据 6 条，工具调用 6 次
+  - [inconclusive] 容器因资源配置不足或进程按错误码退出
+  - [supported] 观察窗内的工作负载模板变更或新增工作负载
+  - [inconclusive] 入口服务访问依赖时出现连接、解析或超时错误

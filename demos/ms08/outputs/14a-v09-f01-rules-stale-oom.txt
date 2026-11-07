@@ -1,0 +1,6 @@
+调查 inv-3153ad1c27c8：completed
+根因候选：固定规则判定：paymentservice 的 Pod paymentservice-74d75cf57-dmhmj 以 OOMKilled 退出（exit_code=137，restart_count=1），当前内存 limits=128Mi、requests=64Mi；没有可比较的历史模板，不能确认回退适用。
+证据 6 条，工具调用 6 次
+  - [supported] 容器因资源配置不足或进程按错误码退出
+  - [inconclusive] 观察窗内的工作负载模板变更或新增工作负载
+  - [inconclusive] 入口服务访问依赖时出现连接、解析或超时错误
