@@ -195,7 +195,17 @@ def test_v09_rejects_a_control_that_has_not_finished(tmp_path):
     result = v09(tmp_path, baseline_run(), fake)
 
     assert result.passed is False
-    assert "对照未终态" in result.detail
+    assert "对照终态=running" in result.detail
+
+
+def test_v09_rejects_an_aborted_control(tmp_path):
+    fake = store()
+    fake._investigations["inv-agent"] = investigation("inv-agent", "inc-agent", status="aborted")
+
+    result = v09(tmp_path, baseline_run(), fake)
+
+    assert result.passed is False
+    assert "对照终态=aborted" in result.detail
 
 
 def test_v09_rejects_a_control_without_model_calls(tmp_path):
@@ -297,6 +307,13 @@ def test_v09_rejects_blank_declarations(tmp_path):
 
     assert result.passed is False
     assert "未声明比较维度" in result.detail
+    assert "不可比维度为空" in result.detail
+
+
+def test_v09_rejects_an_empty_limitations_list(tmp_path):
+    result = v09(tmp_path, baseline_run(limitations=[]), store())
+
+    assert result.passed is False
     assert "不可比维度为空" in result.detail
 
 

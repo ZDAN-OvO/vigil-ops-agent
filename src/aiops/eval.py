@@ -1014,7 +1014,7 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
             problems.append("未声明比较维度")
         if run.limitations is None:
             problems.append("未注明不可比维度")
-        elif any(not item.strip() for item in run.limitations):
+        elif not run.limitations or any(not item.strip() for item in run.limitations):
             problems.append("不可比维度为空")
         scenario = scenarios_by_id.get(run.scenario)
         if scenario is None:
@@ -1094,8 +1094,8 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
                 problems.append(f"对照是规则运行 {agent_run_id}")
                 continue
             agent_status = getattr(getattr(agent_investigation, "status", None), "value", "")
-            if agent_status not in {"completed", "inconclusive", "aborted"}:
-                problems.append(f"对照未终态 {agent_run_id}")
+            if agent_status not in {"completed", "inconclusive"}:
+                problems.append(f"对照终态={agent_status or '未知'} {agent_run_id}")
             if getattr(getattr(agent_investigation, "usage", None), "model_calls", 0) < 1:
                 problems.append(f"对照没有模型调用 {agent_run_id}")
             if getattr(getattr(agent_investigation, "usage", None), "tool_calls", 0) < 1:

@@ -81,9 +81,9 @@ F03 原来只有一次有效运行，这次补两次，均先核验延迟再清�
 
 三条基线各是一次 `aiops investigate --mode rules` 的独立调查，与同一场景下同输入、同预算、同资源的 Agent 运行成对比较。同输入指服务、观察窗长度、Context 与现象描述一致；同资源指集群、命名空间与服务一致；同预算指工具调用、模型调用与墙钟三档一致。清单逐条声明比较维度与不可比维度，评估打印问题清单。
 
-评估核对基线：终态、模型标记 `rules:rules-1`、模型调用为 0、工具调用大于 0、`baseline.started` 审计的规则版本与策略版本、run_id 与调查不重复。核对对照：运行已登记且有效、调查独立、不是规则运行、终态（completed/inconclusive/aborted）、有模型调用和工具调用、预算一致、资源一致、观察窗一致、Context 一致、现象描述一致。两侧提案都必须在场景允许的动作内；同名动作的风险判定必须一致，只在一侧出现的提案记为备注；核心场景必须有基线。
+评估核对基线：终态、模型标记 `rules:rules-1`、模型调用为 0、工具调用大于 0、`baseline.started` 审计的规则版本与策略版本、run_id 与调查不重复。核对对照：运行已登记且有效、调查独立、不是规则运行、终态 completed 或 inconclusive（aborted 不算对照）、有模型调用和工具调用、预算一致、资源一致、观察窗一致、Context 一致、现象描述一致。两侧提案都必须在场景允许的动作内；同名动作的风险判定必须一致，只在一侧出现的提案记为备注；核心场景必须有基线。
 
-策略版本只对基线侧可核对。`baseline.started` 审计记录真实策略版本（`mvp-policy-2`）；Agent 提案的策略版本没有出现在 `ActionProposal` 合同和库里，`investigations.policy_version` 是 CLI 固定写入的 `mvp-1` 占位，所以对照侧不比较策略版本，改为比较提案的风险判定（`risk_disposition`），并在清单的不可比维度里写明。
+策略版本在评估接口里只对基线侧可读。`baseline.started` 审计记录 `mvp-policy-2`；`ActionProposal` 合同与评估器使用的 Store 协议都不带提案策略版本，只有库表 `action_proposals.policy_version` 有该列，两侧提案都是 `mvp-policy-2`（`outputs/21-v09-compare.txt` 与 `pr-2-lane-7-compare.png`）。`investigations.policy_version` 是 CLI 固定写入的 `mvp-1` 占位，不是策略版本。V09 不直接读库表，所以按字段比较策略版本会越出本 PR 的文件边界；清单把这一维写成不可比，改为比较 `risk_disposition`。
 
 | 场景 | 基线调查 | 对照运行 | 预算（工具/模型/秒） | 观察窗 | 两侧提案判定 |
 |---|---|---|---|---|---|
@@ -91,11 +91,11 @@ F03 原来只有一次有效运行，这次补两次，均先核验延迟再清�
 | F02 | `inv-720090d4ea4d` | `f02-v09-agent` / `inv-46222d41c0fa` | 16/8/480 | 15 分钟 | 两侧 `rollout_undo: approval` |
 | F03 | `inv-7e6d114d5eb6` | `f03-v09-agent` / `inv-1d9ea52ecbbb` | 16/8/480 | 15 分钟 | 两侧都没有提案 |
 
-规则运行的原始输出在 `outputs/12-v09-f02-rules.txt`、`23-v09-f01-rules-16.txt`、`16-v09-f03-rules.txt`，Agent 对照在 `25-v09-f02-agent.txt`、`24b-v09-f01-agent-16-retry.txt`、`26-v09-f03-agent.txt`。F01 的边界负例在 `14a`、`14b`：窗口外的历史 OOM 被判成当前故障；延迟类故障只给出依赖结论且没有可执行动作。
+规则运行的原始输出在 `outputs/12-v09-f02-rules.txt`、`23-v09-f01-rules-16.txt`、`16-v09-f03-rules.txt`，Agent 对照在 `24b-v09-f01-agent-16-retry.txt`、`25-v09-f02-agent.txt`、`26-v09-f03-agent.txt`。F01 的四次中止尝试在 `22`、`24`、`27`、`27b`，边界负例在 `14a`、`14b`：窗口外的历史 OOM 被判成当前故障；延迟类故障只给出依赖结论且没有可执行动作。
 
-F01 对照记录了同预算下的两类限制。`inv-567f756c8ff4` 完成并给出正确结论，但规则基线已对同一目标版本提出进行中的提案，唯一性约束把 Agent 的提案判成 `duplicate` 跳过（`action.skipped` 审计），所以授权判定只有规则一侧。另外三次同预算对照（`inv-7a8363cf3cdd`、`inv-477f364f1a9e`、`inv-db9898faf164`）在模型调用上耗尽中止，一次 8/6/300 预算的对照（`inv-62c4deeb24a7`）同样中止，全部登记在 F01 运行清单里。F03 的对照在同预算下用尽 16 次工具调用，结论 inconclusive，规则基线则指出新增的 `redis-access-proxy` 工作负载；两侧结论强弱不同，不能当作准确率。
+F01 对照记录了同预算下的两类限制。`inv-567f756c8ff4` 完成并给出正确结论，但规则基线已对同一目标版本提出进行中的提案，唯一性约束把 Agent 的提案判成 `duplicate` 跳过（`action.skipped` 审计），所以授权判定只有规则一侧。另外三次同预算对照（`inv-7a8363cf3cdd`、`inv-477f364f1a9e`、`inv-db9898faf164`）因模型调用重试耗尽（`exhausted`）中止，一次 8/6/300 预算的对照（`inv-62c4deeb24a7`）同样因重试耗尽中止，模型调用数分别为 6/8、2/8、2/8、2/6，没有用完预算；四次都登记在 F01 运行清单里。F03 的对照在同预算下用尽 16 次工具调用，结论 inconclusive，规则基线则指出新增的 `redis-access-proxy` 工作负载；两侧结论强弱不同，不能当作准确率。
 
-负例覆盖五种断法。删掉全部基线报「规则基线 0 条，可核对 0 条」与「缺核心场景基线」；一条基线指向 Agent 对照调查报「模型标记」「模型调用」「缺 baseline.started 审计」与「与 Agent 共用调查」；`limitations` 写成 null 报「未注明不可比维度」；用 20 次工具预算重跑一条规则调查后写进清单，其余输入相同，只报「预算不一致」；把 F02 的 Agent 运行当成 F01 对照报「观察窗不一致」与「现象描述不一致」。截图与文本见 `screenshots/v09/pr-2-lane-3`、`lane-4`、`lane-4b`、`lane-5`、`lane-6` 与 `outputs/19-v09-negative.txt`。
+负例覆盖五种断法。删掉全部基线报「规则基线 0 条，可核对 0 条」与「缺核心场景基线」；一条基线指向 Agent 对照调查报「模型标记」「模型调用」「缺 baseline.started 审计」与「与 Agent 共用调查」；`limitations` 写成 null 报「未注明不可比维度」；用 20 次工具预算重跑一条规则调查后写进清单，其余输入相同，条目本身只报「预算不一致」（临时清单只剩这条基线，因此另报缺核心场景）；把 F02 的 Agent 运行当成 F01 对照报「观察窗不一致」与「现象描述不一致」。截图与文本见 `screenshots/v09/pr-2-lane-3`、`lane-4`、`lane-4b`、`lane-5`、`lane-6` 与 `outputs/19-v09-negative.txt`。
 
 第一轮实跑发现了核对读错字段。测试替身用 `used_model_calls`，真实契约是 `investigation.usage.model_calls`，真实数据上三条基线都报「模型调用=未知」。改用契约字段，测试替身同步换成 `BudgetUsage`。
 
