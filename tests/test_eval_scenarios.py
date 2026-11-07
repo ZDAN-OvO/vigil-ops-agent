@@ -237,7 +237,16 @@ def test_empty_manifest_cannot_pass(tmp_path):
 
 def test_baseline_needs_a_real_investigation(tmp_path):
     payload = manifest([scenario("f01", [run("a", correct=True), run("b"), run("c")])])
-    payload["baseline"] = [{"scenario": "f01", "run_id": "b1", "rules_only": True}]
+    payload["baseline"] = [
+        {
+            "scenario": "f01",
+            "run_id": "b1",
+            "rules_version": "rules-1",
+            "agent_run_ids": ["a"],
+            "compared": ["调查结论"],
+            "limitations": [],
+        }
+    ]
 
     report = check(tmp_path, payload, FakeStore(investigations={}))
 

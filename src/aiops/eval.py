@@ -43,13 +43,17 @@ class Scenario(BaseModel):
 
 
 class BaselineRun(BaseModel):
+    """V09 的规则基线用例；同场景、同资源、同预算、同授权边界下的独立运行。"""
+
     model_config = ConfigDict(extra="forbid")
 
     scenario: str
     run_id: str
     investigation_id: str = ""
-    rules_only: bool = True
-    recovered: bool = False
+    rules_version: str = ""
+    agent_run_ids: list[str] = Field(default_factory=list)
+    compared: list[str] = Field(default_factory=list)
+    limitations: list[str] | None = None
 
 
 class SafetyRun(BaseModel):
@@ -983,26 +987,104 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
         )
     )
 
+    scenarios_by_id = {item.id: item for item in manifest.scenarios}
     verified_baseline = 0
+    baseline_problems: list[str] = []
     for run in manifest.baseline:
-        if not run.rules_only:
+        label = run.run_id or "未命名"
+        problems: list[str] = []
+        scenario = scenarios_by_id.get(run.scenario)
+        if scenario is None:
+            baseline_problems.append(f"{label}:场景不存在 {run.scenario}")
             continue
+        if not run.rules_version:
+            problems.append("缺规则版本")
+        if not run.investigation_id:
+            problems.append("缺调查")
         investigation = (
-            await store.get_investigation(run.investigation_id)
-            if getattr(run, "investigation_id", "")
-            else None
+            await store.get_investigation(run.investigation_id) if run.investigation_id else None
         )
-        if (
-            investigation is not None
-            and getattr(investigation, "used_model_calls", None) == 0
-            and getattr(getattr(investigation, "status", None), "value", "") == "completed"
-        ):
+        if investigation is None:
+            problems.append("调查不存在")
+            baseline_problems.extend(f"{label}:{item}" for item in problems)
+            continue
+        status = getattr(getattr(investigation, "status", None), "value", "")
+        if status not in {"completed", "inconclusive"}:
+            problems.append(f"终态={status or '未知'}")
+        if getattr(investigation, "model", "") != f"rules:{run.rules_version}":
+            problems.append(f"模型标记={getattr(investigation, 'model', '')}")
+        if investigation.usage.model_calls != 0:
+            problems.append(f"模型调用={investigation.usage.model_calls}")
+        if investigation.usage.tool_calls < 1:
+            problems.append("没有工具调用")
+        audits = await store.list_audit(run.investigation_id)
+        started = [event for event in audits if getattr(event, "event", "") == "baseline.started"]
+        if not started:
+            problems.append("缺 baseline.started 审计")
+        elif (started[-1].payload or {}).get("rules_version") != run.rules_version:
+            problems.append("审计规则版本不符")
+        if not run.agent_run_ids:
+            problems.append("缺对照 Agent 运行")
+        if not run.compared:
+            problems.append("未声明比较维度")
+        if run.limitations is None:
+            problems.append("未注明不可比维度")
+        incident = await store.get_incident(investigation.incident_id)
+        if incident is None:
+            problems.append("基线 incident 不存在")
+        runs_by_id = {item.run_id: item for item in scenario.runs}
+        for agent_run_id in run.agent_run_ids:
+            agent_run = runs_by_id.get(agent_run_id)
+            if agent_run is None:
+                problems.append(f"对照运行不存在 {agent_run_id}")
+                continue
+            if not agent_run.valid:
+                problems.append(f"对照运行无效 {agent_run_id}")
+            if not agent_run.investigation_id:
+                problems.append(f"对照运行缺调查 {agent_run_id}")
+                continue
+            if agent_run.investigation_id == run.investigation_id:
+                problems.append(f"与 Agent 共用调查 {agent_run_id}")
+                continue
+            agent_investigation = await store.get_investigation(agent_run.investigation_id)
+            if agent_investigation is None:
+                problems.append(f"对照调查不存在 {agent_run_id}")
+                continue
+            if getattr(agent_investigation, "budget", None) != getattr(
+                investigation, "budget", None
+            ):
+                problems.append(f"预算不一致 {agent_run_id}")
+            if getattr(agent_investigation, "policy_version", None) != getattr(
+                investigation, "policy_version", None
+            ):
+                problems.append(f"策略版本不一致 {agent_run_id}")
+            agent_incident = await store.get_incident(agent_investigation.incident_id)
+            if agent_incident is None or incident is None:
+                problems.append(f"对照 incident 不存在 {agent_run_id}")
+            elif (
+                getattr(agent_incident, "cluster", None),
+                getattr(agent_incident, "namespace", None),
+                getattr(agent_incident, "service", None),
+            ) != (
+                getattr(incident, "cluster", None),
+                getattr(incident, "namespace", None),
+                getattr(incident, "service", None),
+            ):
+                problems.append(f"资源不一致 {agent_run_id}")
+        for proposal in await store.list_proposals_for_investigation(run.investigation_id):
+            kind = getattr(getattr(proposal, "kind", None), "value", "")
+            if kind and kind not in scenario.allowed_actions:
+                problems.append(f"提案超出场景动作 {kind}")
+        if problems:
+            baseline_problems.extend(f"{label}:{item}" for item in problems)
+        else:
             verified_baseline += 1
     criteria.append(
         CriterionResult(
             "V09",
             verified_baseline > 0 and verified_baseline == len(manifest.baseline),
-            f"规则基线运行 {len(manifest.baseline)} 次，可核对 {verified_baseline} 次",
+            f"规则基线 {len(manifest.baseline)} 条，可核对 {verified_baseline} 条；"
+            f"问题 {baseline_problems or '无'}",
         )
     )
     missing_packs = [
