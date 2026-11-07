@@ -461,9 +461,16 @@ def test_v09_reports_missing_input_fields_instead_of_crashing(tmp_path):
     result = v09(tmp_path, baseline_run(), fake)
 
     assert result.passed is False
-    assert "环境不一致" in result.detail
-    assert "触发方式不一致" in result.detail
-    assert "现象描述不一致" in result.detail
+    for message in ("环境缺失", "触发方式缺失", "关联告警缺失", "Context 缺失", "现象描述缺失"):
+        assert message in result.detail
+
+    both = store()
+    for incident_id in ("inc-rules", "inc-agent"):
+        item = incident()
+        del item.environment
+        both._incidents[incident_id] = item
+
+    assert "环境缺失" in v09(tmp_path, baseline_run(), both).detail
 
 
 def test_manifest_rejects_duplicate_scenario_ids():
