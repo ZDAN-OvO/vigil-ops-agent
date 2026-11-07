@@ -240,7 +240,65 @@
       ]
     }
   ],
-  "baseline": [],
+  "baseline": [
+    {
+      "scenario": "f01",
+      "run_id": "f01-rules-1",
+      "investigation_id": "inv-dc8931a8dc38",
+      "rules_version": "rules-1",
+      "agent_run_ids": [
+        "f01-ms01-c"
+      ],
+      "compared": [
+        "终端结论",
+        "提案与风险判定",
+        "模型调用与工具调用计数"
+      ],
+      "limitations": [
+        "规则只覆盖资源、模板变更与依赖访问三类信号，窗口外或第四类故障会落到 inconclusive",
+        "规则模式没有假设生成与提示词，只比较结论与提案，不比较推理过程",
+        "单次运行、单机单集群，不构成稳定性结论"
+      ]
+    },
+    {
+      "scenario": "f02",
+      "run_id": "f02-rules-1",
+      "investigation_id": "inv-720090d4ea4d",
+      "rules_version": "rules-1",
+      "agent_run_ids": [
+        "f02-ms06-a"
+      ],
+      "compared": [
+        "终端结论",
+        "提案与风险判定",
+        "模型调用与工具调用计数"
+      ],
+      "limitations": [
+        "规则按模板内存限额与请求判断回退方向，不解释业务层原因",
+        "规则模式没有假设生成与提示词，只比较结论与提案，不比较推理过程",
+        "单次运行、单机单集群，不构成稳定性结论"
+      ]
+    },
+    {
+      "scenario": "f03",
+      "run_id": "f03-rules-1",
+      "investigation_id": "inv-7e6d114d5eb6",
+      "rules_version": "rules-1",
+      "agent_run_ids": [
+        "f03-ms04-a"
+      ],
+      "compared": [
+        "终端结论",
+        "提案与风险判定",
+        "模型调用与工具调用计数"
+      ],
+      "limitations": [
+        "规则只看到依赖层访问与新增工作负载信号，没有服务端逐跳证据",
+        "规则模式没有假设生成与提示词，只比较结论与提案，不比较推理过程",
+        "单次运行、单机单集群，不构成稳定性结论"
+      ]
+    }
+  ],
   "demo_packs": [
     "demos/ms01",
     "demos/ms02",
