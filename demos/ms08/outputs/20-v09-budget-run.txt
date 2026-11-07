@@ -1,4 +1,4 @@
-调查 inv-57e3e487a9b9：inconclusive
+调查 inv-e490516739b6：inconclusive
 终止原因：固定规则未命中，证据不足以判定根因
 证据 5 条，工具调用 6 次
   - [pending] 容器因资源配置不足或进程按错误码退出
