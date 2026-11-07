@@ -205,6 +205,13 @@ class EvaluationReport:
         return all(item.passed for item in self.criteria)
 
 
+def _window_minutes(incident: Any) -> int | None:
+    time_range = getattr(incident, "time_range", None)
+    if time_range is None:
+        return None
+    return round((time_range.end - time_range.start).total_seconds() / 60)
+
+
 class StoreProtocol(Protocol):
     async def get_investigation(self, investigation_id: str) -> Any: ...
     async def get_proposal_disposition(self, proposal_id: str) -> str | None: ...
@@ -990,17 +997,38 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
     scenarios_by_id = {item.id: item for item in manifest.scenarios}
     verified_baseline = 0
     baseline_problems: list[str] = []
+    baseline_notes: list[str] = []
+    covered_scenarios: set[str] = set()
+    seen_run_ids: set[str] = set()
+    seen_investigations: set[str] = set()
     for run in manifest.baseline:
         label = run.run_id or "未命名"
         problems: list[str] = []
+        if not run.run_id:
+            problems.append("缺 run_id")
+        else:
+            if run.run_id in seen_run_ids:
+                problems.append("run_id 重复")
+            seen_run_ids.add(run.run_id)
+        if not [item.strip() for item in run.compared if item.strip()]:
+            problems.append("未声明比较维度")
+        if run.limitations is None:
+            problems.append("未注明不可比维度")
+        elif any(not item.strip() for item in run.limitations):
+            problems.append("不可比维度为空")
         scenario = scenarios_by_id.get(run.scenario)
         if scenario is None:
-            baseline_problems.append(f"{label}:场景不存在 {run.scenario}")
+            problems.append(f"场景不存在 {run.scenario}")
+            baseline_problems.extend(f"{label}:{item}" for item in problems)
             continue
         if not run.rules_version:
             problems.append("缺规则版本")
         if not run.investigation_id:
             problems.append("缺调查")
+        else:
+            if run.investigation_id in seen_investigations:
+                problems.append("重复引用同一调查")
+            seen_investigations.add(run.investigation_id)
         investigation = (
             await store.get_investigation(run.investigation_id) if run.investigation_id else None
         )
@@ -1021,18 +1049,30 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
         started = [event for event in audits if getattr(event, "event", "") == "baseline.started"]
         if not started:
             problems.append("缺 baseline.started 审计")
-        elif (started[-1].payload or {}).get("rules_version") != run.rules_version:
-            problems.append("审计规则版本不符")
+        else:
+            payload = started[-1].payload or {}
+            if payload.get("rules_version") != run.rules_version:
+                problems.append("审计规则版本不符")
+            if not payload.get("policy_version"):
+                problems.append("审计缺策略版本")
         if not run.agent_run_ids:
             problems.append("缺对照 Agent 运行")
-        if not run.compared:
-            problems.append("未声明比较维度")
-        if run.limitations is None:
-            problems.append("未注明不可比维度")
         incident = await store.get_incident(investigation.incident_id)
         if incident is None:
-            problems.append("基线 incident 不存在")
+            baseline_problems.append(f"{label}:基线 incident 不存在")
+            baseline_problems.extend(f"{label}:{item}" for item in problems)
+            continue
+        baseline_proposals = await store.list_proposals_for_investigation(run.investigation_id)
+        baseline_verdicts: dict[str, set[str]] = {}
+        for proposal in baseline_proposals:
+            kind = getattr(getattr(proposal, "kind", None), "value", "")
+            if kind and kind not in scenario.allowed_actions:
+                problems.append(f"提案超出场景动作 {kind}")
+            if kind:
+                verdict = await store.get_proposal_disposition(proposal.id) or ""
+                baseline_verdicts.setdefault(kind, set()).add(verdict)
         runs_by_id = {item.run_id: item for item in scenario.runs}
+        control_verdicts: dict[str, set[str]] = {}
         for agent_run_id in run.agent_run_ids:
             agent_run = runs_by_id.get(agent_run_id)
             if agent_run is None:
@@ -1050,41 +1090,76 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
             if agent_investigation is None:
                 problems.append(f"对照调查不存在 {agent_run_id}")
                 continue
-            if getattr(agent_investigation, "budget", None) != getattr(
-                investigation, "budget", None
-            ):
+            if getattr(agent_investigation, "model", "").startswith("rules:"):
+                problems.append(f"对照是规则运行 {agent_run_id}")
+                continue
+            agent_status = getattr(getattr(agent_investigation, "status", None), "value", "")
+            if agent_status not in {"completed", "inconclusive", "aborted"}:
+                problems.append(f"对照未终态 {agent_run_id}")
+            if getattr(getattr(agent_investigation, "usage", None), "model_calls", 0) < 1:
+                problems.append(f"对照没有模型调用 {agent_run_id}")
+            if getattr(getattr(agent_investigation, "usage", None), "tool_calls", 0) < 1:
+                problems.append(f"对照没有工具调用 {agent_run_id}")
+            if getattr(agent_investigation, "budget", None) != investigation.budget:
                 problems.append(f"预算不一致 {agent_run_id}")
-            if getattr(agent_investigation, "policy_version", None) != getattr(
-                investigation, "policy_version", None
-            ):
-                problems.append(f"策略版本不一致 {agent_run_id}")
             agent_incident = await store.get_incident(agent_investigation.incident_id)
-            if agent_incident is None or incident is None:
+            if agent_incident is None:
                 problems.append(f"对照 incident 不存在 {agent_run_id}")
-            elif (
-                getattr(agent_incident, "cluster", None),
-                getattr(agent_incident, "namespace", None),
-                getattr(agent_incident, "service", None),
-            ) != (
-                getattr(incident, "cluster", None),
-                getattr(incident, "namespace", None),
-                getattr(incident, "service", None),
-            ):
+                continue
+            if (
+                agent_incident.cluster,
+                agent_incident.namespace,
+                agent_incident.service,
+            ) != (incident.cluster, incident.namespace, incident.service):
                 problems.append(f"资源不一致 {agent_run_id}")
-        for proposal in await store.list_proposals_for_investigation(run.investigation_id):
-            kind = getattr(getattr(proposal, "kind", None), "value", "")
-            if kind and kind not in scenario.allowed_actions:
-                problems.append(f"提案超出场景动作 {kind}")
+            if _window_minutes(agent_incident) != _window_minutes(incident):
+                problems.append(f"观察窗不一致 {agent_run_id}")
+            if set(agent_incident.context) != set(incident.context):
+                problems.append(f"Context 不一致 {agent_run_id}")
+            if agent_incident.symptoms.strip() != incident.symptoms.strip():
+                problems.append(f"现象描述不一致 {agent_run_id}")
+            for proposal in await store.list_proposals_for_investigation(
+                agent_run.investigation_id
+            ):
+                kind = getattr(getattr(proposal, "kind", None), "value", "")
+                if not kind:
+                    continue
+                if kind not in scenario.allowed_actions:
+                    problems.append(f"对照提案超出场景动作 {kind}")
+                verdict = await store.get_proposal_disposition(proposal.id) or ""
+                control_verdicts.setdefault(kind, set()).add(verdict)
+        for kind, verdicts in baseline_verdicts.items():
+            other = control_verdicts.get(kind)
+            if other is None:
+                baseline_notes.append(f"{label}:{kind} 仅基线提出")
+            elif other != verdicts:
+                problems.append(f"授权判定不一致 {kind} {sorted(verdicts)}/{sorted(other)}")
+        for kind in control_verdicts.keys() - baseline_verdicts.keys():
+            baseline_notes.append(f"{label}:{kind} 仅对照提出")
+        if not baseline_verdicts and not control_verdicts:
+            baseline_notes.append(f"{label}:授权判定未触发")
         if problems:
             baseline_problems.extend(f"{label}:{item}" for item in problems)
         else:
             verified_baseline += 1
+            covered_scenarios.add(run.scenario)
+    core_scenarios = {item.id for item in manifest.scenarios if item.core}
+    missing_baseline = sorted(core_scenarios - covered_scenarios)
+    if missing_baseline:
+        baseline_problems.append(f"缺核心场景基线 {missing_baseline}")
+    detail = (
+        f"规则基线 {len(manifest.baseline)} 条，可核对 {verified_baseline} 条；"
+        f"问题 {baseline_problems or '无'}"
+    )
+    if baseline_notes:
+        detail += f"；备注 {baseline_notes}"
     criteria.append(
         CriterionResult(
             "V09",
-            verified_baseline > 0 and verified_baseline == len(manifest.baseline),
-            f"规则基线 {len(manifest.baseline)} 条，可核对 {verified_baseline} 条；"
-            f"问题 {baseline_problems or '无'}",
+            verified_baseline > 0
+            and verified_baseline == len(manifest.baseline)
+            and not missing_baseline,
+            detail,
         )
     )
     missing_packs = [

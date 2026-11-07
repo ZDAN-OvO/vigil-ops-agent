@@ -1,10 +1,10 @@
-        id        |          model           | calls |  budget  | policy 
-------------------+--------------------------+-------+----------+--------
- inv-720090d4ea4d | rules:rules-1            |     0 | 16/8/480 | mvp-1
- inv-7e6d114d5eb6 | rules:rules-1            |     0 | 16/8/480 | mvp-1
- inv-dc8931a8dc38 | rules:rules-1            |     0 | 8/6/300  | mvp-1
- inv-36e5c873f9ce | mythos-magpie-1505138152 |     6 | 16/8/480 | mvp-1
- inv-4ce0757b47b0 | mythos-magpie-1505138152 |     3 | 16/8/480 | mvp-1
- inv-e5072b516d10 | mythos-magpie-1505138152 |     3 | 8/6/300  | mvp-1
+        id        |          model           | used |  budget  | policy |       proposals       
+------------------+--------------------------+------+----------+--------+-----------------------
+ inv-01747d5f38e4 | rules:rules-1            | 6/0  | 16/8/480 | mvp-1  | rollout_undo:approval
+ inv-720090d4ea4d | rules:rules-1            | 6/0  | 16/8/480 | mvp-1  | rollout_undo:approval
+ inv-7e6d114d5eb6 | rules:rules-1            | 6/0  | 16/8/480 | mvp-1  | -
+ inv-1d9ea52ecbbb | mythos-magpie-1505138152 | 16/4 | 16/8/480 | mvp-1  | -
+ inv-46222d41c0fa | mythos-magpie-1505138152 | 9/4  | 16/8/480 | mvp-1  | rollout_undo:approval
+ inv-567f756c8ff4 | mythos-magpie-1505138152 | 14/4 | 16/8/480 | mvp-1  | -
 (6 rows)
 

@@ -1,0 +1,6 @@
+调查 inv-62c4deeb24a7：aborted
+终止原因：模型调用失败：exhausted
+证据 7 条，工具调用 8 次
+  - [supported] productcatalogservice 刚发布的新镜像存在缺陷，导致其返回错误，frontend 首页因此 500。
+  - [refuted] productcatalogservice 新模板资源规格（内存限额）不足或与运行负载不匹配，导致容器反复 OOMKilled/重启，frontend 请求失败。
+  - [refuted] frontend 或 Service 选择器/端口配置问题导致首页 500，与 productcatalogservice 发布无直接因果。

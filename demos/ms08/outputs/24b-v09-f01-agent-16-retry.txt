@@ -1,0 +1,6 @@
+调查 inv-567f756c8ff4：completed
+根因候选：根因指向 productcatalogservice 于 10:17:53 完成的一次镜像发布：旧 ReplicaSet productcatalogservice-7b58b447f7 被缩容到 0，新 ReplicaSet 57f9df78f8 启动（镜像 vigil/productcatalogservice:canary-20261104），新 Pod 处于 Running/Ready、restartCount=0、无 OOM。随后 frontend 日志持续报 `could not retrieve products: rpc error: code = Internal desc = product catalog unavailable`，首页 / 返回 HTTP 500（GET / product/6E92ZMYYFZ 等请求也命中同一错误）。Service 选择器与 Pod 标签匹配，排除服务发现断链；frontend 自身 Deployment 无变更、Pod 无重启，排除入口自身故障；productcatalogservice 无 OOMKilled、无重启、资源规格 128Mi/64Mi 与历史一致，排除内存限额不足（因此不涉及“重建 Pod 沿用当前模板”的问题）。建议对该 Deployment 做发布回退（rollout_undo），恢复到发布前的镜像 revision。证据边界：Prometheus 三次查询均 ConnectError，无法用 5xx 速率曲线量化错误率并与 10:17:53 严格对齐；捕获到的 productcatalogservice 日志仅包含启动行（未包含每请求错误），因此“新镜像缺陷/运行期返回 INTERNAL”主要由上游错误信息 + 发布事件时间吻合支撑，而非服务端日志直接证明。
+证据 11 条，工具调用 14 次
+  - [supported] productcatalogservice 刚发布的新镜像存在缺陷（如启动报错、接口返回错误），frontend 因依赖调用失败而返回 500。
+  - [refuted] productcatalogservice 或其 Pod 存在资源规格不足/容器反复 OOMKilled，导致后端不可用并引发 frontend 500。
+  - [refuted] 入口 frontend 自身存在故障（Pod 重启、自身 Deployment 模板变化或资源不足），500 并非由 productcatalogservice 引起。

@@ -1,11 +1,14 @@
 $ aiops eval --manifest-path /tmp/claude-1000/pr2/trunk.json   # 主干清单
-V09 未通过：规则基线 0 条，可核对 0 条；问题 无
+V09 未通过：规则基线 0 条，可核对 0 条；问题 ["缺核心场景基线 ['f01', 'f02', 'f03']"]
 
 $ aiops eval --manifest-path /tmp/claude-1000/pr2/lane3.json   # 删掉全部 baseline
-V09 未通过：规则基线 0 条，可核对 0 条；问题 无
+V09 未通过：规则基线 0 条，可核对 0 条；问题 ["缺核心场景基线 ['f01', 'f02', 'f03']"]
 
-$ aiops eval --manifest-path /tmp/claude-1000/pr2/lane4.json   # 基线指向 Agent 调查
-V09 未通过：规则基线 3 条，可核对 2 条；问题 ['f01-rules-1:模型标记=mythos-magpie-1505138152', 'f01-rules-1:模型调用=4', 'f01-rules-1:缺 baseline.started 审计']
+$ aiops eval --manifest-path /tmp/claude-1000/pr2/lane4.json   # 基线指向 Agent 对照调查
+V09 未通过：规则基线 3 条，可核对 2 条；问题 ['f01-rules-1:模型标记=mythos-magpie-1505138152', 'f01-rules-1:模型调用=4', 'f01-rules-1:缺 baseline.started 审计', 'f01-rules-1:与 Agent 共用调查 f01-v09-agent', "缺核心场景基线 ['f01']"]；备注 ['f01-rules-1:授权判定未触发', 'f03-rules-1:授权判定未触发']
+
+$ aiops eval --manifest-path /tmp/claude-1000/pr2/lane4b.json   # 把 F02 的 Agent 运行当成 F01 对照
+V09 未通过：规则基线 3 条，可核对 2 条；问题 ['f01-rules-1:观察窗不一致 f01-temp-f02-control', 'f01-rules-1:现象描述不一致 f01-temp-f02-control', "缺核心场景基线 ['f01']"]；备注 ['f03-rules-1:授权判定未触发']
 
 $ aiops eval --manifest-path /tmp/claude-1000/pr2/lane5.json   # limitations = null
-V09 未通过：规则基线 3 条，可核对 2 条；问题 ['f01-rules-1:未注明不可比维度']
+V09 未通过：规则基线 3 条，可核对 2 条；问题 ['f01-rules-1:未注明不可比维度', "缺核心场景基线 ['f01']"]；备注 ['f01-rules-1:rollout_undo 仅基线提出', 'f03-rules-1:授权判定未触发']

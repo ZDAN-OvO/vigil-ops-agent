@@ -1,0 +1,6 @@
+调查 inv-1d9ea52ecbbb：inconclusive
+终止原因：证据不足，未形成根因候选
+证据 12 条，工具调用 16 次
+  - [supported] The frontend latency increase is caused by a downstream dependency in vigil-shop that is slow, restarting, OOMKilled, or affected by a recent Deployment/resource-template change, while the frontend itself remains healthy enough for probes to succeed.
+  - [refuted] Frontend pods themselves are resource-saturated or were recently rolled with changed resource/template settings, causing elevated request latency while shallow liveness/readiness probes still pass.
+  - [inconclusive] A Service selector, proxy, load-balancing, or middleware path change is adding latency without increasing errors, so frontend and dependency server-side latency alone do not explain the user-visible delay.
