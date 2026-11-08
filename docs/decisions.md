@@ -2,7 +2,7 @@
 
 本记录回填此前访谈与后续明确选择，区分已选方向、实现事实和未确认建议。主要依据是已有对话及 [架构](architecture.md)、[契约](contracts.md)、[阶段计划](milestone.md)；早期访谈依赖保留的会话摘要，不伪造逐字引文或未保留的选项编号。历史选择若与当前文档冲突，先标明冲突并核对，不把助手后来补写的细节当成用户决定。
 
-“已确认”表示目标或边界已选，不表示功能已实现。当前代码仍为 W0 CLI 与值对象骨架；I01 环境与坏发布实验已完成，见 [env](../env/README.md) 与 [F01](../faults/f01-bad-release/README.md)。[contracts.py](../src/aiops/contracts.py) 已有 Incident、Hypothesis、ToolResult、Evidence、ActionProposal 和 RiskDecision 等模型，尚无调查运行、审批恢复和执行模块。
+“已确认”表示目标或边界已选，不表示功能已实现。2026-11-08 完整 MVP 已通过 V01–V10，评估与证据见 [demos/ms08](../demos/ms08/README.md)；I01 环境与坏发布实验见 [env](../env/README.md) 与 [F01](../faults/f01-bad-release/README.md)。[contracts.py](../src/aiops/contracts.py) 定义 Incident、Hypothesis、ToolResult、Evidence、ActionProposal 和 RiskDecision 等模型，调查运行、审批恢复、执行与评估模块均已实现。
 
 ## 已确认的方向与边界
 
@@ -18,7 +18,7 @@
 | D08 | 编排框架 | 保留 LangGraph 负责流程、持久化与审批恢复 | 不以 checkpoint 代替业务快照与补偿；见 [ADR-0002](adr/0002-langgraph-orchestration.md) |
 | D09 | 调查方法 | 显式假设树与结构化证据，采用 hypothesis loop，由模型在固定步骤中选择调查方向 | 三类信号作为完整目标的默认验证方向，按故障校准；预算值、搜索顺序、充分性规则未定 |
 | D10 | 工具接入 | 使用 Python client / HTTP 直连遥测和 Kubernetes | MCP 不进入关键路径；具体客户端包和查询 schema 在实现阶段确定 |
-| D11 | 状态与知识存储 | 一个 PostgreSQL + pgvector 实例承载业务关系、官方 checkpoint 表与知识向量 | 具体表结构、迁移和连接管理未完成；见 [ADR-0003](adr/0003-postgres-pgvector.md) |
+| D11 | 状态与知识存储 | 一个 PostgreSQL + pgvector 实例承载业务关系、官方 checkpoint 表与知识向量 | 业务表结构、迁移与连接管理已实现；pgvector 知识向量按后续里程碑接入；见 [ADR-0003](adr/0003-postgres-pgvector.md) |
 | D12 | 知识范围 | 完整目标保留 runbook、确认的历史事故、文本 PDF；MVP 只要求少量结构化 runbook 可检索与引用 | 历史事故、PDF、语义检索后置；MS01 不以知识接入为前置条件，pgvector 完整方向保留 |
 | D13 | 动作范围 | 完整目标为 restart_pod、scale_replicas、rollout_undo，不做代码/数据/任意配置修改 | Pod 重建不能撤销为原 Pod；见 [ADR-0004](adr/0004-controlled-resource-actions.md) |
 | D14 | 风险与审批 | 规则为主，动作类型、工作负载重要性、影响面、可补偿性、证据质量五维评估；自动/审批/禁止三级 | 权重、阈值与具体规则未定；eval 自动批准仍受白名单与硬限制约束 |
@@ -85,14 +85,14 @@
 | 必须置信度、Top-3、种子和单条复现命令 | 不要求模型置信度或强制 Top-3；需可执行复现步骤、版本及适用时种子，不保证一条命令覆盖全部链路 |
 | MVP 排除所有常驻能力 | 不采用该笼统排除：最小 webhook 必须有接收和任务运行；完整治理与巡检后置 |
 
-## 尚待实验的实现参数
+## 由实验固化的实现参数
 
-业务范围和核心场景机制已经确定，不再以“待确认”反复询问。下列项目由当前切片实验固化；若触及范围或机制改变再提交用户决定。
+业务范围和核心场景机制已经确定，不再以“待确认”反复询问。下列项目由当前切片实验固化；若触及范围或机制改变再提交用户决定。MS01–MS08 已按本表完成实验与记录，出处见各 `demos/`；下表保留当时的固化要求。
 
 | 项目 | 实验与记录要求 |
 |---|---|
 | 环境、依赖与镜像 | 验证真实业务依赖、网络、资源、版本／digest；宿主现有服务不自动复用或改写 |
-| 取证与模型 | 结构化输出已定为 OpenAI 兼容 `response_format` 加客户端校验（D25）；工具 schema、超时、查询限制、预算和 checkpoint 仍待实验；不继承旧凭据 |
+| 取证与模型 | 结构化输出已定为 OpenAI 兼容 `response_format` 加客户端校验（D25）；工具 schema、超时、查询限制与预算已在真实运行中使用，checkpoint 已验证；不继承旧凭据 |
 | 健康标准 | 先采无故障与故障观测，再固定最低流量、错误率／延迟阈值和窗口，运行前冻结 |
 | 风险与审批细节 | 规则为主、硬约束优先，实测授权有效期、漂移、幂等及中断行为，不能信任模型自报置信度 |
 | A01 具体机制 | 证明临时故障跨容器重启持续、Pod 重建清除，故障前后业务请求及 actor 可核查 |

@@ -1,6 +1,6 @@
 # 跨模块契约 v0.1
 
-状态：W0 初稿，用于并行开发对齐；未实现的接口均为约定而非完成声明。已编码的公共值对象见 [contracts.py](../src/aiops/contracts.py)，新增字段或改变语义须同步本文与调用方。
+状态：v0.1 契约，用于并行开发对齐；完整 MVP 涉及的接口已随实现更新，未实现的接口仍为约定而非完成声明。已编码的公共值对象见 [contracts.py](../src/aiops/contracts.py)，新增字段或改变语义须同步本文与调用方。
 
 领域术语见 [词汇表](../GLOSSARY.md)，已选方案与未定参数见 [决策记录](decisions.md)。本契约包含完整目标的实现约束初稿，MVP 与 MS01 的已确认阶段范围见 [MVP](mvp.md)，里程碑见[路线图](milestone.md)。具体阈值仍需实验，不因阶段确认就视为已实现。
 
@@ -88,7 +88,7 @@ PostgreSQL 的业务表与官方 checkpoint 表分开迁移；向量库是 pgvec
 
 ## CLI 与运行模式
 
-当前仅实现 `aiops --help`、`aiops status --output text|json`。下列为目标命令组，W0 不提供伪实现：
+当前实现 `status`、`investigate`、`incidents`、`report`、`serve`、`eval`、`explain`、`knowledge`、`act`、`approvals`、`approve`、`resume`、`proposal`、`reject`、`db`、`followups`、`followup`。下列为目标命令组，未实现的组不提供占位实现：
 
 | 命令组 | 行为 |
 |---|---|
