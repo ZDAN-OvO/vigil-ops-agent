@@ -306,6 +306,20 @@ def test_v09_rejects_a_shared_investigation(tmp_path):
     assert result.passed is False
     assert "与 Agent 共用调查" in result.detail
 
+    payload = manifest(
+        [
+            scenario(
+                "f01",
+                [run("a", investigation="inv-agent"), run("b", investigation="inv-rules")],
+            )
+        ],
+        baseline=[baseline_run()],
+    )
+
+    report = check(tmp_path, payload, store())
+    assert criterion(report, "V09").passed is False
+    assert "基线调查被登记为场景运行" in criterion(report, "V09").detail
+
 
 def test_v09_rejects_an_unknown_scenario(tmp_path):
     result = v09(tmp_path, baseline_run(scenario="f99"), store())

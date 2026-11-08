@@ -1031,6 +1031,14 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
         scenario_run_ids = [item.run_id for item in scenario.runs]
         if len(scenario_run_ids) != len(set(scenario_run_ids)):
             problems.append("场景运行 id 重复")
+        registered = {
+            item.investigation_id
+            for manifest_scenario in manifest.scenarios
+            for item in manifest_scenario.runs
+            if item.investigation_id
+        }
+        if run.investigation_id and run.investigation_id in registered:
+            problems.append("基线调查被登记为场景运行")
         if not run.rules_version:
             problems.append("缺规则版本")
         if not run.investigation_id:
