@@ -1,0 +1,6 @@
+调查 inv-db9898faf164：aborted
+终止原因：模型调用失败：exhausted
+证据 10 条，工具调用 11 次
+  - [pending] productcatalogservice 近期的镜像发布引入了不健康的 Deployment 模板/Pod（新 revision 起不来或持续重启），导致 frontend 无法完成商品目录调用而返回 500。
+  - [refuted] productcatalogservice 的 Pod 处于 Pod 级坏状态（如 OOMKilled / 容器反复重启 / 未就绪摘流），使 frontend 依赖调用失败产生 500，而非 Deployment 模板整体缺陷。
+  - [supported] frontend 侧自身健康，500 由依赖链路（Service 选择器/中间层/依赖服务）变化引起，而非入口服务内部故障。

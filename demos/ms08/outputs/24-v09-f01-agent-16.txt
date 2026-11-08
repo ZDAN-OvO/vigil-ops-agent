@@ -1,0 +1,6 @@
+调查 inv-7a8363cf3cdd：aborted
+终止原因：模型调用失败：exhausted
+证据 12 条，工具调用 15 次
+  - [supported] productcatalogservice 最近一次发布的新镜像引入了缺陷，导致其返回错误，frontend 首页因依赖失败返回 500。
+  - [refuted] productcatalogservice 因容器资源规格不足（内存限额）导致 OOMKilled / 反复重启，进而使 frontend 首页 500，属于 Deployment 模板问题。
+  - [refuted] frontend 自身或其直接调用链（Service 选择器/端口）异常导致首页 500，与 productcatalogservice 无直接因果关系。

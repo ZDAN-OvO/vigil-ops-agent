@@ -1,0 +1,6 @@
+调查 inv-477f364f1a9e：aborted
+终止原因：模型调用失败：exhausted
+证据 8 条，工具调用 11 次
+  - [supported] productcatalogservice 刚发布的新镜像引入缺陷（新 revision 容器启动失败、崩溃或返回 5xx），frontend 因依赖调用失败而在首页返回 500
+  - [inconclusive] frontend 自身或依赖服务存在资源规格不足（如内存限额过低）导致容器 OOMKilled/重启，从而返回 500
+  - [refuted] 服务间调用链/服务发现被改变（Service 选择器或端口变化、新 revision 缺少对应标签），导致 frontend 无法正确路由到 productcatalogservice

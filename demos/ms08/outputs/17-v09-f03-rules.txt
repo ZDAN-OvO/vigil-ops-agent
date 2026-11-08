@@ -1,0 +1,6 @@
+调查 inv-baee8f357638：completed
+根因候选：固定规则判定：观察窗内新增工作负载 redis-access-proxy（revision 1，镜像 vigil/redis-access-proxy:20261105，创建于 2026-11-06T07:50:44+00:00）。现有动作没有可回退的历史模板，需要人工核实该变更是否与故障相关。
+证据 5 条，工具调用 6 次
+  - [inconclusive] 容器因资源配置不足或进程按错误码退出
+  - [supported] 观察窗内的工作负载模板变更或新增工作负载
+  - [inconclusive] 入口服务访问依赖时出现连接、解析或超时错误

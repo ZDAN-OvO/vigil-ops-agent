@@ -93,6 +93,56 @@
           "attempt_id": "",
           "recovered": false,
           "investigation_correct": false
+        },
+        {
+          "run_id": "f01-v09-abort-8",
+          "valid": true,
+          "reason": "V09 对照首次尝试：8/6/300 预算下模型调用重试耗尽中止",
+          "investigation_id": "inv-62c4deeb24a7",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": false
+        },
+        {
+          "run_id": "f01-v09-abort-16",
+          "valid": true,
+          "reason": "V09 对照第二次尝试：同预算下模型调用重试耗尽中止",
+          "investigation_id": "inv-7a8363cf3cdd",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": false
+        },
+        {
+          "run_id": "f01-v09-agent",
+          "valid": true,
+          "reason": "V09 对照：结论正确，提案因同目标已有进行中的规则提案被去重跳过",
+          "investigation_id": "inv-567f756c8ff4",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f01-v09-abort-16b",
+          "valid": true,
+          "reason": "V09 对照复跑：同预算下模型调用重试耗尽中止",
+          "investigation_id": "inv-477f364f1a9e",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": false
+        },
+        {
+          "run_id": "f01-v09-abort-16c",
+          "valid": true,
+          "reason": "V09 对照再跑：同预算下模型调用重试耗尽中止",
+          "investigation_id": "inv-db9898faf164",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": false
         }
       ]
     },
@@ -148,6 +198,16 @@
           "attempt_id": "",
           "recovered": false,
           "investigation_correct": true
+        },
+        {
+          "run_id": "f02-v09-agent",
+          "valid": true,
+          "reason": "V09 对照：同输入、同预算的 Agent 运行，提出回退并等待审批",
+          "investigation_id": "inv-46222d41c0fa",
+          "proposal_id": "act-5906eb7543ac",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
         }
       ]
     },
@@ -187,6 +247,16 @@
           "valid": true,
           "reason": "延迟核验通过；结论 inconclusive",
           "investigation_id": "inv-4d885b078075",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": false
+        },
+        {
+          "run_id": "f03-v09-agent",
+          "valid": true,
+          "reason": "V09 对照：同输入、同预算，工具调用耗尽后结论 inconclusive，未提案",
+          "investigation_id": "inv-1d9ea52ecbbb",
           "proposal_id": "",
           "attempt_id": "",
           "recovered": false,
@@ -240,7 +310,69 @@
       ]
     }
   ],
-  "baseline": [],
+  "baseline": [
+    {
+      "scenario": "f01",
+      "run_id": "f01-rules-1",
+      "investigation_id": "inv-01747d5f38e4",
+      "rules_version": "rules-1",
+      "agent_run_ids": [
+        "f01-v09-agent"
+      ],
+      "compared": [
+        "终端结论",
+        "提案与风险判定",
+        "模型调用与工具调用计数"
+      ],
+      "limitations": [
+        "规则只覆盖资源、模板变更与依赖访问三类信号；14a 把窗口外的历史 OOM 判成当前故障，14b 对依赖链路故障只给出依赖结论且没有可执行动作",
+        "对照的提案因同目标存在进行中的规则提案被去重跳过，F01 的授权判定只有规则一侧；另外三次同预算对照因模型调用重试耗尽中止，均已登记",
+        "规则模式没有假设生成与提示词，只比较结论与提案，不比较推理过程",
+        "单次运行、单机单集群，不构成稳定性结论"
+      ]
+    },
+    {
+      "scenario": "f02",
+      "run_id": "f02-rules-1",
+      "investigation_id": "inv-720090d4ea4d",
+      "rules_version": "rules-1",
+      "agent_run_ids": [
+        "f02-v09-agent"
+      ],
+      "compared": [
+        "终端结论",
+        "提案与风险判定",
+        "模型调用与工具调用计数"
+      ],
+      "limitations": [
+        "规则按模板内存限额与请求判断回退方向，不解释业务层原因",
+        "规则模式没有假设生成与提示词，只比较结论与提案，不比较推理过程",
+        "评估器通过 ActionProposal 合同读不到提案策略版本，只比较风险判定，不比较策略版本",
+        "单次运行、单机单集群，不构成稳定性结论"
+      ]
+    },
+    {
+      "scenario": "f03",
+      "run_id": "f03-rules-1",
+      "investigation_id": "inv-7e6d114d5eb6",
+      "rules_version": "rules-1",
+      "agent_run_ids": [
+        "f03-v09-agent"
+      ],
+      "compared": [
+        "终端结论",
+        "提案与风险判定",
+        "模型调用与工具调用计数"
+      ],
+      "limitations": [
+        "规则只看到依赖层访问与新增工作负载信号，没有服务端逐跳证据",
+        "规则模式没有假设生成与提示词，只比较结论与提案，不比较推理过程",
+        "两侧都没有动作提案，授权判定不可比",
+        "Agent 对照在同预算下用尽工具调用、结论 inconclusive，与规则结论的强弱不同，不能当作准确率",
+        "单次运行、单机单集群，不构成稳定性结论"
+      ]
+    }
+  ],
   "demo_packs": [
     "demos/ms01",
     "demos/ms02",
