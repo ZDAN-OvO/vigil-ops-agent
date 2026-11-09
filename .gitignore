@@ -14,7 +14,7 @@ htmlcov/
 build/
 dist/
 # 数据、运行产物与报告
-runtime/
+/runtime/
 volumes/
 logs/
 *.db

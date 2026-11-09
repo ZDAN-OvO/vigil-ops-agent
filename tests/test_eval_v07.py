@@ -191,3 +191,21 @@ def test_v07_rejects_an_unfinished_tool_call(tmp_path):
     v07 = criterion(check(tmp_path, v07_manifest(tmp_path), store), "V07")
     assert v07.passed is False
     assert "工具调用未完成" in v07.detail
+
+
+def test_repository_manifest_keeps_trace_evidence_inside_the_repository():
+    """回查用例的原始文件要随代码入库，不能只放在被忽略的本地运行目录。"""
+
+    from pathlib import Path
+
+    from aiops.eval import load_manifest
+
+    root = Path(__file__).resolve().parents[1]
+    loaded = load_manifest(root / "eval/scenarios.json")
+
+    evidence_root = (root / loaded.evidence_root).resolve()
+    assert evidence_root.is_relative_to(root), loaded.evidence_root
+    assert evidence_root.is_dir(), loaded.evidence_root
+    assert loaded.trace_runs, "清单缺少回查用例"
+    for item in loaded.trace_runs:
+        assert (root / item.evidence).is_file(), item.evidence
