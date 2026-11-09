@@ -82,7 +82,7 @@ data:
       - name: default
       - name: vigil-webhook
         webhook_configs:
-          - url: http://172.20.0.1:8081/webhook/alertmanager
+          - url: http://172.20.0.1:8091/webhook/alertmanager
             send_resolved: false
             http_config:
               authorization:
