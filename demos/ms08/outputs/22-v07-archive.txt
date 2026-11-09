@@ -1,0 +1,16 @@
+$ find demos/ms08/runtime -type f | sort
+demos/ms08/runtime/evidence/inv-d75993aade89/07a4633bd5e8490bb0cc46c7fd0bbaa6.json
+demos/ms08/runtime/evidence/inv-d75993aade89/2fbe21f4e75e494ba95c42d6de68a593.json
+demos/ms08/runtime/evidence/inv-d75993aade89/39b54ee4cc0f420ba8d69cf553a401ea.json
+demos/ms08/runtime/evidence/inv-d75993aade89/566035f3d64e456d8791f3beabeca569.json
+demos/ms08/runtime/evidence/inv-d75993aade89/c50e5174cb864af885322fcf248ecacf.json
+demos/ms08/runtime/evidence/inv-d75993aade89/e1f547cd540f4c23820bd7b1bf0bdfe9.json
+demos/ms08/runtime/evidence/inv-d75993aade89/e2cb6e7f318b4498806793dcf443f502.json
+demos/ms08/runtime/evidence/inv-d75993aade89/e2e1599f0d6443c8820171e2ffffd97d.json
+demos/ms08/runtime/evidence/inv-d75993aade89/e3cbfe658fa44f77b1462a93186b57e9.json
+demos/ms08/runtime/evidence/inv-d75993aade89/e6e9e1a78e0440139121d6a84728ffdb.json
+demos/ms08/runtime/evidence/inv-d75993aade89/e77df48b03e24bc0a82a71ee0e74bc36.json
+demos/ms08/runtime/evidence/inv-d75993aade89/f64edac494c9453aa3cfa876ef4d93b0.json
+
+$ git check-ignore -v demos/ms08/runtime/evidence/inv-d75993aade89/2fbe21f4e75e494ba95c42d6de68a593.json; echo "exit=$?"
+exit=1

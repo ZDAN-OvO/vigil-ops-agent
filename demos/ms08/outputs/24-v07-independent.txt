@@ -1,0 +1,3 @@
+$ mv runtime/evidence/inv-d75993aade89 /tmp/v07-runtime-backup
+$ uv run --frozen aiops eval | grep V07
+V07 通过：重复审批／继续用例 2 条；告警去重用例 1 条；回查用例 1 条；重复问题 无；去重问题 无；回查问题 无

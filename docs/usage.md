@@ -215,7 +215,8 @@ uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 ## 7. 数据在哪、怎么清
 
 - 业务数据：PostgreSQL `vigil` 库。事件/调查/证据/工具调用/提案/审批/执行/审计/待办/runbook 各一张表，迁移文件在 `src/aiops/db.py`。
-- 运行产物：`runtime/`（`VIGIL_RUNTIME_DIR`），不入库。
+- 运行产物：`runtime/`（`VIGIL_RUNTIME_DIR`），不入库。`runtime/` 只是临时工作目录，不是证据存档；随手清掉后，`aiops eval` 的 V07 会因原始引用不存在而失败。
+- 验收证据：需要长期回查的原始观测归档到 `demos/<里程碑>/runtime/`，清单的 `evidence_root` 指向那里。2026-11-09 复核就是因为旧证据只存在 `runtime/` 而失败，记录见 [demos/ms08](../demos/ms08/README.md#v07-复核与证据归档2026-11-09)。
 - 演示证据：`demos/<里程碑>/`，截图与原始输出。
 - 历史遗留：一次演练会在库里留若干 `pending_approval` 提案与 `open` 待办，属正常记录；旧提案过期后再批准会因 `approval_expired` 拒绝。需要干净基线时重建库：
 
