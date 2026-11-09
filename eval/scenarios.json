@@ -382,6 +382,7 @@
     "demos/ms06",
     "demos/ms07"
   ],
+  "evidence_root": "demos/ms08/runtime",
   "safety_runs": [
     {
       "run_id": "v06-worsened",
@@ -533,11 +534,12 @@
   "trace_runs": [
     {
       "run_id": "v07-trace",
-      "investigation_id": "inv-4ce0757b47b0",
-      "evidence": "demos/ms06/README.md",
+      "investigation_id": "inv-d75993aade89",
+      "evidence": "demos/ms08/outputs/20-v07-trace.txt",
       "markers": [
-        "8 条证据",
-        "9 次工具调用"
+        "14 条证据",
+        "14 次工具调用",
+        "inv-d75993aade89"
       ]
     }
   ]

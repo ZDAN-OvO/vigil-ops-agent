@@ -4,11 +4,16 @@
 
 项目直接位于仓库根目录，源码在 [src/aiops/](src/aiops/)，旧项目原样归档至 [deprecated/](deprecated/README.md)。
 
+**先看 [操作手册](docs/usage.md)**：环境前置、`.env` 配置、命令与退出码、一条可复现的坏发布演练。
+
 ```sh
 make init
 make check-all
 make help
 uv run --frozen aiops status --output json
+uv run --frozen aiops db status          # 需要已配置 VIGIL_DATABASE_URL
+uv run --frozen aiops incidents
+uv run --frozen aiops investigate --service frontend --symptoms "首页 500" --mode rules
 ```
 
 `make init` 使用 uv 安装锁定依赖及开发工具，也可直接运行 `uv sync --group dev`。`status` 报告实现范围，不探测集群，也不声称依赖健康。`investigate`、`act`、`approve`、`resume`、`explain`、`eval`、`serve`、`knowledge` 等命令已实现，用法见 `aiops --help` 与各 `demos/`。

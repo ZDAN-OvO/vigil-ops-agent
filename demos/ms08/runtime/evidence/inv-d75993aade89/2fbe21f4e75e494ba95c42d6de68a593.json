@@ -1,0 +1,1 @@
+{"items": [{"container": "server", "lines": [], "pod": "productcatalogservice-57f9df78f8-6z4h4"}], "query": {"kind": "logs", "namespace": "vigil-shop", "pod": "productcatalogservice-57f9df78f8-6z4h4", "selector": "app=productcatalogservice"}, "truncated": false}

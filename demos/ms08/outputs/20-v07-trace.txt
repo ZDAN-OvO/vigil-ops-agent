@@ -1,0 +1,18 @@
+$ docker exec vigil-postgres psql -U vigil -d vigil -c "select investigation_id, count(*) from evidence group by 1"
+ investigation_id | evidence | with_raw_ref 
+------------------+----------+--------------
+ inv-d75993aade89 |       14 |           14
+(1 row)
+
+
+$ docker exec vigil-postgres psql -U vigil -d vigil -c "select id, status, used_tool_calls, used_model_calls, model from investigations where id=inv-d75993aade89"
+        id        |  status   | used_tool_calls | used_model_calls |          model           | has_conclusion 
+------------------+-----------+-----------------+------------------+--------------------------+----------------
+ inv-d75993aade89 | completed |              14 |                4 | auto/deepseek-v4.1-flash | t
+(1 row)
+
+
+$ ls demos/ms08/runtime/evidence/inv-d75993aade89 | wc -l
+12
+
+调查 inv-d75993aade89：14 条证据、14 次工具调用；归档 12 个集群观测原始文件。
