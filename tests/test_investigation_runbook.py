@@ -99,7 +99,7 @@ def _runbook_assessment(**overrides) -> Assessment:
     return Assessment(**values)
 
 
-def _run_knowledge_case(ids, tmp_path, assessment):
+def _run_knowledge_case(ids, tmp_path, *assessments):
     model = ScriptedModel(
         [
             PlanRequest(
@@ -108,7 +108,7 @@ def _run_knowledge_case(ids, tmp_path, assessment):
                 ],
                 queries=[query(tool="knowledge.list_runbooks")],
             ),
-            assessment,
+            *assessments,
         ]
     )
     return asyncio.run(
@@ -116,14 +116,27 @@ def _run_knowledge_case(ids, tmp_path, assessment):
     )
 
 
-def test_unknown_runbook_citation_aborts_the_investigation(ids, tmp_path):
+def test_unknown_runbook_citation_gets_one_repair_round(ids, tmp_path):
     report, _, _, _ = _run_knowledge_case(
         ids,
         tmp_path,
         _runbook_assessment(
             runbook_uses=[RunbookUse(runbook_id="rb-ghost", accepted=True, reason="猜的")]
         ),
+        _runbook_assessment(
+            runbook_uses=[RunbookUse(runbook_id="rb-oom-limit", accepted=True, reason="吻合")]
+        ),
     )
+
+    assert report.status.value != "aborted"
+    assert "rb-ghost" not in (report.termination_reason or "")
+
+
+def test_unknown_runbook_citation_aborts_after_the_repair_round(ids, tmp_path):
+    bad = _runbook_assessment(
+        runbook_uses=[RunbookUse(runbook_id="rb-ghost", accepted=True, reason="猜的")]
+    )
+    report, _, _, _ = _run_knowledge_case(ids, tmp_path, bad, bad)
 
     assert report.status.value == "aborted"
     assert "rb-ghost" in (report.termination_reason or "")

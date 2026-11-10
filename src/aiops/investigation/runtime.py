@@ -233,7 +233,10 @@ class InvestigationRuntime:
                 schema_name="investigation_plan",
             )
         except ModelError as exc:
-            return {"aborted": True, "termination": f"模型调用失败：{exc.code}"}
+            return {
+                "aborted": True,
+                "termination": f"模型调用失败：{exc.code}（尝试 {exc.attempts} 次）",
+            }
         self._used_model_calls += 1
         await self._store.add_usage(self._investigation_id, model_calls=1)
 
@@ -393,20 +396,55 @@ class InvestigationRuntime:
         evidence = list(state.get("evidence") or [])
         failures = list(state.get("failures") or [])
         runbook_ids = list(state.get("runbook_ids") or [])
-        try:
-            call = await self._model.complete_json(
-                assess_messages(
-                    self._incident_payload(), hypotheses, evidence, failures, self._remaining()
-                ),
-                Assessment,
-                schema_name="investigation_assessment",
-            )
-        except ModelError as exc:
-            return {"aborted": True, "termination": f"模型调用失败：{exc.code}"}
-        self._used_model_calls += 1
-        await self._store.add_usage(self._investigation_id, model_calls=1)
+        messages = assess_messages(
+            self._incident_payload(), hypotheses, evidence, failures, self._remaining()
+        )
+        assessment: Assessment | None = None
+        for round_index in (1, 2):
+            block = self._model_budget_block()
+            if block is not None:
+                return {"aborted": True, "termination": f"预算耗尽：{block}"}
+            try:
+                call = await self._model.complete_json(
+                    messages,
+                    Assessment,
+                    schema_name="investigation_assessment",
+                )
+            except ModelError as exc:
+                return {
+                    "aborted": True,
+                    "termination": f"模型调用失败：{exc.code}（尝试 {exc.attempts} 次）",
+                }
+            self._used_model_calls += 1
+            await self._store.add_usage(self._investigation_id, model_calls=1)
+            assessment = call.value
 
-        assessment = call.value
+            cited = {use.runbook_id for use in assessment.runbook_uses}
+            unknown_now = sorted(cited - set(runbook_ids))
+            for runbook_id in unknown_now:
+                await self._audit_runbook("runbook.unknown", runbook_id, "引用了未取回的条目")
+            if not unknown_now:
+                break
+            if round_index == 2:
+                return {
+                    "aborted": True,
+                    "termination": f"引用了未取回的 runbook：{','.join(unknown_now)}",
+                }
+            # 引用纪律失败不等于调查失败：给它一次改正机会，并把可用条目再讲一遍。
+            available = "、".join(runbook_ids) if runbook_ids else "本次没有任何 runbook 候选"
+            messages = [
+                *messages,
+                {"role": "assistant", "content": call.raw_text or "（上一条结构化输出已省略）"},
+                {
+                    "role": "user",
+                    "content": (
+                        f"上一条输出引用了未取回的 runbook：{','.join(unknown_now)}。"
+                        f"可用条目：{available}。"
+                        "只能引用可用条目；没有候选时 runbook_uses 必须为空列表，"
+                        "不要写占位值。请重新输出完整的结构化结果。"
+                    ),
+                },
+            ]
         for update in assessment.hypotheses:
             if update.index < len(hypotheses):
                 hypotheses[update.index]["status"] = update.status

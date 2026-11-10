@@ -22,6 +22,21 @@ def completion(content: str) -> dict:
     }
 
 
+SLEEPS: list[float] = []
+
+
+@pytest.fixture(autouse=True)
+def no_real_sleep(monkeypatch):
+    """退避等待只记录不真睡，单测保持秒级。"""
+
+    SLEEPS.clear()
+
+    async def fake_sleep(seconds: float) -> None:
+        SLEEPS.append(seconds)
+
+    monkeypatch.setattr("aiops.model._sleep", fake_sleep)
+
+
 def make_client(handler, *, max_retries=2):
     return ModelClient(
         httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://gateway"),
@@ -117,3 +132,50 @@ def test_exhausted_retries_are_reported_not_hidden():
 
     assert caught.value.code == "exhausted"
     assert caught.value.attempts == 2
+
+
+def test_backoff_grows_and_is_capped():
+    from aiops.model import RETRY_MAX_SECONDS, backoff_seconds
+
+    waits = [backoff_seconds(n) for n in (1, 2, 3, 6, 20)]
+    assert waits[0] >= 0.5
+    assert waits[1] > waits[0] * 0.9
+    assert waits[3] <= RETRY_MAX_SECONDS * 1.25
+    assert waits[4] <= RETRY_MAX_SECONDS * 1.25
+
+
+def test_retry_waits_before_retrying_instead_of_hammering():
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) < 3:
+            return httpx.Response(503, json={"error": "overloaded"})
+        return httpx.Response(200, json=completion('{"conclusion": "坏发布"}'))
+
+    call = asyncio.run(
+        make_client(handler, max_retries=3).complete_json(
+            [{"role": "user", "content": "调查"}], Answer
+        )
+    )
+
+    assert call.attempts == 3
+    assert len(SLEEPS) == 2
+    assert all(seconds > 0 for seconds in SLEEPS)
+
+
+def test_timeout_is_retried_and_reported_as_timeout():
+    def handler(request):
+        raise httpx.ReadTimeout("too slow", request=request)
+
+    with pytest.raises(ModelError) as caught:
+        asyncio.run(
+            make_client(handler, max_retries=1).complete_json(
+                [{"role": "user", "content": "调查"}], Answer
+            )
+        )
+
+    assert caught.value.code == "exhausted"
+    assert caught.value.attempts == 2
+    assert "请求超时" in str(caught.value)
+    assert len(SLEEPS) == 2

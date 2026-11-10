@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     model_name: str | None = None
     model_api_key: SecretStr | None = None
     model_timeout_seconds: float = 60.0
-    model_max_retries: int = 2
+    model_max_retries: int = 4
 
     # 调查预算同样是临时默认值，等实验后冻结。
     # MS03 起工具预算放宽到 16：入口告警需要排除入口自身、检查依赖并读取日志。
