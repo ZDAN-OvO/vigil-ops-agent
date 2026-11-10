@@ -13,6 +13,8 @@ README 与 `demos/` 里的每条结论，在这里对应到一手证据和核对
 | 恢复由真实请求验证，不看 Pod Ready | `src/aiops/actions/outcome.py`；`demos/ms01/outputs/07-recovery.txt` | 部分（单测） | `aiops eval` V03 |
 | V01–V10 通过 | `eval/scenarios.json`；`demos/ms08/outputs/21-v07-eval-after.txt`；v2 运行在 `demos/ms08/outputs/v2/` | 否，需要数据库 | 手动 `uv run aiops eval` |
 | Agent v2 在三个核心场景各 3 次都正确 | `demos/ms08/README.md` 的「Agent v2」段；`outputs/v2/f01-run{3,4,5}.txt`、`f02-run{1,2,3}.txt`、`f03-confirm{1,2,3}.txt` | 否 | 审查：清单里的调查 ID 可逐条查库 |
+| v2 运行只建议动作，正式提案靠去重后残留（f01 一条、f02 一条、f03 无） | `eval/scenarios.json` 里 v2 各运行的 `proposal_id` 为空；`demos/ms08` 的 v2 表脚注 | 否 | 审查：库里 `action_proposals.investigation_id` 查得到 |
+| `restart_pod` 没有 Agent 自主提案闭环，A01 只有操作者与规则两条路径 | `eval/scenarios.json` 的 a01 运行 `investigation_id` 为空 | 否 | 审查：`demos/ms05` 与 V03 口径 |
 | 已知弱点如实登记（f03 旧预算 1/4、a01 不评调查、历史证据丢失） | `demos/ms08/README.md` 的缺口段；`eval/scenarios.json` 的 `f03`、`a01` 运行记录 | 否 | 审查；AI 扫仓库时最先对的就是这里 |
 | 旧 `.env` 的三个值已停用 | 用户在 2026-11-09 确认；README 末尾说明 | 否 | 审查 |
 
