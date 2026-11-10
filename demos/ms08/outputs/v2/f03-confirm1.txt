@@ -1,0 +1,6 @@
+调查 inv-05524c57eecb：completed
+根因候选：延迟幅度已量化：probe_duration_seconds 从基线 ~0.001s 在 ~03:00 一步抬升到 1.0–1.5s 并持续（ev-9/13/12/0），probe_success 全程为 1，错误率未上升（ev-1），入口 frontend Pod 与 Deployment 健康（restart_count=0，仅 revision 1，无模板变化，ev-2/3）。延迟起点与两件事同时发生：03:00:02 新建 Deployment/Pod redis-access-proxy（ev-10/8），以及 Service redis-cart 的 selector 由真实 redis Pod 改为 app=redis-access-proxy —— 真实 redis Pod 标签为 app=redis-cart，只被 redis-cart-direct 选中（ev-4/7），cartservice Pod 也在 03:00:10 重建（ev-11）。因此入口/购物车路径被插入了一个新的代理中间层，调用链被改变，这与“延迟升高但不报错、探针仍成功”的表现一致。证据边界：redis-access-proxy 的日志为空（ev-14 为空结果，不构成反证），没有 proxy 内部或服务端延迟指标，因此“代理自身耗时增加”还是“代理到 redis 的路径变慢”尚未被证实，不能断言其为服务端内部原因。资源规格方向不成立：所有 Pod restart_count=0、无 OOMKilled（ev-2/7/8）；currencyservice 在 02:44–02:57 的 BackOff 与探针超时已通过 02:57 回滚到 128Mi 修复，且早于延迟起点（ev-3/6/11）。因此不是内存限额等资源规格不足，重建 Pod 会沿用当前 Deployment 模板、无法修复；也没有可回退的历史模板能移除该中间层。现有只读动作无法消除该代理层，建议停止自动处置并转人工：核查 redis-access-proxy 的来源与配置，把 redis-cart Service selector 恢复指向 app=redis-cart（或移除该代理），并补充代理侧/redis 客户端延迟指标以确认代理内部成因。
+证据 15 条，工具调用 16 次
+  - [supported] 入口 frontend-probe 的延迟升高来自依赖链路（某个下游 Service 的选择器指向了新的工作负载或中间层），入口自身 Pod/Deployment 健康。
+  - [refuted] 某依赖服务 Pod 因重启/OOM 或资源规格不足导致处理变慢，从而抬高入口延迟。
+  - [refuted] 近期对某个 Deployment 的发布变更（模板变化）引入了延迟回归。

@@ -37,11 +37,12 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = 120.0
     model_max_retries: int = 4
 
-    # 调查预算同样是临时默认值，等实验后冻结。
-    # MS03 起工具预算放宽到 16：入口告警需要排除入口自身、检查依赖并读取日志。
-    investigation_budget_tool_calls: int = 16
-    investigation_budget_model_calls: int = 8
-    investigation_budget_seconds: int = 480
+    # 调查预算按 2026-11-10 的实测定值（16 次运行，见 docs/decisions.md D26）：
+    # 成功运行的工具调用最多 21、模型调用最多 7、墙钟最多 453 秒，
+    # 各留约三成余量后取整。改动数值要先重测，不能因为某次失败就调。
+    investigation_budget_tool_calls: int = 28
+    investigation_budget_model_calls: int = 10
+    investigation_budget_seconds: int = 600
     investigation_max_observation_chars: int = 8000
 
     # 告警入口。token 未配置时服务拒绝启动，避免裸奔的 webhook。

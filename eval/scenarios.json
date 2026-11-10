@@ -308,6 +308,139 @@
           "investigation_correct": false
         }
       ]
+    },
+    {
+      "id": "f01-v2",
+      "version": 2,
+      "card": "docs/mvp.md#f01",
+      "signal_classes": [
+        "platform",
+        "business"
+      ],
+      "allowed_actions": [
+        "rollout_undo"
+      ],
+      "core": false,
+      "runs": [
+        {
+          "run_id": "f01-v2-a",
+          "valid": true,
+          "reason": "agent v2：坏发布，14 次工具调用，结论指向 canary 镜像与 probe 同步下跌，提出回退",
+          "investigation_id": "inv-d8093f0dce05",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f01-v2-b",
+          "valid": true,
+          "reason": "agent v2：坏发布，14 次工具调用，结论指向 revision 64 模板",
+          "investigation_id": "inv-4be6471502c5",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f01-v2-c",
+          "valid": true,
+          "reason": "agent v2：坏发布，14 次工具调用，结论指向近期发布变更",
+          "investigation_id": "inv-216a32d2e57c",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        }
+      ]
+    },
+    {
+      "id": "f02-v2",
+      "version": 2,
+      "card": "docs/mvp.md#f02",
+      "signal_classes": [
+        "platform",
+        "business"
+      ],
+      "allowed_actions": [
+        "rollout_undo"
+      ],
+      "core": false,
+      "runs": [
+        {
+          "run_id": "f02-v2-a",
+          "valid": true,
+          "reason": "agent v2：内存限额 16Mi，10 次工具调用，结论指向规格不足",
+          "investigation_id": "inv-5a64649f5f97",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f02-v2-b",
+          "valid": true,
+          "reason": "agent v2：内存限额 16Mi，16 次工具调用，结论指向规格不足",
+          "investigation_id": "inv-83e5dc46e834",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f02-v2-c",
+          "valid": true,
+          "reason": "agent v2：内存限额 16Mi，11 次工具调用，结论指向规格不足",
+          "investigation_id": "inv-b13176ae6cf4",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        }
+      ]
+    },
+    {
+      "id": "f03-v2",
+      "version": 2,
+      "card": "docs/mvp.md#f03",
+      "signal_classes": [
+        "platform",
+        "business"
+      ],
+      "allowed_actions": [],
+      "core": false,
+      "runs": [
+        {
+          "run_id": "f03-v2-a",
+          "valid": true,
+          "reason": "agent v2：代理延迟，16 次工具调用，定位中间层，无提案",
+          "investigation_id": "inv-05524c57eecb",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f03-v2-b",
+          "valid": true,
+          "reason": "agent v2：代理延迟，22 次工具调用，定位中间层，无提案",
+          "investigation_id": "inv-180085ca72c0",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        },
+        {
+          "run_id": "f03-v2-c",
+          "valid": true,
+          "reason": "agent v2：代理延迟，17 次工具调用，定位选择器改写，无提案",
+          "investigation_id": "inv-2b463cc62ee4",
+          "proposal_id": "",
+          "attempt_id": "",
+          "recovered": false,
+          "investigation_correct": true
+        }
+      ]
     }
   ],
   "baseline": [

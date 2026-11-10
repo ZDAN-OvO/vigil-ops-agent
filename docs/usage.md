@@ -155,7 +155,7 @@ uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 
    `aiops serve` 日志里应看到 `POST /webhook/alertmanager 202 Accepted`。同一指纹重复投递返回 `deduplicated`，不会重复调查。
 
-4. **看调查结果**（预算 16 次工具调用 / 8 次模型调用 / 480 秒，通常 2–3 分钟）
+4. **看调查结果**（预算 28 次工具调用 / 10 次模型调用 / 600 秒墙钟，通常 2–4 分钟；依据见 `docs/decisions.md` D26）
 
    ```bash
    uv run --frozen aiops report inv-xxxxxxxx
