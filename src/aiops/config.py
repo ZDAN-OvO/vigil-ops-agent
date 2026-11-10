@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     model_base_url: str = "http://127.0.0.1:3425"
     model_name: str | None = None
     model_api_key: SecretStr | None = None
-    model_timeout_seconds: float = 60.0
+    model_timeout_seconds: float = 120.0
     model_max_retries: int = 4
 
     # 调查预算同样是临时默认值，等实验后冻结。

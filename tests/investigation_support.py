@@ -35,11 +35,13 @@ class ScriptedModel:
     def __init__(self, responses):
         self._responses = list(responses)
         self.messages = []
+        self.timeouts = []
 
     async def complete_json(
-        self, messages, response_model, *, schema_name="response", temperature=None
+        self, messages, response_model, *, schema_name="response", temperature=None, timeout=None
     ):
         self.messages.append(messages)
+        self.timeouts.append(timeout)
         value = self._responses.pop(0)
         assert isinstance(value, response_model)
         return ModelCall(value=value, model="scripted", attempts=1, usage={})

@@ -122,6 +122,7 @@ class InvestigationRuntime:
         runtime_path: Path,
         proposer: ActionProposer | None = None,
         tool_timeout_seconds: float = 10.0,
+        model_timeout_seconds: float = 120.0,
         max_observation_chars: int = 4000,
     ) -> None:
         self._store = store
@@ -136,6 +137,7 @@ class InvestigationRuntime:
         self._window = observation_window
         self._runtime_path = runtime_path
         self._tool_timeout = tool_timeout_seconds
+        self._model_timeout = model_timeout_seconds
         self._max_observation_chars = max_observation_chars
         self._used_tool_calls = investigation.usage.tool_calls
         self._used_model_calls = investigation.usage.model_calls
@@ -198,6 +200,12 @@ class InvestigationRuntime:
             return "conclude"
         return "collect" if state.get("queries") else "conclude"
 
+    def _model_timeout_now(self) -> float:
+        """墙钟是硬截止：单次调用不能超过剩余时间，否则 480 秒的上限形同虚设。"""
+
+        remaining = max(0.5, self._deadline - time.monotonic())
+        return min(self._model_timeout, remaining)
+
     def _remaining(self) -> dict[str, int]:
         return {
             "tool_calls": max(0, self._budget.max_tool_calls - self._used_tool_calls),
@@ -231,6 +239,7 @@ class InvestigationRuntime:
                 plan_messages(self._incident_payload(), self._remaining()),
                 PlanRequest,
                 schema_name="investigation_plan",
+                timeout=self._model_timeout_now(),
             )
         except ModelError as exc:
             return {
@@ -409,6 +418,7 @@ class InvestigationRuntime:
                     messages,
                     Assessment,
                     schema_name="investigation_assessment",
+                    timeout=self._model_timeout_now(),
                 )
             except ModelError as exc:
                 return {

@@ -99,6 +99,7 @@ class ModelClient:
         *,
         schema_name: str = "response",
         temperature: float | None = None,
+        timeout: float | None = None,
     ) -> ModelCall[T]:
         payload: dict[str, Any] = {
             "model": self._model,
@@ -120,7 +121,9 @@ class ModelClient:
         for attempt in range(1, self._max_retries + 2):
             try:
                 response = await self._client.post(
-                    "/v1/chat/completions", json={**payload, "messages": attempt_messages}
+                    "/v1/chat/completions",
+                    json={**payload, "messages": attempt_messages},
+                    timeout=timeout,
                 )
             except httpx.TimeoutException:
                 last_error = "请求超时"

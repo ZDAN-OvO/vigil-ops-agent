@@ -1,0 +1,6 @@
+调查 inv-4be6471502c5：completed
+根因候选：根因指向 productcatalogservice 的发布模板变更：Deployment 当前 revision 64 的镜像是 vigil/productcatalogservice:canary-20261104（历史上 revision 63 为官方 gcr.io 镜像），内存限额与请求和 revision 63 相同（128Mi/64Mi），所以不是资源规格不足。证据 9、12 显示 02:24:01–02:24:03 发生 rollout（新 ReplicaSet 57f9df78f8 扩到 1，旧 7b58b447f7 缩到 0）；证据 0 显示 probe_success 在 rollout 时间点由 1 掉到 0 并持续；证据 1 显示 probe_duration 由毫秒级降到约 2ms，是快速失败而非延迟；证据 7 的 frontend 日志显示依赖调用返回 gRPC INTERNAL 'product catalog unavailable'，首页请求因此返回 HTTP 500。productcatalogservice Pod 本身 restart_count=0、Ready，没有 OOMKilled 或重启（证据 3），排除了 Pod 级状态和内存规格问题；frontend Pod、Deployment 与 Service（证据 2、8）健康，排除了入口自身故障。证据边界：可得的 productcatalogservice 容器日志只有启动日志（证据 6、11、13），没有覆盖出错请求的服务端日志，所以服务端内部的失败机制没有直接观测到，'canary 镜像行为退化' 是通过发布前后对比、依赖调用错误和 Pod 健康状态共同推断出来的。建议对 productcatalogservice 执行 rollout undo 回到上一个 revision（官方镜像）；单纯重建 Pod 会继续沿用当前 canary 模板，无法修复。
+证据 14 条，工具调用 14 次
+  - [supported] productcatalogservice 的新发布 revision 引入了退化（配置/镜像/资源规格模板问题），frontend 因依赖调用失败返回 500。
+  - [refuted] productcatalogservice 的某个 Pod 处于 Pod 级异常状态（反复 OOMKilled / restartCount 持续上升），导致其不可用并让 frontend 返回 500。
+  - [refuted] 入口 frontend 自身或其 Service 链路（选择器/端口错误）存在故障，而非纯依赖服务问题。
