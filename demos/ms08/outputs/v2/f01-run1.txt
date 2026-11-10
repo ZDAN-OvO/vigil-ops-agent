@@ -1,0 +1,7 @@
+$ uv run --frozen aiops report inv-257ae63514b2
+调查 inv-257ae63514b2：completed
+根因候选：根因指向 productcatalogservice 的近期镜像变更：该 Deployment 当前 revision 64 使用 vigil/productcatalogservice:canary-20261104（前一 revision 63 为 gcr.io/google-samples 正常镜像），RollingUpdate 在 02:24:01–02:24:03 完成，新 Pod 于 02:24:02 启动；probe_success{job=frontend-probe} 随即在 02:24:35 由 1 跌至 0 并持续为 0，frontend 日志明确记录对 productcatalogservice 的 gRPC 调用返回 code=Internal 'product catalog unavailable'，首页 GET / 返回 500。productcatalogservice Pod 处于 Running、ready=true、restartCount=0、无 last_terminated/OOMKilled，内存 limit 128Mi 与历史 revision 一致，因此排除 OOM 或内存规格不足；frontend 自身 Deployment/Pod/Service 均健康且时间窗内未变更，排除入口自身故障。证据边界：productcatalogservice 容器日志本次查询只返回启动几行（Tracing/Profiling disabled、grpc server at :3550、parsed product catalog json），未捕获到请求期错误行，因此“镜像内部具体缺陷”只能由上游 gRPC 错误码与发布时点相关性推断，服务端内部实现细节未直接观测到。恢复动作应回退 Deployment 模板；仅重建 Pod 会沿用当前 canary 模板，无法修复该故障（且该 Pod 无 vigil.io/discardable=true 标签，不应重启）。
+证据 13 条，工具调用 13 次
+  - [supported] productcatalogservice 刚发布的新镜像本身有缺陷（Deployment 当前 revision 模板问题），导致其返回错误，frontend 首页因此 500。
+  - [refuted] productcatalogservice 的问题是 Pod 级或资源规格层面的：容器 OOMKilled/重启上升或内存限额不足，导致依赖不可用并引发 frontend 500，而不是镜像内容缺陷。
+  - [refuted] 入口 frontend 自身故障（其 Pod 重启/OOM 或入口模板变更）是 500 的主因，productcatalogservice 发布只是时间上的巧合。

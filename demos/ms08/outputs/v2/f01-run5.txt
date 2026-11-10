@@ -1,0 +1,6 @@
+调查 inv-216a32d2e57c：completed
+根因候选：证据指向 productcatalogservice 的近期发布变更：其 Deployment 当前模板为 revision 64（镜像 vigil/productcatalogservice:canary-20261104），历史 revision 63 为 gcr.io 官方镜像；events 显示 02:24:01–02:24:03 完成新旧 ReplicaSet 切换，新 Pod productcatalogservice-57f9df78f8-r77j5 于 02:24:02 启动，此后 probe_success{job="frontend-probe"} 由 1 变为 0 并持续为 0。frontend 侧日志显示 / 首页请求因 'rpc error: code = Internal desc = product catalog unavailable' 返回 500，而 frontend 自身 Pod/Deployment 健康（revision 1、restartCount=0、Ready=True），Service selector 与各 Pod 标签、端口匹配，故不是入口自身故障。productcatalogservice 的 Pod restartCount 恒为 0、无 last_terminated/OOMKilled，各 revision 内存限额一致（128Mi），因此排除 OOM/资源规格不足与 Pod 级重启故障；即使重建 Pod 也会沿用当前 revision 64 模板，无法修复，不建议重建。probe_duration_seconds 除首次 5s 外均约 2ms，说明是快速失败而非延迟升高。需说明：productcatalogservice 自身容器日志两次查询均为空，服务端内部具体失败代码未直接观测到，仅由 frontend 侧传播的 gRPC Internal 错误与发布时间线推断，结论限于此边界。
+证据 14 条，工具调用 14 次
+  - [supported] productcatalogservice 最近一次发布变更（新镜像）导致其 Pod 异常，进而使首页返回 500，而入口 frontend-probe 本身健康。
+  - [refuted] productcatalogservice Pod 因容器反复重启/OOMKilled 或 Pod 级状态异常而无法提供服务，首页 500 由此传播。
+  - [supported] 入口 frontend 自身健康，故障位于调用链的下游（依赖服务或 Service/代理层），而非入口内部原因。

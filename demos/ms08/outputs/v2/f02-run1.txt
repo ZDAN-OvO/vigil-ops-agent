@@ -1,0 +1,7 @@
+调查 inv-5a64649f5f97：completed
+动作提案：act-eee440cd3003
+根因候选：根因：currencyservice Deployment 当前模板（revision 30，change_cause "vigil rollback act-150f872a4097"）把容器内存 limit/request 设为 16Mi/8Mi，远低于历史 revision 29 的 128Mi/64Mi（也低于同命名空间其他服务的 128Mi 量级），导致容器反复 OOMKilled（exit 137）、CrashLoopBackOff（restart_count 4，restarts_total 3→4，BackOff 事件 13 次），currencyservice 始终 NotReady，其 Service（app=currencyservice，7000→7000，selector 与 Pod 标签匹配）无可用就绪端点，上游 frontend 首页探测 probe_success 在窗口内持续为 0（仅在 02:43–02:44 短暂为 1）。probe_duration_seconds 全程约 1–8ms，无延迟抬升，可排除延迟型/中间层改链问题；frontend Pod 与 Deployment 健康（restart 0）。证据边界：currencyservice 容器日志仅返回 1 行 "Profiler disabled."，未见内存相关错误行，日志层面不能独立证实 OOM 过程，根因判定依赖 Pod/Deployment 资源规格与 OOMKilled 状态证据。处置建议：重建 Pod 会沿用当前 Deployment 模板（16Mi），无法修复内存规格不足，因此不建议重建 Pod，应回退到含 128Mi 内存规格的历史 revision 29（rollout_undo currencyservice）。runbook：knowledge.list_runbooks 返回空列表，没有匹配条目可引用。
+证据 10 条，工具调用 10 次
+  - [supported] currencyservice 的 Deployment 当前模板内存 limit 过低（或低于历史可用 revision），导致其容器反复 OOMKilled 重启，从而上游 frontend-probe 首页返回 500。
+  - [refuted] 故障仅是 currencyservice 某个带 vigil.io/discardable=true 标签的 Pod 处于异常状态（如单实例内存尖峰），Deployment 规格本身无问题，重建该 Pod 即可恢复。
+  - [refuted] frontend-probe 的 500 并非来自 currencyservice 的内部慢查询或规格不足，而是依赖链路/中间层（Service 选择器、代理）导致调用失败，服务端证据不足。

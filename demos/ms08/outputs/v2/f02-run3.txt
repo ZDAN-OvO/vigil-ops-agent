@@ -1,0 +1,6 @@
+调查 inv-b13176ae6cf4：completed
+根因候选：根因是 currencyservice 的内存限额（及其他资源规格）被设为过低：当前 Deployment revision 30 使用 memory limit 16Mi / request 8Mi，Pod currencyservice-f6d9b8f46-jjxrr 因此反复 OOMKilled（exit 137，restartCount 6→7，CrashLoopBackOff，Ready=False），currencyservice 无可服务端点，frontend 调用 10.43.42.101:7000 得到 connection refused 并对首页/商品/购物车返回 500。frontend 入口自身健康（重启 0、Ready、revision 1 无变更、/_healthz 200），日志显示的是下游调用失败而非自身异常；probe_duration_seconds 维持毫秒级、500 即时返回，说明不是延迟或慢查询问题，证据边界仅覆盖 currencyservice 规格不足导致不可用这一链路。同日 02:44 的 ReplicaSet 切换（f6d9b8f46 起量、567db8cb65 缩容）与重启/500 起始时间吻合，Deployment 历史 revision 29 保留了同镜像但 memory limit 128Mi / request 64Mi 的模板，且与当前模板差异仅在该资源规格，因此建议按发布回退到该历史模板。注意：当前 limit 不足属于资源规格问题，重建 Pod 会沿用 revision 30 的 16Mi 模板，无法修复该故障，故不建议重启 Pod（该 Pod 也没有 vigil.io/discardable=true 标签）。runbook rb-oom-limit v1 的排查顺序（先确认 OOMKilled、再比较当前与历史模板、存在历史模板则按回退处理、重建不能修复规格不足）与本次证据一致，但其内容仅为参考，不是已观测事实。
+证据 11 条，工具调用 11 次
+  - [supported] currencyservice 的容器内存限额（或其他资源规格）不足，导致其反复 OOMKilled 重启，进而使依赖它的 frontend 首页返回 500；入口 frontend 自身健康。
+  - [supported] 近期一次发布更改了 currencyservice（或 frontend）Deployment 的模板（如调低内存 limit），导致 OOMKilled 与 500 同时出现；存在可回退的历史 revision。
+  - [refuted] frontend 入口自身故障（配置错误或代码异常）直接产生 500，与 currencyservice 的 OOM 无因果关系。

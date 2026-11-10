@@ -87,6 +87,7 @@ async def open_runtime(
                 runtime_path=settings.runtime_path,
                 proposer=executor,
                 tool_timeout_seconds=settings.tool_timeout_seconds,
+                model_timeout_seconds=settings.model_timeout_seconds,
                 max_observation_chars=settings.investigation_max_observation_chars,
             )
 

@@ -152,7 +152,7 @@ def _restart_assessment(**overrides) -> Assessment:
     return Assessment(**values)
 
 
-def _run_restart_case(ids, tmp_path, proposer, assessment):
+def _run_restart_case(ids, tmp_path, proposer, *assessments):
     model = ScriptedModel(
         [
             PlanRequest(
@@ -165,7 +165,7 @@ def _run_restart_case(ids, tmp_path, proposer, assessment):
                 ],
                 queries=[query()],
             ),
-            assessment,
+            *assessments,
         ]
     )
     return asyncio.run(
@@ -191,14 +191,10 @@ def test_unknown_runbook_aborts_before_any_proposal(ids, tmp_path):
     """结论先被 runbook 校验拒绝时，不能在 abort 前把动作提出去（自动允许会立即执行）。"""
     proposer = FakeProposer()
 
-    report, _, _, _ = _run_restart_case(
-        ids,
-        tmp_path,
-        proposer,
-        _restart_assessment(
-            runbook_uses=[RunbookUse(runbook_id="rb-ghost", accepted=True, reason="猜的")]
-        ),
+    bad = _restart_assessment(
+        runbook_uses=[RunbookUse(runbook_id="rb-ghost", accepted=True, reason="猜的")]
     )
+    report, _, _, _ = _run_restart_case(ids, tmp_path, proposer, bad, bad)
 
     assert report.status.value == "aborted"
     assert proposer.calls == []

@@ -181,3 +181,32 @@ def test_checkpoint_is_persisted_for_the_thread(ids, tmp_path):
             "SELECT count(*) FROM checkpoints WHERE thread_id = %s", (ids["investigation"],)
         ).fetchone()[0]
     assert count > 0
+
+
+def test_model_call_never_exceeds_remaining_wall_clock(ids, tmp_path):
+    """墙钟是硬截止：单次模型调用的超时必须压到剩余时间以内。"""
+
+    model = ScriptedModel(
+        [
+            PlanRequest(
+                hypotheses=[
+                    HypothesisDraft(statement="x", expected_observations=["y"], rationale="z")
+                ],
+                queries=[],
+            )
+        ]
+    )
+    asyncio.run(
+        run_case(
+            ids,
+            model,
+            ScriptedToolbox([]),
+            budget_model_calls=1,
+            budget_tool_calls=1,
+            tmp_path=tmp_path,
+        )
+    )
+
+    assert model.timeouts, "没有发生模型调用"
+    assert all(item is not None for item in model.timeouts)
+    assert all(0 < item <= 600 for item in model.timeouts)

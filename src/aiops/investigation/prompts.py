@@ -41,11 +41,22 @@ SYSTEM_PROMPT = """你是 Kubernetes 故障调查助手，只做只读调查。
 14. 只要查询过 runbook 候选，就必须在 runbook_uses 里对每条候选给出 runbook_id、accepted
    与 reason：与本次证据相符才 accepted，无关、条件不符或与证据矛盾的写 accepted=false 并
    说明理由。结论引用 runbook 时写出条目 id 和 version，不能把 runbook 内容直接当成已观测事实。
+15. 只能引用本次工具实际返回的 runbook id。knowledge.list_runbooks 返回空列表时，
+   runbook_uses 留空列表，说明没有匹配条目；不要补写 none-returned 之类的占位值。
+   引用未返回的条目会让整次调查作废。
+16. 空结果不是反证。查询返回空序列、空列表或空日志时，它只说明这次查询没取到东西：
+   换表达式、换时间窗或换对象重查，再判断；不要把空结果写成 refuting。
+17. 延迟类症状（探针仍成功、错误率不升）先用 probe_duration_seconds 量出延迟幅度，
+   再查依赖路径的 Service 选择器与近期新增的工作负载。不要逐个 Pod 翻日志，
+   也不要在没有服务端证据时断言其内部慢查询。若发现选择器指向了新的工作负载，
+   把它写成强证据；现有动作无法移除这种中间层，应给出停止与人工待办的理由。
 """
 
 TOOL_GUIDE = """可用工具：
 - prometheus.query_range：需要 expression、lookback_seconds（60 到 3600）、
-  step_seconds（5 到 300）。
+  step_seconds（5 到 300）。本环境已采集的入口信号是
+  probe_success{job="frontend-probe"} 与 probe_duration_seconds{job="frontend-probe"}；
+  查询其它指标名多半返回空序列，空结果不代表故障不存在。
 - kubernetes.list_deployments：可选 selector，匹配 Deployment 标签或其 Pod 选择器；
   返回当前容器资源规格和按 revision 的历史模板。
 - kubernetes.list_pods：可选 selector；返回重启计数、last_terminated、容器资源规格和

@@ -1,0 +1,6 @@
+调查 inv-a8da32dfad5d：inconclusive
+终止原因：证据不足，未形成根因候选
+证据 15 条，工具调用 16 次
+  - [inconclusive] 入口 frontend-probe 自身 Pod 与 Deployment 健康，1 秒以上的延迟来自依赖服务（重启、OOMKilled 或资源规格变化），入口只是被动等待。
+  - [refuted] 入口 Deployment 的当前模板资源规格（如 CPU/内存 limit 或 request）在近期被收紧，或入口容器反复 OOMKilled/重启，导致入口处理变慢。
+  - [supported] 中间层（Service 选择器、代理或调用链变化）使请求被路由到异常后端，造成延迟升高而错误率不升，服务端内部未必有对应证据。

@@ -1,0 +1,6 @@
+调查 inv-872ceda5ecc9：completed
+根因候选：证据支持根因：调用链中新增了中间层。frontend 探针延迟在基线期约 1-2ms，随后台阶式升至 1.0-1.5s（约 30 个样本持续），同时 probe_success 全程为 1，说明是延迟而非错误。redis-cart 这个 Service 的选择器已变为 app=redis-access-proxy（而集群中另有 redis-cart-direct 仍指向 app=redis-cart），与之对应的 redis-access-proxy Deployment/Pod 创建于 2026-11-10 03:00:02，其创建时间与延迟台阶的起点大致吻合，说明访问 redis 的请求被多引入了一跳代理，导致首页/购物车延迟升高。入口侧健康：frontend Deployment 仅 revision 1、无 change_cause，frontend Pod 自 01:02:29 起 ready、restart_count=0；依赖侧在本窗口内也无重启/OOM：全部 Pod ready、restart_count=0，currencyservice 仅在 02:44-02:55 出现过限额 16Mi 引发的重启与 BackOff，并已回退到 revision 31（128Mi），当前 Pod 正常，不构成本窗口延迟的原因。证据边界：本次未获得依赖服务或 redis 服务端自身的耗时/慢查询证据，redis-access-proxy 容器日志查询返回空（空结果只说明本次查询没有取到内容，不作为反证）；因此结论只覆盖“调用链多出代理这一跳造成延迟”，不对代理内部实现或 redis 内部性能作已证实断言。处置建议：现有动作无法移除该中间层（重启/回退 frontend 都不会改变 Service 选择器），不建议重启 Pod 或回退 Deployment，应人工核实并修正 redis-cart Service 的选择器（指回 app=redis-cart，即 redis-cart-direct 指向的目标），或明确代理的上线意图并修复其延迟。
+证据 13 条，工具调用 14 次
+  - [supported] 入口延迟升高源于调用链中新增/变更的中间层：某个 Service 的选择器指向了新的工作负载（如代理/新版本 Pod），使请求多经过一跳，探针仍成功但耗时超过 1 秒。
+  - [refuted] 依赖服务侧发生退化（重启、OOMKilled 或资源规格变更）导致调用变慢，被入口探针观测为延迟。
+  - [refuted] 延迟由入口 Deployment 自身近期发布变更引入（新模板版本导致性能退化），而非 Pod 级一次性状态问题。

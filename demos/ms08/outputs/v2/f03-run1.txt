@@ -1,0 +1,6 @@
+调查 inv-f5c58c7e6b32：aborted
+终止原因：模型调用失败：exhausted（尝试 5 次）
+证据 16 条，工具调用 16 次
+  - [supported] 入口 frontend-probe 自身健康，延迟升高来自依赖服务（后端/购物车服务）的处理变慢，而非入口 Pod 或 Deployment 故障。
+  - [refuted] 某个依赖服务 Pod 因内存限额不足反复 OOMKilled 或资源规格偏小，导致请求处理变慢，从而拉高入口延迟。
+  - [supported] Service 选择器或调用链中间层发生变化（选择器指向错误/缺失的后端 Pod，或代理层增加跳数），使请求落到较慢路径而入口与后端进程本身无错误。

@@ -1,0 +1,6 @@
+调查 inv-8a046faad541：aborted
+终止原因：引用了未取回的 runbook：none-returned
+证据 7 条，工具调用 7 次
+  - [supported] productcatalogservice 的新发布（Deployment 模板变更）引入了故障，导致首页 500 与探针失败
+  - [refuted] 新发布的 productcatalogservice 资源规格（内存限额）不足，导致容器反复 OOMKilled 重启，服务不可用
+  - [refuted] 入口 frontend 自身健康，故障来自依赖链路（Service 选择器变更或依赖服务 Pod 不可用）
