@@ -1,0 +1,34 @@
+name: checks
+
+# 只跑离线可核对的部分：ruff 与不依赖数据库的测试。
+# 需要 VIGIL_DATABASE_URL 的用例会自动跳过，所以这里不装 PostgreSQL；
+# 真实库与集群行为由 eval/scenarios.json 的证据和人工复核覆盖，不在 CI 里假装跑过。
+on:
+  push:
+    branches: [main, 'ci/**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: 安装依赖
+        run: uv sync --frozen --group dev
+
+      - name: 格式、lint 与测试
+        run: make check-all
+
+      - name: 格式检查没有改写文件
+        run: git diff --exit-code
