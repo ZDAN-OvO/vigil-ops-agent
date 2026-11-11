@@ -1,0 +1,13 @@
+2026-11-11 18:59:48.273 | INFO     | aiops.actions.executor:_restart_applicability:531 - 读取历史模板失败，按无历史规格处理：ActionError
+Deserializing unregistered type aiops.agent.schemas.ReportDraft from checkpoint. This will be blocked in a future version. Set LANGGRAPH_STRICT_MSGPACK=true to block now, or add to allowed_msgpack_modules to allow explicitly: [('aiops.agent.schemas', 'ReportDraft')]
+调查 inv-988f6a59c808：inconclusive
+任务阶段 terminal，结果 recovered，停止原因 business_recovered
+有效运行：调查 383.1s、动作 189.9s，已过日历时间 573.2s
+动作提案：act-de5b0f7c1791
+终止原因：业务已恢复，但未形成可引用的根因候选
+观测 19 条，工具调用 19 次，关系 13 条
+诊断预测：若为本地/初始化状态丢失，新 Pod 启动后 /work 应恢复 200（或错误形态改变、不再连续 500）；若启动即读取坏配置，则新 Pod 上 /work 仍持续 500 且形态与重启前一致。 → 实际 improved（动作后业务与资源检查均通过）
+人工待办：核查 ConfigMap rebuild-demo-poison 的内容、被谁挂载/读取，以及它与 /work 处理路径的关系（resource_version 165920，本轮内容不可见）；确认应用启动时是否把本地/临时状态（emptyDir、初始化产物、缓存）作为 /work 的前置依赖，并确认该状态是否随 Pod 删除而丢失；把 /work 的可用性纳入可观测指标与告警（当前 probe 只覆盖 frontend，本服务无业务探针），避免再次出现“Ready 但业务全挂”的静默故障；确认应用侧是否应对启动初始化失败做显式报错或就绪门控，而不是 /healthz 200 + /work 500
+  - [supported] Pod 重建后应用本地/临时状态（emptyDir、启动初始化产物或内存缓存）丢失，/work 处理路径依赖该状态因此持续返回 500；/healthz 仅做存活检查因此仍 200，容器不重启、Ready 正常。 rev2
+  - [supported] 镜像 vigil/pod-rebuild-demo:20261105-v06 中的应用级缺陷或配置（ConfigMap/环境变量）不一致导致 /work 处理报错，与 Pod 重建无关；Pod 重启不会恢复。 rev2
+  - [refuted] /work 依赖的进程外依赖（外部数据库/缓存/下游服务）不可用或不一致，healthz 不检查依赖因此 Pod 仍 Ready，导致 /work 持续 500。 rev2

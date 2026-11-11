@@ -1,0 +1,1 @@
+未执行（not_pending）：提案状态为 succeeded，不能审批

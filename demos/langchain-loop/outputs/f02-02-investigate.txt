@@ -1,0 +1,9 @@
+调查 inv-15183fc1a260：running
+任务阶段 waiting_approval
+有效运行：调查 72.2s、动作 0.0s，已过日历时间 72.4s
+动作提案：act-0d79c95cb756
+观测 13 条，工具调用 13 次，关系 15 条
+诊断预测：回退后 currencyservice 内存 limit 恢复为 128Mi，新 Pod 不再 OOMKilled、restart_count 停止增长并进入 Ready；Service 10.43.42.101:7000 出现健康端点，frontend 不再出现 connection refused，probe_success{job="frontend-probe"} 稳定为 1。 → 实际 None（None）
+  - [supported] currencyservice 的 Deployment 在故障时间窗附近被变更了容器内存/资源规格（如 limit 过低），导致进程反复 OOMKilled 并频繁重启，进而前端首页 500、结账货币换算失败。 rev2
+  - [inconclusive] currencyservice 实际内存占用上涨（内存泄漏或流量/请求负载上升）超出既有 limit，导致 OOMKilled 周期性发生。 rev2
+  - [supported] 前端首页 500 与结账换算失败是 currencyservice Pod 不可用（OOMKilled/重启中）导致的上游表现，属于同一故障的下游症状；需确认 Service 端点与前端探针失败时间是否对齐。 rev2

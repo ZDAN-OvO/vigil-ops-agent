@@ -237,6 +237,9 @@ class StoreProtocol(Protocol):
     async def list_hypotheses(self, investigation_id: str) -> list[Any]: ...
     async def list_evidence(self, investigation_id: str) -> list[Any]: ...
     async def list_tool_calls(self, investigation_id: str) -> list[Any]: ...
+    async def get_task(self, investigation_id: str) -> Any: ...
+    async def list_observations(self, investigation_id: str) -> list[Any]: ...
+    async def list_hypothesis_evidence(self, investigation_id: str) -> list[Any]: ...
     async def get_runbook(self, runbook_id: str) -> Any: ...
 
 
@@ -279,6 +282,63 @@ def _rejection_cause(event: Any, evidence_ids: set[str]) -> str:
 
 def _named(events: list[Any], name: str) -> list[Any]:
     return [event for event in events if event.event == name]
+
+
+def _runtime(item: Any) -> str:
+    return str(getattr(item, "runtime_version", "") or "")
+
+
+async def _task(store: StoreProtocol, investigation_id: str) -> Any:
+    getter = getattr(store, "get_task", None)
+    return await getter(investigation_id) if getter is not None else None
+
+
+async def _agent_ledger(store: StoreProtocol, investigation_id: str) -> bool:
+    task = await _task(store, investigation_id)
+    return task is not None and _runtime(task).startswith("langchain")
+
+
+def _record(item: Any, relation: Any = None) -> dict[str, Any]:
+    """旧证据与新观测的统一回查形态；新观测的 relation 来自关系表。"""
+    return {
+        "id": item.id,
+        "source": item.source,
+        "relation": getattr(relation, "relation", "") or getattr(item, "relation", ""),
+        "hypothesis_id": getattr(relation, "hypothesis_id", None)
+        or getattr(item, "hypothesis_id", None),
+        "observation": getattr(item, "observation", None) or getattr(item, "summary", ""),
+        "raw_ref": getattr(item, "raw_ref", ""),
+        "tool_call_id": getattr(item, "tool_call_id", ""),
+    }
+
+
+async def _records(store: StoreProtocol, investigation_id: str) -> list[dict[str, Any]]:
+    """按调查的运行时取证据视图：单 Agent 调查读观测+关系，旧调查仍读 evidence。"""
+    if not await _agent_ledger(store, investigation_id):
+        return [_record(item) for item in await store.list_evidence(investigation_id)]
+    observations = await store.list_observations(investigation_id)
+    relations = await store.list_hypothesis_evidence(investigation_id)
+    relation_by_observation = {getattr(item, "observation_id", ""): item for item in relations}
+    return [
+        _record(item, relation_by_observation.get(item.id))
+        for item in observations
+        if str(getattr(getattr(item, "status", ""), "value", "")) == "ok"
+    ]
+
+
+async def _snapshot(store: StoreProtocol, investigation: Any) -> dict[str, Any]:
+    hypotheses = await store.list_hypotheses(investigation.id)
+    evidence = await store.list_evidence(investigation.id)
+    if await _agent_ledger(store, investigation.id):
+        return await state_snapshot(
+            store,
+            investigation,
+            hypotheses,
+            evidence,
+            observations=await store.list_observations(investigation.id),
+            relations=await store.list_hypothesis_evidence(investigation.id),
+        )
+    return await state_snapshot(store, investigation, hypotheses, evidence)
 
 
 def _evidence_problems(
@@ -570,30 +630,30 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
     trace_problems: list[str] = []
     for run in manifest.trace_runs:
         trace_problems.extend(_evidence_problems(run.run_id, run.evidence, run.markers))
-        evidence = await store.list_evidence(run.investigation_id)
+        records = await _records(store, run.investigation_id)
         calls = {call.id: call for call in await store.list_tool_calls(run.investigation_id)}
-        cluster = [item for item in evidence if item.source != "knowledge"]
+        cluster = [item for item in records if item["source"] != "knowledge"]
         if not cluster:
             trace_problems.append(f"{run.run_id}:没有集群观测证据")
         root = Path(manifest.evidence_root).resolve()
         for item in cluster:
-            if not (item.observation or "").strip():
-                trace_problems.append(f"{run.run_id}:证据 {item.id} 没有观测内容")
-            if not item.raw_ref or Path(item.raw_ref).is_absolute():
-                trace_problems.append(f"{run.run_id}:证据 {item.id} 的原始引用不是相对路径")
+            if not (item["observation"] or "").strip():
+                trace_problems.append(f"{run.run_id}:证据 {item['id']} 没有观测内容")
+            if not item["raw_ref"] or Path(item["raw_ref"]).is_absolute():
+                trace_problems.append(f"{run.run_id}:证据 {item['id']} 的原始引用不是相对路径")
             else:
-                raw = (root / item.raw_ref).resolve()
+                raw = (root / item["raw_ref"]).resolve()
                 if not raw.is_relative_to(root) or not raw.is_file() or raw.stat().st_size == 0:
-                    trace_problems.append(f"{run.run_id}:证据 {item.id} 的原始引用不存在或越界")
-            call = calls.get(item.tool_call_id)
+                    trace_problems.append(f"{run.run_id}:证据 {item['id']} 的原始引用不存在或越界")
+            call = calls.get(item["tool_call_id"])
             if call is None:
-                trace_problems.append(f"{run.run_id}:证据 {item.id} 的工具调用不存在")
+                trace_problems.append(f"{run.run_id}:证据 {item['id']} 的工具调用不存在")
             elif getattr(call, "error_code", None):
-                trace_problems.append(f"{run.run_id}:证据 {item.id} 来自失败的调用")
+                trace_problems.append(f"{run.run_id}:证据 {item['id']} 来自失败的调用")
             elif getattr(call, "finished_at", None) is None:
-                trace_problems.append(f"{run.run_id}:证据 {item.id} 的工具调用未完成")
-            elif getattr(call, "raw_ref", None) != item.raw_ref:
-                trace_problems.append(f"{run.run_id}:证据 {item.id} 与工具调用引用不一致")
+                trace_problems.append(f"{run.run_id}:证据 {item['id']} 的工具调用未完成")
+            elif getattr(call, "raw_ref", None) != item["raw_ref"]:
+                trace_problems.append(f"{run.run_id}:证据 {item['id']} 与工具调用引用不一致")
     criteria.append(
         CriterionResult(
             "V07",
@@ -636,10 +696,11 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
         ]
         if not refuted:
             context_problems.append(f"{run.run_id}:假设没有被反驳记录")
-        evidence = await store.list_evidence(run.investigation_id)
+        records = await _records(store, run.investigation_id)
         refuted_ids = {hypothesis.id for hypothesis in refuted}
         if not any(
-            item.relation == "refuting" and item.hypothesis_id in refuted_ids for item in evidence
+            item["relation"] == "refuting" and item["hypothesis_id"] in refuted_ids
+            for item in records
         ):
             context_problems.append(f"{run.run_id}:反驳证据没有指向该假设")
 
@@ -674,8 +735,8 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
             runbook_problems.append(f"{run.run_id}:引用了未取回的条目")
         if run.proposal_id:
             proposal = await store.get_proposal(run.proposal_id)
-            evidence = await store.list_evidence(run.investigation_id)
-            sources = {item.id: item.source for item in evidence}
+            records = await _records(store, run.investigation_id)
+            sources = {item["id"]: item["source"] for item in records}
             if proposal is None:
                 runbook_problems.append(f"{run.run_id}:动作提案不存在")
             elif not proposal.evidence_ids:
@@ -725,7 +786,7 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
             for event in requests
             if event.payload.get("request_id")
             and isinstance(event.payload.get("snapshot"), dict)
-            and event.payload["snapshot"].get("version") == 2
+            and event.payload["snapshot"].get("version") in (2, 3)
         ]
         if not v2_requests:
             explain_problems.append(f"{run.run_id}:没有带请求 ID 的追问")
@@ -758,7 +819,7 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
                     continue
                 paired.append((request, event))
                 snapshot = event.payload.get("snapshot")
-                if not isinstance(snapshot, dict) or snapshot.get("version") != 2:
+                if not isinstance(snapshot, dict) or snapshot.get("version") not in (2, 3):
                     explain_problems.append(f"{run.run_id}:回答缺少当前状态快照")
                 elif snapshot != request.payload["snapshot"]:
                     explain_problems.append(f"{run.run_id}:追问前后状态快照不一致")
@@ -770,7 +831,7 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
                     explain_problems.append(f"{run.run_id}:拒绝记录没有配对的请求 ID")
                     continue
                 snapshot = event.payload.get("snapshot")
-                if not isinstance(snapshot, dict) or snapshot.get("version") != 2:
+                if not isinstance(snapshot, dict) or snapshot.get("version") not in (2, 3):
                     explain_problems.append(f"{run.run_id}:拒绝记录缺少当前状态快照")
                 elif snapshot != request.payload["snapshot"]:
                     explain_problems.append(f"{run.run_id}:拒绝前后状态快照不一致")
@@ -793,7 +854,10 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
             ]
             if unsupported:
                 explain_problems.append(f"{run.run_id}:存在没有引用的无据回答")
-            evidence_ids_now = {item.id for item in await store.list_evidence(run.investigation_id)}
+            evidence_ids_now = {item["id"] for item in await _records(store, run.investigation_id)}
+            evidence_ids_now |= {
+                item.id for item in await store.list_evidence(run.investigation_id)
+            }
             if any(
                 not _rejection_cause(event, evidence_ids_now)
                 for event in modern_rejected
@@ -804,7 +868,7 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
                 (request, event)
                 for request, event in paired
                 if isinstance(event.payload.get("snapshot"), dict)
-                and event.payload["snapshot"].get("version") == 2
+                and event.payload["snapshot"].get("version") in (2, 3)
             ]
             if not comparable:
                 explain_problems.append(f"{run.run_id}:回答没有可比的状态快照")
@@ -813,12 +877,7 @@ async def evaluate(manifest: Manifest, store: StoreProtocol) -> EvaluationReport
                     (event for _, event in comparable), key=lambda event: event.occurred_at
                 )
                 fresh = await store.get_investigation(run.investigation_id) or investigation
-                current_state = await state_snapshot(
-                    store,
-                    fresh,
-                    await store.list_hypotheses(run.investigation_id),
-                    await store.list_evidence(run.investigation_id),
-                )
+                current_state = await _snapshot(store, fresh)
                 if latest.payload["snapshot"] != current_state:
                     explain_problems.append(f"{run.run_id}:追问后结论、证据或授权已变化")
             evidence_ids = evidence_ids_now

@@ -30,7 +30,7 @@ from aiops.contracts import (
     TimeRange,
 )
 from aiops.db import Store, StoreUnavailable
-from aiops.investigation.factory import open_runtime
+from aiops.investigation.factory import open_agent
 
 TOKEN_HEADER = "x-vigil-token"
 
@@ -147,6 +147,7 @@ def build_investigation(incident: Incident, settings: Settings, *, now: datetime
             max_tool_calls=settings.investigation_budget_tool_calls,
             max_model_calls=settings.investigation_budget_model_calls,
             max_wall_clock_seconds=settings.investigation_budget_seconds,
+            max_action_seconds=settings.investigation_budget_action_seconds,
         ),
         started_at=now,
     )
@@ -158,7 +159,7 @@ async def default_runner(
     assert settings.database_url is not None
     await store.mark_investigation_running(investigation.id, datetime.now(UTC))
     try:
-        async with open_runtime(
+        async with open_agent(
             settings=settings,
             store=store,
             dsn=settings.database_url,

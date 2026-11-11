@@ -1,0 +1,9 @@
+调查 inv-d47e19766e27：completed
+任务阶段 terminal，结果 diagnosis_only，停止原因 no_applicable_action
+有效运行：调查 118.7s、动作 0.0s，已过日历时间 118.9s
+根因候选：根因（较高置信）指向 productcatalogservice 当前 revision 68 使用的 canary 镜像 vigil/productcatalogservice:canary-20261104 存在应用层缺陷：进程可正常启动并监听 3550，但收到 gRPC 请求即以 code=Internal "product catalog unavailable" 失败，导致 frontend 首页 GET / 返回 500。决定性证据是同一天两次镜像切换与探针状态严格对应——09:07:41 切到 canary 后探针失败，09:12:34 切回官方镜像 revision 67 后探针恢复成功，09:19:33 再切回 canary 后探针从 09:20:05 起持续失败至今。已请求回滚到 revision 67 的处置动作，但执行器返回 duplicate（同一目标版本已有进行中的提案），写操作未下发，故障当前仍在持续。具体代码层缺陷（如产品数据解析/查询逻辑改动）尚未定位，属证据边界之外的未知。
+观测 15 条，工具调用 15 次，关系 10 条
+人工待办：处置待办：对 Deployment productcatalogservice 执行回滚到 revision 67（gcr.io 官方镜像）；本次自动动作因已存在同一目标版本的进行中提案被拒绝，需人工确认/推进该提案或手动执行 kubectl rollout undo deployment/productcatalogservice --to-revision=67。；人工核实发布流水线：revision 68 的 change_cause 为 'vigil rollback act-e9147e24018b'，但实际镜像仍是 canary-20261104，需检查回滚目标解析逻辑是否错误。；建议为该服务补充应用层健康检查（真实 gRPC 调用校验），当前仅端口就绪探测无法发现 product catalog unavailable。；要求研发审查 canary-20261104 相对官方镜像的代码/数据变更，确认缺陷根因并修复后再发布。
+  - [supported] productcatalogservice 新发布的 Deployment revision 引入了缺陷（镜像/配置/环境变量），导致新 Pod 无法正常提供服务，首页 500。 rev3
+  - [refuted] productcatalogservice Pod 因资源限制（OOMKilled）或频繁重启导致容量不足，产生 500。 rev2
+  - [refuted] Service 选择器/端口与 Pod 标签或容器端口不匹配，或 Pod 未进入 Ready 端点，导致请求无法到达后端。 rev2

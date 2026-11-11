@@ -1,0 +1,12 @@
+调查 inv-835c8722164b：completed
+任务阶段 terminal，结果 recovered，停止原因 business_recovered
+有效运行：调查 131.6s、动作 167.2s，已过日历时间 309.6s
+动作提案：act-5ec078cd3671
+根因候选：根因（高置信度，经回退验证）：frontend 自身无故障，首页/商品页大量 500 源于下游 productcatalogservice 应用层不可用。该 Deployment 当时处于 revision 78，运行 canary 镜像 vigil/productcatalogservice:canary-20261104（change_cause 记录此前回滚 act-c2f1258016e0），对 gRPC ListProducts 返回 StatusCode.INTERNAL "product catalog unavailable"，使 frontend 与 recommendationservice 同时报错并对外返回 500。将 productcatalogservice 回退到 gcr 官方稳定镜像（现 revision 79，sha256:1d51f9e5…）后业务恢复。
+观测 20 条，工具调用 20 次，关系 15 条
+诊断预测：productcatalogservice Pod 重建为 revision 77 的 gcr 稳定镜像并 Ready；frontend 与 recommendationservice 日志中 "product catalog unavailable" 消失；probe_success 恢复为持续 1；GET / 返回 200。 → 实际 improved（动作后业务与资源检查均通过）
+人工待办：确认 canary 镜像 vigil/productcatalogservice:canary-20261104 的缺陷点与为何 revision 78 会被指向 canary（change_cause=vigil rollback act-c2f1258016e0），避免后续再次误回滚到该版本；建议给 canary 镜像加发布门禁。；核查 productcatalogservice 是否存在 env/配置与镜像绑定的差异（本次未取到 env），以判断是否需追加配置修正。；确认 paymentservice Pod 曾于 07:43 OOMKilled（restart_count=1、limit 128Mi），与本事件时间窗不重叠，但属潜在隐患，建议评估内存限额。；currencyservice 在 10:15-10:19 出现 readiness 超时与 BackOff 后已恢复，建议观察是否复现。
+  - [refuted] frontend 最近一次 revision 部署引入了缺陷变更（镜像/环境变量/配置），导致首页请求大量 500 rev2
+  - [refuted] frontend Pod 因 OOMKilled 或资源限制不足被反复重启，重启期间/之后无法正常服务导致 500 rev2
+  - [supported] frontend 自身健康，500 源于下游 productcatalogservice：该服务当前 revision 78 运行 canary 镜像 vigil/productcatalogservice:canary-20261104，对 gRPC ListProducts 返回 INTERNAL "product catalog unavailable"，使 frontend 首页/商品页 500；之前的稳定镜像为 revision 77（gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5...） rev3
+  - [supported] 根因是 revision 78 使用的 canary 镜像 vigil/productcatalogservice:canary-20261104 内部缺陷（应用级不可用），而非资源配置或 Service 发现；将 Deployment 回退至 revision 77（gcr 稳定镜像）可恢复（父 hyp-f0d6abf61fb7） rev3

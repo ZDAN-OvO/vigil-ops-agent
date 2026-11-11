@@ -1,0 +1,10 @@
+time=2026-11-11T09:47:29Z
+deployment.apps/productcatalogservice image updated
+Waiting for deployment "productcatalogservice" rollout to finish: 0 out of 1 new replicas have been updated...
+Waiting for deployment "productcatalogservice" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "productcatalogservice" rollout to finish: 1 old replicas are pending termination...
+deployment "productcatalogservice" successfully rolled out
+home=500
+probe=0
+alert=firing
+revision=72

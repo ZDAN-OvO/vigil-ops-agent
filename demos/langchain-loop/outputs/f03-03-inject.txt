@@ -1,0 +1,5 @@
+2026-11-11T11:53:58Z BASELINE probe_duration=0.010252109 probe=1 selector=redis-cart
+2026-11-11T11:54:30Z INJECTED selector=redis-access-proxy proxy=redis-access-proxy-8466cb447-xjzjz
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME         ENDPOINTS          AGE
+redis-cart   10.42.0.253:6379   7d4h

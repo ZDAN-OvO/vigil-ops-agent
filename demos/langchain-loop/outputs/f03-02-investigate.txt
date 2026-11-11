@@ -1,0 +1,9 @@
+调查 inv-cd591aeda0a3：inconclusive
+任务阶段 terminal，结果 inconclusive，停止原因 insufficient_evidence
+有效运行：调查 358.8s、动作 0.0s，已过日历时间 358.9s
+终止原因：证据不足，未形成根因候选
+观测 21 条，工具调用 21 次，关系 11 条
+人工待办：需人工核对并把 Service redis-cart 的 selector 从 app=redis-access-proxy 改回 app=redis-cart（恢复原直连路径），变更后复核 probe_duration_seconds 是否回落至毫秒级。；确认 redis-access-proxy（vigil/redis-access-proxy:20261105，100m CPU / 64Mi）由谁、因何在本窗口引入，并评估是否长期保留或删除。；补齐 Redis / 代理侧可观测性：redis-access-proxy 无任何日志输出，也没有 Redis 相关延迟指标，导致无法量化代理跳转的成本。；评估 cartservice 的 128Mi 内存上限与 11:33–11:37 探针失败段的关系（该段是否为独立事件，需结合当时 currencyservice 重建一并排查）。
+  - [refuted] cartservice 的 Deployment 近期发生 revision 变更（镜像/资源规格/配置），新版本性能退化导致接口变慢。 rev2
+  - [refuted] cartservice Pod 自身资源受限或异常重启（CPU 节流、OOMKilled、CrashLoop）造成响应变慢。 rev2
+  - [supported] cartservice 依赖的 Redis 侧延迟升高（Redis 自身负载/Pod 异常或 Service selector 不匹配导致连到错误后端），是购物车变慢的直接原因。 rev2

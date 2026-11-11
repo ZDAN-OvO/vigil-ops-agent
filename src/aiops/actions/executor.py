@@ -24,6 +24,7 @@ from aiops.contracts import (
     ActionKind,
     ActionOrigin,
     ActionProposal,
+    ActionPurpose,
     ActionTarget,
     Approval,
     ApprovalDecision,
@@ -166,6 +167,12 @@ def proposal_hash(proposal: ActionProposal) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _min_samples_for(verify_seconds: float, sample_seconds: float) -> int:
+    """后段取 2–3 个样本；135 秒窗口用 3 个，避免单个预热失败否定恢复。"""
+    samples = int(verify_seconds // max(1, sample_seconds))
+    return max(2, min(3, samples // 2))
+
+
 class ActionExecutor:
     def __init__(
         self,
@@ -184,6 +191,7 @@ class ActionExecutor:
         verify_delay_seconds: float | None = None,
         verify_grace_seconds: float | None = None,
         probe_expression: str = 'probe_http_status_code{job="frontend-probe"}',
+        io_timeout_seconds: float = 10.0,
     ) -> None:
         self._store = store
         self._adapter = adapter
@@ -203,7 +211,8 @@ class ActionExecutor:
             float(sample_seconds * 2) if verify_grace_seconds is None else verify_grace_seconds
         )
         self._probe_expression = probe_expression
-        self._min_samples = max(2, verify_seconds // max(1, sample_seconds) // 2)
+        self._io_timeout = io_timeout_seconds
+        self._min_samples = _min_samples_for(verify_seconds, sample_seconds)
 
     async def propose_rollback(
         self,
@@ -215,8 +224,53 @@ class ActionExecutor:
         investigation_id: str | None = None,
         origin: ActionOrigin = ActionOrigin.OPERATOR,
         evidence_ids: list[str] | None = None,
+        purpose: ActionPurpose = ActionPurpose.REMEDIATION,
+        hypothesis_id: str | None = None,
+        prediction: str = "",
+        absence_meaning: str = "",
+        business_target: str = "",
+        observation_window_seconds: int | None = None,
     ) -> tuple[ActionProposal, RiskDecision]:
+        """旧入口：准备 + 自动允许时当场执行；保持 act/resume 历史行为。"""
+        proposal, decision, approval = await self.prepare_rollback(
+            deployment=deployment,
+            reason=reason,
+            actor=actor,
+            namespace=namespace,
+            investigation_id=investigation_id,
+            origin=origin,
+            evidence_ids=evidence_ids,
+            purpose=purpose,
+            hypothesis_id=hypothesis_id,
+            prediction=prediction,
+            absence_meaning=absence_meaning,
+            business_target=business_target,
+            observation_window_seconds=observation_window_seconds,
+        )
+        return await self._after_decision(proposal, decision, approval)
+
+    async def prepare_rollback(
+        self,
+        *,
+        deployment: str,
+        reason: str,
+        actor: str,
+        namespace: str | None = None,
+        investigation_id: str | None = None,
+        origin: ActionOrigin = ActionOrigin.OPERATOR,
+        evidence_ids: list[str] | None = None,
+        purpose: ActionPurpose = ActionPurpose.REMEDIATION,
+        hypothesis_id: str | None = None,
+        prediction: str = "",
+        absence_meaning: str = "",
+        business_target: str = "",
+        observation_window_seconds: int | None = None,
+    ) -> tuple[ActionProposal, RiskDecision, Approval | None]:
+        """只做读检查与提案落库；不写集群，自动授权也只落库不执行。"""
         namespace = namespace or self._namespace
+        window = self._purpose_window(
+            purpose, prediction, absence_meaning, business_target, observation_window_seconds
+        )
         plan = await asyncio.to_thread(self._adapter.plan, namespace, deployment)
         proposal = ActionProposal(
             id=f"act-{uuid.uuid4().hex[:12]}",
@@ -243,6 +297,16 @@ class ActionExecutor:
             investigation_id=investigation_id,
             evidence_ids=evidence_ids or [],
             created_at=datetime.now(UTC),
+            purpose=purpose,
+            hypothesis_id=hypothesis_id,
+            prediction=prediction,
+            observation_conditions={
+                "expected_change": prediction,
+                "absence_meaning": absence_meaning,
+                "business_target": business_target,
+                "window_seconds": window,
+            },
+            observation_window_seconds=window,
         )
         key = target_key(self._cluster, namespace, "Deployment", deployment)
         decision = decide(proposal, target_busy=await self._store.target_is_locked(key))
@@ -258,9 +322,11 @@ class ActionExecutor:
                 "to_revision": plan.target_revision,
                 "disposition": decision.disposition.value,
                 "reasons": decision.reasons,
+                "purpose": purpose.value,
+                "hypothesis_id": hypothesis_id,
             },
         )
-        return await self._after_decision(proposal, decision, approval)
+        return proposal, decision, approval
 
     async def propose_restart_pod(
         self,
@@ -274,12 +340,62 @@ class ActionExecutor:
         investigation_id: str | None = None,
         origin: ActionOrigin = ActionOrigin.OPERATOR,
         evidence_ids: list[str] | None = None,
+        purpose: ActionPurpose = ActionPurpose.REMEDIATION,
+        hypothesis_id: str | None = None,
+        prediction: str = "",
+        absence_meaning: str = "",
+        business_target: str = "",
+        observation_window_seconds: int | None = None,
     ) -> tuple[ActionProposal, RiskDecision]:
+        """旧入口：准备 + 自动允许时当场执行；保持 act 命令历史行为。"""
+        proposal, decision, approval = await self.prepare_restart_pod(
+            pod=pod,
+            service=service,
+            reason=reason,
+            actor=actor,
+            path=path,
+            namespace=namespace,
+            investigation_id=investigation_id,
+            origin=origin,
+            evidence_ids=evidence_ids,
+            purpose=purpose,
+            hypothesis_id=hypothesis_id,
+            prediction=prediction,
+            absence_meaning=absence_meaning,
+            business_target=business_target,
+            observation_window_seconds=observation_window_seconds,
+        )
+        return await self._after_decision(proposal, decision, approval)
+
+    async def prepare_restart_pod(
+        self,
+        *,
+        pod: str,
+        service: str,
+        reason: str,
+        actor: str,
+        path: str = "/",
+        namespace: str | None = None,
+        investigation_id: str | None = None,
+        origin: ActionOrigin = ActionOrigin.OPERATOR,
+        evidence_ids: list[str] | None = None,
+        purpose: ActionPurpose = ActionPurpose.REMEDIATION,
+        hypothesis_id: str | None = None,
+        prediction: str = "",
+        absence_meaning: str = "",
+        business_target: str = "",
+        observation_window_seconds: int | None = None,
+    ) -> tuple[ActionProposal, RiskDecision, Approval | None]:
+        """读真实目标、验证适用性并落提案；不写集群。"""
         namespace = namespace or self._namespace
+        window = self._purpose_window(
+            purpose, prediction, absence_meaning, business_target, observation_window_seconds
+        )
         adapter = self._restart_adapter
         if adapter is None:
             raise ActionError("adapter_missing", "未配置 restart_pod 适配器")
         plan = await asyncio.to_thread(adapter.plan, namespace, pod)
+        applicability = await self._restart_applicability(plan, service)
         # 工作负载身份跨 revision 稳定；没有 Deployment 归属时退回 ReplicaSet 或 Pod。
         workload = plan.workload_uid or plan.owner_uid or plan.name
         proposal = ActionProposal(
@@ -304,6 +420,7 @@ class ActionExecutor:
                 "restart_count": plan.restart_count,
                 "service": service,
                 "path": path,
+                "applicability": applicability,
             },
             idempotency_key=f"restart:{plan.uid}",
             reason=reason,
@@ -311,6 +428,16 @@ class ActionExecutor:
             investigation_id=investigation_id,
             evidence_ids=evidence_ids or [],
             created_at=datetime.now(UTC),
+            purpose=purpose,
+            hypothesis_id=hypothesis_id,
+            prediction=prediction,
+            observation_conditions={
+                "expected_change": prediction,
+                "absence_meaning": absence_meaning,
+                "business_target": business_target or f"{service}{path}",
+                "window_seconds": window,
+            },
+            observation_window_seconds=window,
         )
         key = target_key(self._cluster, namespace, "Pod", plan.name)
         decision = decide(
@@ -333,9 +460,149 @@ class ActionExecutor:
                 "replica_set": plan.owner_name,
                 "disposition": decision.disposition.value,
                 "reasons": decision.reasons,
+                "purpose": purpose.value,
+                "hypothesis_id": hypothesis_id,
             },
         )
-        return await self._after_decision(proposal, decision, approval)
+        return proposal, decision, approval
+
+    def _purpose_window(
+        self,
+        purpose: ActionPurpose,
+        prediction: str,
+        absence_meaning: str,
+        business_target: str,
+        observation_window_seconds: int | None,
+    ) -> int:
+        """诊断动作必须说明预测、缺失含义和业务验证目标；窗口只能取配置值。"""
+        window = self._verify_seconds
+        requested = int(observation_window_seconds or 0)
+        if 0 < requested < window:
+            # 模型不能自行缩短观察窗口；更长只是请求，实际仍按配置执行。
+            raise ActionError(
+                "invalid_window",
+                f"观察窗口由执行器配置决定，不能缩短到 {requested} 秒（配置 {window} 秒）",
+            )
+        if purpose is ActionPurpose.DIAGNOSTIC:
+            missing = [
+                name
+                for name, value in (
+                    ("prediction", prediction),
+                    ("absence_meaning", absence_meaning),
+                    ("business_target", business_target),
+                )
+                if not value.strip()
+            ]
+            if missing:
+                raise ActionError(
+                    "diagnostic_incomplete", "诊断动作缺少必要说明：" + "、".join(missing)
+                )
+        return window
+
+    async def _restart_applicability(self, plan: PodPlan, service: str) -> dict[str, Any]:
+        """删除前用真实状态回答“重建能不能区分或缓解这个故障”。
+
+        - 没有控制器、不可丢弃、Service 未选中：没有重建前提；
+        - 容器持续 OOM 且模板规格不足：重建沿用同一模板，不适用；
+        - 没有 Deployment 历史可核对时，只能用当前模板与 OOM 事实判断。
+        """
+        adapter = self._restart_adapter
+        if adapter is None:
+            raise ActionError("adapter_missing", "未配置 restart_pod 适配器")
+        if plan.owner_kind != "ReplicaSet" or not plan.owner_uid:
+            raise ActionError("not_controlled", "目标 Pod 没有 ReplicaSet 归属，删除后不会重建")
+        if not plan.discardable:
+            raise ActionError("not_discardable", "目标 Pod 未标记为可丢弃工作负载")
+        if not service.strip():
+            raise ActionError("missing_service", "缺少用于验证恢复的 Service")
+        endpoints = await asyncio.to_thread(
+            adapter.service_selects, plan.namespace, service, plan.ip, ready_only=False
+        )
+        if endpoints.get("ok") is not True:
+            raise ActionError(
+                "service_not_selecting", "验证 Service 未选中目标 Pod，不能用于恢复判定"
+            )
+        live = await asyncio.to_thread(adapter.applicability, plan.namespace, plan.name)
+        memory_limit = live.get("memory_limit")
+        last_reason = live.get("last_terminated_reason")
+        restarts = int(live.get("restart_count") or 0)
+        previous_limit = None
+        if plan.workload_name:
+            try:
+                previous = await asyncio.to_thread(
+                    self._adapter.plan, plan.namespace, plan.workload_name
+                )
+                previous_limit = previous.target_memory_limit
+            except Exception as exc:  # noqa: BLE001 - 读不到历史模板不等于适用
+                logger.info("读取历史模板失败，按无历史规格处理：{}", exc.__class__.__name__)
+                previous_limit = None
+        spec_insufficient = (
+            previous_limit is not None
+            and memory_limit is not None
+            and previous_limit != memory_limit
+            and last_reason == "OOMKilled"
+        )
+        sustained_oom = last_reason == "OOMKilled" and restarts >= 2
+        if spec_insufficient or sustained_oom:
+            raise ActionError(
+                "oom_template_inapplicable",
+                "容器持续 OOM 且当前模板内存规格不足，重建 Pod 会沿用同一模板，不适用",
+            )
+        return {
+            "checked": True,
+            "memory_limit": memory_limit,
+            "previous_template_memory_limit": previous_limit,
+            "last_terminated_reason": last_reason,
+            "restart_count": restarts,
+            "service_selects_pod": True,
+            "pod_ready": live.get("ready"),
+            "image": live.get("image"),
+        }
+
+    def adapter_upper_bound(self) -> float:
+        """动作适配器的最坏时间上界，用于发写请求前的预算预留。
+
+        按现有基线采样、收敛、缓冲、验证窗口和 I/O 超时求和，不用模型估计。
+        """
+        io = self._io_timeout
+        baseline = max(0, self._min_samples - 1) * self._sample_seconds
+        restart = (
+            baseline
+            + self._rollout_timeout
+            + min(5.0, self._verify_grace)
+            + self._verify_seconds
+            + 6 * io
+        )
+        rollout = (
+            self._rollout_timeout
+            + self._verify_grace
+            + self._verify_seconds
+            + 6 * io
+            + 2 * self._sample_seconds
+        )
+        return float(max(restart, rollout))
+
+    async def execute_authorized(
+        self, proposal_id: str, *, actor: str = "operator"
+    ) -> ActionAttempt:
+        """执行已授权提案；重新校验授权、有效期、提案哈希与目标。"""
+        proposal = await self._store.get_proposal(proposal_id)
+        if proposal is None:
+            raise ActionError("not_found", f"提案不存在：{proposal_id}")
+        if await self._store.get_attempt(proposal_id) is not None:
+            raise ActionError("already_executed", "提案已有执行记录，不重复写")
+        approval = await self._store.get_approval(proposal_id)
+        if approval is None or approval.decision is not ApprovalDecision.APPROVED:
+            raise ActionError("no_approval", "找不到有效的批准记录，不能执行")
+        if proposal.status is not ProposalStatus.APPROVED:
+            raise ActionError("not_approved", f"提案状态为 {proposal.status.value}，不能继续执行")
+        await self._audit(
+            proposal.id,
+            actor,
+            "action.execution_requested",
+            {"approval_id": approval.id},
+        )
+        return await self._execute(proposal, approval)
 
     async def _persist(self, proposal: ActionProposal, decision: RiskDecision) -> Approval | None:
         """自动允许时提案与授权同事务写入；返回随提案一起落库的授权。"""
@@ -436,6 +703,31 @@ class ActionExecutor:
         if proposal is None:
             raise LookupError(f"提案不存在：{proposal_id}")
         return proposal
+
+    async def abandon(self, proposal_id: str, *, actor: str, reason: str) -> ActionProposal:
+        """把未执行的提案标记为拒绝，释放同一目标版本的幂等键。
+
+        用于审批后预算或前提不再满足、任务已终止的情形：没有写请求，也不应
+        继续占用 `idempotency_key` 阻止新的提案。
+        """
+        proposal = await self._store.get_proposal(proposal_id)
+        if proposal is None:
+            raise ActionError("not_found", f"提案不存在：{proposal_id}")
+        if await self._store.get_attempt(proposal_id) is not None:
+            raise ActionError("already_executed", "提案已有执行记录，不能放弃")
+        if proposal.status in {ProposalStatus.REJECTED, ProposalStatus.EXPIRED}:
+            return proposal
+        await self._store.set_proposal_status(proposal_id, ProposalStatus.REJECTED)
+        await self._audit(
+            proposal_id,
+            actor,
+            "action.abandoned",
+            {"reason": reason, "previous_status": proposal.status.value},
+        )
+        saved = await self._store.get_proposal(proposal_id)
+        if saved is None:
+            raise LookupError(f"提案不存在：{proposal_id}")
+        return saved
 
     async def resume(self, proposal_id: str, *, actor: str = "operator") -> ActionAttempt:
         """继续执行已批准但尚未执行的提案；重新校验授权、有效期与目标。"""

@@ -1,0 +1,11 @@
+调查 inv-113347187e89：completed
+任务阶段 terminal，结果 recovered，停止原因 business_recovered
+有效运行：调查 101.4s、动作 122.3s，已过日历时间 232.8s
+动作提案：act-84a9285ffe31
+根因候选：已恢复。根因候选（置信度高，但为“镜像是缺陷载体”层面的确认，未定位到代码级原因）：productcatalogservice 在事件时段运行的 revision 70 使用了灰度镜像 vigil/productcatalogservice:canary-20261104，该镜像虽然能正常启动并监听 :3550，但对请求返回 gRPC Internal "product catalog unavailable"，导致 frontend 首页与商品详情页大量 500。将 Deployment 回滚到上游官方镜像 gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5...（新 revision 71）后，probe_success 恢复为 1，frontend 首页与商品页返回 200。
+观测 17 条，工具调用 17 次，关系 15 条
+诊断预测：回滚后 Deployment 生效模板回到 revision 69 的官方镜像 gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5...，新 Pod Ready；productcatalogservice 不再返回 "product catalog unavailable"；probe_success{job="frontend-probe"} 在观察窗口内回到并保持 1，前端首页返回 200。 → 实际 improved（动作后业务与资源检查均通过）
+人工待办：核对并修正发布/回滚流水线：确认 vigil/productcatalogservice:canary-20261104 的准入与灰度策略，避免 canary 镜像成为默认回滚目标；调查 09:07-09:41 期间 3 次镜像切换的操作来源（谁触发的 act-a04ad9d95064 等动作）；为 productcatalogservice 补充请求期错误日志与错误率指标，以便下次能在服务侧定位代码级根因；跟进 currencyservice / paymentservice 的历史 OOMKilled（内存 128Mi 限制），评估是否需要调整 limit；清理或标记 vigil/productcatalogservice-bad:exp-20261104-1 等实验镜像，避免误用
+  - [supported] productcatalogservice 最近一次发布（新 revision）引入了缺陷（镜像/配置/环境变量错误），导致商品目录不可用与前端 500 rev3
+  - [refuted] productcatalogservice 的下游依赖（数据库/其他服务/ConfigMap）不可用或连接失败，导致其请求返回 500 rev3
+  - [refuted] 新 Pod 无法就绪（就绪探针失败、资源不足、调度问题）导致 Service 后端为空，前端大量 500 rev2

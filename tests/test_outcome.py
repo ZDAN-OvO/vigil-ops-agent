@@ -1,5 +1,6 @@
 """动作结果分类的固定规则；阈值不随场景改变。"""
 
+from aiops.actions.executor import _min_samples_for
 from aiops.actions.outcome import SampleSummary, classify_outcome
 from aiops.contracts import AttemptOutcome
 
@@ -111,3 +112,10 @@ def test_explicit_unavailable_reason_wins():
 
     assert decision.outcome is AttemptOutcome.UNKNOWN
     assert decision.reason == "适配器缺失"
+
+
+def test_tail_sample_count_is_at_least_three_and_a_third_of_long_windows():
+    assert _min_samples_for(6, 1) == 3
+    assert _min_samples_for(90, 15) == 3
+    assert _min_samples_for(135, 15) == 3
+    assert _min_samples_for(300, 15) == 3

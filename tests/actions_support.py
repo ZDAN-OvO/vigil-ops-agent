@@ -236,6 +236,20 @@ class FakeRestartAdapter:
             return self._replan
         return self._plan
 
+    def applicability(self, namespace, name):
+        """只读事实；默认没有 OOM 或模板规格线索，不改变既有用例语义。"""
+        return {
+            "uid": self._plan.uid,
+            "phase": "Running",
+            "ready": self._plan.ready,
+            "restart_count": self._plan.restart_count,
+            "last_terminated_reason": None,
+            "last_terminated_exit_code": None,
+            "memory_limit": None,
+            "memory_request": None,
+            "image": self._plan.image,
+        }
+
     def dry_run(self, plan):
         self.calls.append(("dry_run", plan.uid))
         if self._fail_on_dry_run:

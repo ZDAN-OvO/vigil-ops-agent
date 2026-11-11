@@ -1,0 +1,9 @@
+调查 inv-113347187e89：running
+任务阶段 waiting_approval
+有效运行：调查 79.7s、动作 0.0s，已过日历时间 79.9s
+动作提案：act-84a9285ffe31
+观测 13 条，工具调用 13 次，关系 10 条
+诊断预测：回滚后 Deployment 生效模板回到 revision 69 的官方镜像 gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5...，新 Pod Ready；productcatalogservice 不再返回 "product catalog unavailable"；probe_success{job="frontend-probe"} 在观察窗口内回到并保持 1，前端首页返回 200。 → 实际 None（None）
+  - [supported] productcatalogservice 最近一次发布（新 revision）引入了缺陷（镜像/配置/环境变量错误），导致商品目录不可用与前端 500 rev2
+  - [inconclusive] productcatalogservice 的下游依赖（数据库/其他服务/ConfigMap）不可用或连接失败，导致其请求返回 500 rev2
+  - [refuted] 新 Pod 无法就绪（就绪探针失败、资源不足、调度问题）导致 Service 后端为空，前端大量 500 rev2

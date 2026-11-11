@@ -1,0 +1,16 @@
+run    investigation      status       task        outcome        termination            proposal           purpose      pstatus    recovered_at
+F01#5  inv-a42bb167ef79   completed    recovered   business_recovered act-a04ad9d95064   remediation  succeeded  09:40:53
+F01#6  inv-113347187e89   completed    recovered   business_recovered act-84a9285ffe31   remediation  succeeded  09:46:58
+F01#7  inv-8717f8e23b0d   completed    recovered   business_recovered act-c2f1258016e0   remediation  succeeded  09:52:31
+F01#8  inv-835c8722164b   completed    recovered   business_recovered act-5ec078cd3671   remediation  succeeded  11:17:58
+F02#1  inv-5f3d078e2391   inconclusive recovered   business_recovered act-e8e24a2c8c44   remediation  succeeded  09:58:59
+F02#2  inv-15183fc1a260   completed    needs_human action_no_improvement act-0d79c95cb756   remediation  failed     -
+F02#3  inv-1a7b82fae9ef   inconclusive recovered   business_recovered act-c5659c03ac57   remediation  succeeded  10:21:46
+F02#4  inv-18f3d92d1d77   completed    needs_human action_no_improvement act-2b1286909a50   remediation  failed     -
+F02#5  inv-2141db2fe0d9   completed    recovered   business_recovered act-14ff80e771a4   remediation  succeeded  11:39:21
+F03#1  inv-14e948d696fd   inconclusive inconclusive insufficient_evidence -                  -            -          -
+F03#2  inv-cd591aeda0a3   inconclusive inconclusive insufficient_evidence -                  -            -          -
+F03#3  inv-acf954a8d14b   inconclusive inconclusive insufficient_evidence -                  -            -          -
+A01    inv-988f6a59c808   inconclusive recovered   business_recovered act-de5b0f7c1791   diagnostic   succeeded  11:02:58
+
+counts: investigations=124 observations=1137 hypothesis_evidence=1011 tool_requests=473 investigation_tasks=22 action_proposals=130

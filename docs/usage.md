@@ -14,7 +14,7 @@
 | 手动调查 | `aiops investigate` | 你自己 | 同上，可指定 `--mode rules` 走零模型基线 |
 | 受控处置 | `aiops act` / `approve` / `resume` | 操作者提交与审批 | 提案、审批、执行尝试、验证结果、审计 |
 
-调查只打印结论；**写集群的只有 `act`/`approve`/`resume`**，且只有 `rollout_undo`（回退到上一 revision）和 `restart_pod`（重建 Pod）两种动作。实验命名空间之外默认拒绝。
+调查默认只读；单 Agent 在 `vigil-experiment` 内可对满足规则的 `restart_pod` 自动执行，其余动作等人工审批。操作者入口 `act`/`approve`/`resume` 写集群，动作只有 `rollout_undo`（回退到上一 revision）和 `restart_pod`（重建 Pod）两种。实验命名空间之外默认拒绝。
 
 ## 2. 前置：先确认环境活着
 
@@ -82,7 +82,7 @@ kubectl -n vigil-monitoring get secret vigil-webhook-token -o jsonpath='{.data.t
 连接检查：
 
 ```bash
-uv run --frozen aiops db status   # 期望列出 0001_init … 0009_action_origin_rules
+uv run --frozen aiops db status   # 期望列出 0001_init … 0010_agent_task_and_ledger
 uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 ```
 
@@ -92,7 +92,7 @@ uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 |---|---|---|
 | `aiops status` | 版本与能力范围，不探测集群 | 否 |
 | `aiops db status` / `db migrate` | 迁移状态 / 应用缺失迁移 | 否 |
-| `aiops investigate --service --symptoms [--mode rules]` | 跑一次调查 | 仅自动允许的 `restart_pod` |
+| `aiops investigate --service --symptoms [--mode rules]` | 跑一次调查；单 Agent 可能等待审批（退出 3） | 仅自动允许的实验命名空间 `restart_pod` |
 | `aiops incidents [--limit N]` | 最近事件与关联调查 | 否 |
 | `aiops report <inv-id>` | 已存结论、假设、证据条数 | 否 |
 | `aiops explain <inv-id> "<问题>"` | 只读追问，只用已存记录回答 | 否 |
@@ -103,6 +103,7 @@ uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 | `aiops approve <act-id> [--defer]` | 批准并执行；`--defer` 只记录审批 | 是 |
 | `aiops resume <act-id>` | 执行已批准未执行的提案 | 是 |
 | `aiops reject <act-id>` | 拒绝，不写集群 | 否 |
+| `aiops cancel <inv-id>` | 请求取消运行中的单 Agent 任务；等待审批时直接终止 | 否 |
 | `aiops followups` / `followup <fol-id>` | 异常执行留下的人工待办 | 否 |
 | `aiops knowledge list` / `--import` | 结构化 runbook 查询与登记 | 否 |
 | `aiops eval [--manifest-path]` | 按冻结清单核对 MVP 门槛 | 否 |
@@ -112,16 +113,16 @@ uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 
 ### 退出码
 
-`act` 与 `approve` 的退出码是脚本判断依据：
+| 码 | `investigate`（单 Agent） | `approve` / `resume` / `act` |
+|---|---|---|
+| 0 | 任务 recovered 或仅诊断完成 | 执行且验证通过 |
+| 1 | 运行失败、预算耗尽等 | 已执行但未验证通过 / 存储或参数错误 |
+| 2 | 参数／用法错误 | 参数／用法错误 |
+| 3 | 等待审批，或 report 有需人工跟进项 | 提案已创建，等待审批（没有执行） |
+| 4 | 策略拒绝 | 策略拒绝，未执行 |
+| 5 | 信息不足，未形成根因候选 | — |
 
-| 码 | 含义 |
-|---|---|
-| 0 | 执行且验证通过 |
-| 1 | 已执行但未验证通过 / 存储或参数错误 |
-| 3 | 提案已创建，等待审批（没有执行） |
-| 4 | 策略拒绝，未执行 |
-
-`investigate` 只用 0/2（缺配置）。调查状态看 `report` 输出的 `completed` / `inconclusive` / `aborted`。
+调查任务状态看 `report` 与 `data.task`（phase/outcome/termination_code）；`investigations.status` 只表示诊断结论。旧 `--mode rules` 调查仍返回旧语义。
 
 ## 5. 一条完整演练（F01 坏发布，约 6 分钟）
 
@@ -155,7 +156,7 @@ uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 
    `aiops serve` 日志里应看到 `POST /webhook/alertmanager 202 Accepted`。同一指纹重复投递返回 `deduplicated`，不会重复调查。
 
-4. **看调查结果**（预算 28 次工具调用 / 10 次模型调用 / 600 秒墙钟，通常 2–4 分钟；依据见 `docs/decisions.md` D26）
+4. **看调查结果**（预算 28 次工具调用 / 20 次模型调用 / 600 秒墙钟，通常 2–4 分钟；依据见 `docs/decisions.md` D26）
 
    ```bash
    uv run --frozen aiops report inv-xxxxxxxx

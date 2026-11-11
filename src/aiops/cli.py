@@ -12,9 +12,9 @@ from typing import Annotated
 import typer
 
 from aiops import __version__
-from aiops.actions.executor import ActionExecutor, AutoExecutionError
-from aiops.actions.restart_pod import PodRestartAdapter
-from aiops.actions.rollout_undo import ActionError, RolloutUndoAdapter
+from aiops.actions.executor import AutoExecutionError
+from aiops.actions.rollout_undo import ActionError
+from aiops.agent.engine import LeaseConflict, TaskNotResumable
 from aiops.config import Settings
 from aiops.contracts import (
     AuditEvent,
@@ -24,17 +24,19 @@ from aiops.contracts import (
     Investigation,
     InvestigationStatus,
     ProposalStatus,
+    TaskOutcome,
+    TaskPhase,
+    TerminationCode,
     TimeRange,
 )
 from aiops.db import Store, StoreUnavailable
 from aiops.eval import evaluate, load_manifest
 from aiops.investigation.baseline import RULES_VERSION
 from aiops.investigation.explain import ExplainError, ExplainService
-from aiops.investigation.factory import open_baseline, open_runtime
-from aiops.investigation.runtime import Report
+from aiops.investigation.factory import open_agent, open_baseline, open_executor
 from aiops.knowledge import load_runbooks
 from aiops.model import ModelClient
-from aiops.tools.prometheus import PrometheusClient
+from aiops.report import Report
 from aiops.webhook import build_app
 
 app = typer.Typer(
@@ -123,33 +125,72 @@ def status(output: OutputFormat = OutputFormat.TEXT) -> None:
         typer.echo(f"Vigil AIOps {__version__} · W0：调查、受控动作与实验命名空间的自动重建可用。")
 
 
+def _report_payload(report: Report) -> dict:
+    return {
+        "schema_version": "1",
+        "status": report.status.value,
+        "investigation_id": report.investigation_id,
+        "action_id": report.proposal_id,
+        "data": {
+            "task": report.task,
+            "conclusion": report.conclusion,
+            "termination_reason": report.termination_reason,
+            "hypotheses": report.hypotheses,
+            "evidence_count": report.evidence_count,
+            "tool_call_count": report.tool_call_count,
+            "action_ids": report.action_ids,
+            "relations": report.relations,
+            "prediction": report.prediction,
+            "remaining_budget": report.remaining_budget,
+            "needs_human": report.needs_human,
+            "model_summary_completed": report.model_summary_completed,
+        },
+    }
+
+
 def _print_report(report: Report, output: OutputFormat) -> None:
     if output == OutputFormat.JSON:
-        payload = {
-            "schema_version": "1",
-            "status": report.status.value,
-            "investigation_id": report.investigation_id,
-            "data": {
-                "conclusion": report.conclusion,
-                "termination_reason": report.termination_reason,
-                "hypotheses": report.hypotheses,
-                "evidence_count": report.evidence_count,
-                "tool_call_count": report.tool_call_count,
-                "proposal_id": report.proposal_id,
-            },
-        }
-        typer.echo(json.dumps(payload, ensure_ascii=False))
+        typer.echo(json.dumps(_report_payload(report), ensure_ascii=False))
         return
     typer.echo(f"调查 {report.investigation_id}：{report.status.value}")
+    task = report.task or {}
+    if task:
+        line = f"任务阶段 {task.get('phase')}"
+        if task.get("outcome"):
+            line += f"，结果 {task.get('outcome')}"
+        if task.get("termination_code"):
+            line += f"，停止原因 {task.get('termination_code')}"
+        typer.echo(line)
+        typer.echo(
+            f"有效运行：调查 {task.get('investigation_seconds')}s、"
+            f"动作 {task.get('action_seconds')}s，已过日历时间 {task.get('calendar_seconds')}s"
+        )
     if report.proposal_id:
         typer.echo(f"动作提案：{report.proposal_id}")
     if report.conclusion:
         typer.echo(f"根因候选：{report.conclusion}")
     if report.termination_reason:
         typer.echo(f"终止原因：{report.termination_reason}")
-    typer.echo(f"证据 {report.evidence_count} 条，工具调用 {report.tool_call_count} 次")
+    typer.echo(
+        f"观测 {report.evidence_count} 条，工具调用 {report.tool_call_count} 次，"
+        f"关系 {len(report.relations)} 条"
+    )
+    if report.prediction:
+        typer.echo(
+            "诊断预测："
+            f"{report.prediction.get('prediction')} → 实际 {report.prediction.get('outcome')}"
+            f"（{report.prediction.get('outcome_reason')}）"
+        )
+    if report.needs_human:
+        typer.echo("人工待办：" + "；".join(report.needs_human))
+    if not report.model_summary_completed:
+        typer.echo("模型总结未完成；报告使用确定性结果保存真实状态。")
     for hypothesis in report.hypotheses:
-        typer.echo(f"  - [{hypothesis['status']}] {hypothesis['statement']}")
+        parent = f"（父 {hypothesis.get('parent_id')}）" if hypothesis.get("parent_id") else ""
+        typer.echo(
+            f"  - [{hypothesis['status']}] {hypothesis['statement']}"
+            f"{parent} rev{hypothesis.get('revision', 1)}"
+        )
 
 
 @app.command()
@@ -197,6 +238,7 @@ def investigate(
             max_tool_calls=settings.investigation_budget_tool_calls,
             max_model_calls=settings.investigation_budget_model_calls,
             max_wall_clock_seconds=settings.investigation_budget_seconds,
+            max_action_seconds=settings.investigation_budget_action_seconds,
         ),
         started_at=now,
     )
@@ -226,7 +268,7 @@ def investigate(
                     investigation=investigation,
                 ) as baseline:
                     return await baseline.run()
-            async with open_runtime(
+            async with open_agent(
                 settings=settings,
                 store=store,
                 dsn=dsn,
@@ -240,13 +282,12 @@ def investigate(
     except StoreUnavailable as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
+    except (LeaseConflict, TaskNotResumable) as exc:
+        typer.echo(f"无法运行：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
     _print_report(report, output)
-    if report.status is InvestigationStatus.COMPLETED:
-        raise typer.Exit(code=0)
-    if report.status is InvestigationStatus.INCONCLUSIVE:
-        raise typer.Exit(code=5)
-    raise typer.Exit(code=1)
+    raise typer.Exit(code=report.exit_code())
 
 
 @app.command()
@@ -300,19 +341,55 @@ def report(investigation_id: str, output: OutputFormat = OutputFormat.TEXT) -> N
             if saved is None:
                 raise LookupError(investigation_id)
             hypotheses = await store.list_hypotheses(investigation_id)
-            evidence = await store.list_evidence(investigation_id)
+            observations = await store.list_observations(investigation_id)
+            relations = await store.list_hypothesis_evidence(investigation_id)
             calls = await store.list_tool_calls(investigation_id)
+            proposals = await store.list_proposals_for_investigation(investigation_id)
+            task = await store.get_task(investigation_id)
+        task_payload = None
+        if task is not None:
+            task_payload = {
+                "phase": task.phase.value,
+                "outcome": task.outcome.value if task.outcome else None,
+                "termination_code": task.termination_code,
+                "runtime_version": task.runtime_version,
+                "proposal_id": task.proposal_id,
+                "no_progress_rounds": task.no_progress_rounds,
+                "recovered_at": task.recovered_at.isoformat() if task.recovered_at else None,
+                "investigation_seconds": round(task.investigation_seconds, 1),
+                "action_seconds": round(task.action_seconds, 1),
+                "used_model_calls": task.used_model_calls,
+                "used_tool_calls": task.used_tool_calls,
+            }
         return Report(
             investigation_id=saved.id,
             status=saved.status,
             conclusion=saved.conclusion,
             termination_reason=saved.termination_reason,
             hypotheses=[
-                {"statement": hypothesis.statement, "status": hypothesis.status.value}
+                {
+                    "id": hypothesis.id,
+                    "parent_id": hypothesis.parent_id,
+                    "statement": hypothesis.statement,
+                    "status": hypothesis.status.value,
+                    "revision": hypothesis.revision,
+                }
                 for hypothesis in hypotheses
             ],
-            evidence_count=len(evidence),
+            evidence_count=len(observations),
             tool_call_count=len(calls),
+            proposal_id=proposals[-1].id if proposals else None,
+            task=task_payload,
+            action_ids=[item.id for item in proposals],
+            relations=[
+                {
+                    "hypothesis_id": item.hypothesis_id,
+                    "observation_id": item.observation_id,
+                    "relation": item.relation,
+                    "rationale": item.rationale,
+                }
+                for item in relations
+            ],
         )
 
     try:
@@ -352,26 +429,24 @@ def serve(
 
 @asynccontextmanager
 async def _open_executor(settings: Settings, store: Store):
-    async with PrometheusClient.connect(
-        settings.prometheus_url, timeout_seconds=settings.tool_timeout_seconds
-    ) as prometheus:
-        yield ActionExecutor(
-            store=store,
-            adapter=RolloutUndoAdapter(
-                kubeconfig=settings.kubeconfig, context_name=settings.kube_context
-            ),
-            restart_adapter=PodRestartAdapter(
-                kubeconfig=settings.kubeconfig, context_name=settings.kube_context
-            ),
-            prometheus=prometheus,
-            runtime_path=settings.runtime_path,
-            cluster=settings.cluster,
-            namespace=settings.namespace,
-            rollout_timeout_seconds=settings.action_rollout_timeout_seconds,
-            verify_seconds=settings.action_verify_seconds,
-            sample_seconds=settings.action_sample_seconds,
-            approval_ttl_seconds=settings.action_approval_ttl_seconds,
-        )
+    async with open_executor(settings, store=store) as executor:
+        yield executor
+
+
+async def _agent_target(store: Store, proposal) -> tuple[Incident, Investigation] | None:
+    """提案属于单 Agent 任务时返回事件与调查；旧提案返回 None。"""
+    if proposal is None or not proposal.investigation_id:
+        return None
+    task = await store.get_task(proposal.investigation_id)
+    if task is None:
+        return None
+    investigation = await store.get_investigation(proposal.investigation_id)
+    if investigation is None:
+        return None
+    incident = await store.get_incident(investigation.incident_id)
+    if incident is None:
+        return None
+    return incident, investigation
 
 
 def _report_attempt(attempt, output: OutputFormat) -> None:
@@ -823,26 +898,61 @@ def approve(
     proposal_id: str,
     actor: str = typer.Option("operator", help="审批人"),
     reason: str = typer.Option("", help="审批意见"),
-    defer: bool = typer.Option(False, "--defer", help="只记录审批，稍后用 resume 执行"),
+    defer: bool = typer.Option(False, "--defer", help="只记录审批，稍后用 resume 继续"),
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
-    """批准并执行提案；执行前会再次校验目标，未知结果停止不重放。"""
+    """批准提案：单 Agent 任务继续原任务；旧提案仍走原执行器并当场执行。"""
 
     async def run():
-        async with Store.open(_require_dsn()) as store:
+        settings = Settings()
+        dsn = _require_dsn()
+        async with Store.open(dsn) as store:
             await store.migrate()
-            async with _open_executor(Settings(), store) as executor:
-                return await executor.approve(proposal_id, actor=actor, reason=reason, defer=defer)
+            proposal = await store.get_proposal(proposal_id)
+            if proposal is None:
+                raise ActionError("not_found", f"提案不存在：{proposal_id}")
+            target = await _agent_target(store, proposal)
+            async with _open_executor(settings, store) as executor:
+                if target is None:
+                    attempt = await executor.approve(
+                        proposal_id, actor=actor, reason=reason, defer=defer
+                    )
+                    return "legacy", attempt, None
+                await executor.approve(proposal_id, actor=actor, reason=reason, defer=True)
+            if defer:
+                return "defer", None, None
+            incident, investigation = target
+            async with open_agent(
+                settings=settings,
+                store=store,
+                dsn=dsn,
+                incident=incident,
+                investigation=investigation,
+            ) as runtime:
+                report = await runtime.resume(
+                    proposal_id=proposal_id, decision="approved", actor=actor
+                )
+                return "agent", None, report
 
     try:
-        attempt = asyncio.run(run())
+        mode, attempt, report = asyncio.run(run())
     except ActionError as exc:
         typer.echo(f"未执行（{exc.code}）：{exc.message}", err=True)
+        raise typer.Exit(code=1) from exc
+    except (LeaseConflict, TaskNotResumable) as exc:
+        typer.echo(f"未继续（{exc.__class__.__name__}）：{exc}", err=True)
         raise typer.Exit(code=1) from exc
     except StoreUnavailable as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
+    if mode == "agent" and report is not None:
+        _print_report(report, output)
+        raise typer.Exit(code=report.exit_code())
+    if mode == "defer":
+        typer.echo(f"提案 {proposal_id}：approved（未执行）")
+        typer.echo(f"继续执行：aiops resume {proposal_id}")
+        return
     if attempt is None:
         typer.echo(f"提案 {proposal_id}：approved（未执行）")
         typer.echo(f"继续执行：aiops resume {proposal_id}")
@@ -857,23 +967,49 @@ def resume(
     actor: str = typer.Option("operator", help="继续执行的人"),
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
-    """继续执行已批准的提案；重新校验有效期、提案哈希与目标资源版本。"""
+    """继续已批准提案：单 Agent 任务恢复原 checkpoint，旧提案走原执行器。"""
 
     async def run():
-        async with Store.open(_require_dsn()) as store:
+        settings = Settings()
+        dsn = _require_dsn()
+        async with Store.open(dsn) as store:
             await store.migrate()
-            async with _open_executor(Settings(), store) as executor:
-                return await executor.resume(proposal_id, actor=actor)
+            proposal = await store.get_proposal(proposal_id)
+            if proposal is None:
+                raise ActionError("not_found", f"提案不存在：{proposal_id}")
+            target = await _agent_target(store, proposal)
+            if target is None:
+                async with _open_executor(settings, store) as executor:
+                    attempt = await executor.resume(proposal_id, actor=actor)
+                    return "legacy", attempt, None
+            incident, investigation = target
+            async with open_agent(
+                settings=settings,
+                store=store,
+                dsn=dsn,
+                incident=incident,
+                investigation=investigation,
+            ) as runtime:
+                report = await runtime.resume(
+                    proposal_id=proposal_id, decision="approved", actor=actor
+                )
+                return "agent", None, report
 
     try:
-        attempt = asyncio.run(run())
+        mode, attempt, report = asyncio.run(run())
     except ActionError as exc:
         typer.echo(f"未执行（{exc.code}）：{exc.message}", err=True)
+        raise typer.Exit(code=1) from exc
+    except (LeaseConflict, TaskNotResumable) as exc:
+        typer.echo(f"未继续（{exc.__class__.__name__}）：{exc}", err=True)
         raise typer.Exit(code=1) from exc
     except StoreUnavailable as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
+    if mode == "agent" and report is not None:
+        _print_report(report, output)
+        raise typer.Exit(code=report.exit_code())
     _report_attempt(attempt, output)
     raise typer.Exit(code=0 if attempt.status.value == "verified" else 1)
 
@@ -961,21 +1097,147 @@ def reject(
     proposal_id: str,
     actor: str = typer.Option("operator", help="审批人"),
     reason: str = typer.Option("", help="拒绝理由"),
+    output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
-    """拒绝提案；不执行任何集群写操作。"""
+    """拒绝提案：新任务把拒绝结果交回 Agent 继续只读调查；不执行任何写操作。"""
 
     async def run():
-        async with Store.open(_require_dsn()) as store:
+        settings = Settings()
+        dsn = _require_dsn()
+        async with Store.open(dsn) as store:
             await store.migrate()
-            async with _open_executor(Settings(), store) as executor:
-                return await executor.reject(proposal_id, actor=actor, reason=reason)
+            proposal = await store.get_proposal(proposal_id)
+            if proposal is None:
+                raise ActionError("not_found", f"提案不存在：{proposal_id}")
+            target = await _agent_target(store, proposal)
+            async with _open_executor(settings, store) as executor:
+                await executor.reject(proposal_id, actor=actor, reason=reason)
+            if target is None:
+                return proposal, None
+            incident, investigation = target
+            async with open_agent(
+                settings=settings,
+                store=store,
+                dsn=dsn,
+                incident=incident,
+                investigation=investigation,
+            ) as runtime:
+                report = await runtime.resume(
+                    proposal_id=proposal_id, decision="rejected", actor=actor
+                )
+                return proposal, report
 
     try:
-        proposal = asyncio.run(run())
+        proposal, report = asyncio.run(run())
     except ActionError as exc:
         typer.echo(f"未拒绝（{exc.code}）：{exc.message}", err=True)
         raise typer.Exit(code=1) from exc
-    typer.echo(f"提案 {proposal.id}：{proposal.status.value}")
+    except (LeaseConflict, TaskNotResumable) as exc:
+        typer.echo(f"未继续（{exc.__class__.__name__}）：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"提案 {proposal.id}：rejected")
+    if report is not None:
+        _print_report(report, output)
+        raise typer.Exit(code=report.exit_code())
+
+
+@app.command()
+def cancel(
+    investigation_id: str,
+    actor: str = typer.Option("operator", help="发起取消的人"),
+    reason: str = typer.Option("", help="取消原因"),
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """取消任务：持久化取消请求；运行中的进程在模型/工具检查点消费。"""
+
+    async def run():
+        dsn = _require_dsn()
+        now = datetime.now(UTC)
+        async with Store.open(dsn) as store:
+            await store.migrate()
+            task = await store.get_task(investigation_id)
+            if task is None:
+                raise TaskNotResumable("该调查不是单 Agent 任务")
+            if task.phase is TaskPhase.TERMINAL:
+                return task, False
+            await store.request_cancel(investigation_id, at=now)
+            if task.phase is TaskPhase.WAITING_APPROVAL:
+                await store.set_investigation_status(
+                    investigation_id,
+                    InvestigationStatus.ABORTED,
+                    termination_reason=reason or "任务已取消，未执行等待中的提案",
+                    finished_at=now,
+                )
+                await store.finish_task(
+                    investigation_id,
+                    outcome=TaskOutcome.ABORTED,
+                    termination_code=TerminationCode.CANCELLED.value,
+                    finished_at=now,
+                )
+                await store.append_audit(
+                    [
+                        AuditEvent(
+                            id=f"audit-{uuid.uuid4().hex[:12]}",
+                            correlation_id=investigation_id,
+                            actor=actor,
+                            event="investigation.cancel_requested",
+                            occurred_at=now,
+                            payload={"reason": reason[:300], "phase": task.phase.value},
+                        )
+                    ]
+                )
+                refreshed = await store.get_task(investigation_id)
+                return refreshed or task, True
+            await store.append_audit(
+                [
+                    AuditEvent(
+                        id=f"audit-{uuid.uuid4().hex[:12]}",
+                        correlation_id=investigation_id,
+                        actor=actor,
+                        event="investigation.cancel_requested",
+                        occurred_at=now,
+                        payload={"reason": reason[:300], "phase": task.phase.value},
+                    )
+                ]
+            )
+            return task, True
+
+    try:
+        task, accepted = asyncio.run(run())
+    except (TaskNotResumable, LookupError) as exc:
+        typer.echo(f"无法取消：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    payload = {
+        "schema_version": "1",
+        "investigation_id": investigation_id,
+        "status": task.phase.value,
+        "cancelled": accepted,
+        "data": {
+            "phase": task.phase.value,
+            "outcome": task.outcome.value if task.outcome else None,
+            "termination_code": task.termination_code,
+        },
+    }
+    if output == OutputFormat.JSON:
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+        return
+    if not accepted:
+        typer.echo(f"任务 {investigation_id} 已经是终态：{task.outcome}")
+        return
+    if task.phase is TaskPhase.TERMINAL:
+        typer.echo(f"任务 {investigation_id} 已取消：{task.termination_code}")
+    else:
+        typer.echo(
+            f"任务 {investigation_id} 记录了取消请求，运行中的进程会在下一个安全检查点停止。"
+        )
 
 
 if __name__ == "__main__":

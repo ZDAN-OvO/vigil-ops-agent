@@ -1,0 +1,11 @@
+调查 inv-8717f8e23b0d：completed
+任务阶段 terminal，结果 recovered，停止原因 business_recovered
+有效运行：调查 104.1s、动作 124.4s，已过日历时间 236.0s
+动作提案：act-c2f1258016e0
+根因候选：根因候选（已由动作验证支持）：productcatalogservice Deployment revision 72 引入的自建镜像 vigil/productcatalogservice:canary-20261104 存在应用级缺陷——Pod 能正常启动并 Ready、监听 :3550、成功解析商品目录 JSON，但处理 gRPC 请求时以 grpc_status=13 返回 "product catalog unavailable"，frontend 调用该服务失败从而首页/商品页出现大量 500，frontend-probe 持续失败。资源限制不足与 Service/端点配置错配两个假设均被证据反驳。回滚到 revision 71（官方 gcr.io 镜像）后 Pod 重建为 revision 73，frontend 首页与商品页恢复 200，probe_success 回到 1，执行器判定业务 improved。镜像内部具体缺陷代码/配置仍未定位。
+观测 19 条，工具调用 19 次，关系 13 条
+诊断预测：回滚后 Pod 以 revision 71 官方镜像启动，productcatalogservice 不再返回 "product catalog unavailable"，frontend 商品页恢复 200，probe_success{job="frontend-probe"} 在观察窗口内回到 1 并保持。 → 实际 improved（动作后业务与资源检查均通过）
+人工待办：确认 canary-20261104 镜像的构建变更并修复后再发布；建议发布前加入对 GetProduct/ListProducts 的冒烟校验，避免仅靠 Pod Ready 判定健康。；排查为何回滚前 productcatalogservice Pod 被每约 12 分钟替换一次，确认是否有人工或自动化重复变更干预。；补充 container_* 资源类指标的采集/标签配置，使 CPU 限流与内存使用可在后续事件中作为可判定证据。
+  - [supported] 刚发布的 productcatalogservice 新镜像(canary-20261104, revision 72)存在应用级缺陷：Pod 能启动并 Ready，但 gRPC 请求返回错误，导致首页大量 500；回滚到上一个已知良好 revision 可恢复。 rev3
+  - [refuted] 资源限制导致故障：容器 CPU limit 200m / 内存 limit 128Mi 触发 OOMKill 或严重限流，使 productcatalogservice 无法及时响应请求。 rev2
+  - [refuted] 发布引入的配置/网络侧问题：Service 端口或 Pod 标签选择器不匹配、依赖地址变更，导致请求无法到达后端或后端无法连依赖，表现为 500。 rev2

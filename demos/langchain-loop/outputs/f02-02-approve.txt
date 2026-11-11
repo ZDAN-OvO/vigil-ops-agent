@@ -1,0 +1,11 @@
+调查 inv-15183fc1a260：completed
+任务阶段 terminal，结果 needs_human，停止原因 action_no_improvement
+有效运行：调查 95.6s、动作 132.2s，已过日历时间 237.6s
+动作提案：act-0d79c95cb756
+根因候选：根因确认：currencyservice Deployment 在 revision 34（change_cause "vigil rollback act-e8e24a2c8c44"，疑似一次选错目标版本的 rollback）把容器 memory limit 从 128Mi/request 64Mi 下调到 16Mi/request 8Mi，同一镜像在新限额下启动即被 OOMKilled（exit 137），Pod 陷入 CrashLoopBackOff、7000 端口 Readiness 持续超时，Service 10.43.42.101:7000 无可达端点；前端因此报 "could not retrieve currencies: connection refused"，首页/商品/购物车与结账货币换算返回 500。执行 rollout_undo 回退到 revision 35（128Mi/64Mi，镜像 digest 未变）后，新 Pod currencyservice-567db8cb65-m59gr Ready=True、restart_count=0、无 last_terminated，服务端点恢复，probe_success 由连续 0 转为 1，frontend 日志 /cart、/product 与首页均返回 200 且再无换算失败报错，业务已恢复。
+观测 19 条，工具调用 19 次，关系 20 条
+诊断预测：回退后 currencyservice 内存 limit 恢复为 128Mi，新 Pod 不再 OOMKilled、restart_count 停止增长并进入 Ready；Service 10.43.42.101:7000 出现健康端点，frontend 不再出现 connection refused，probe_success{job="frontend-probe"} 稳定为 1。 → 实际 no_improvement（动作后仍有失败，失败率没有明显下降）
+人工待办：核查并修正触发 act-e8e24a2c8c44 的自动化/人工回滚流程：该 rollback 把内存 limit 误设为 16Mi（正常应为 128Mi/64Mi），需定位是回滚目标版本选择错误还是参数模板缺省值错误，避免再次发生。；为 currencyservice 补充 ResourceQuota/LimitRange 或 CI 策略校验，拒绝明显不合理的内存 limit（如低于镜像建议值）进入集群。；修复 frontend-probe 与动作健康断言的观察窗口：当前 90s 窗口短于 Pod 启动+就绪时间，会误判修复失败，建议按 Pod 就绪与至少一个探针成功周期判定。；确认 currencyservice 真实内存基线（本次内存工作集指标查询为空，监控缺失），据此设定合理的 request/limit 与 OOM 告警阈值。；act-0d79c95cb756: 执行结果 no_improvement
+  - [supported] currencyservice 的 Deployment 在故障时间窗附近被变更了容器内存/资源规格（如 limit 过低），导致进程反复 OOMKilled 并频繁重启，进而前端首页 500、结账货币换算失败。 rev3
+  - [inconclusive] currencyservice 实际内存占用上涨（内存泄漏或流量/请求负载上升）超出既有 limit，导致 OOMKilled 周期性发生。 rev2
+  - [supported] 前端首页 500 与结账换算失败是 currencyservice Pod 不可用（OOMKilled/重启中）导致的上游表现，属于同一故障的下游症状；需确认 Service 端点与前端探针失败时间是否对齐。 rev3

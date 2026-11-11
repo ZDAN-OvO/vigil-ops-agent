@@ -1,0 +1,9 @@
+调查 inv-a42bb167ef79：running
+任务阶段 waiting_approval
+有效运行：调查 134.2s、动作 0.0s，已过日历时间 134.3s
+动作提案：act-a04ad9d95064
+观测 11 条，工具调用 11 次，关系 9 条
+诊断预测：回滚后 Deployment 使用 revision 67 的 gcr.io 正式镜像，Pod 重新创建并 Ready；probe_success{job="frontend-probe"} 在观察窗口内由 0 回升为 1，frontend 日志中不再出现 product catalog unavailable，首页 GET / 返回 200。 → 实际 None（None）
+  - [supported] productcatalogservice 新版本引入错误（镜像/代码缺陷），导致 Pod 崩溃或返回 500，进而首页大量 500。 rev2
+  - [refuted] 新版本资源规格/探针配置不当（如 CPU/内存限制过低或 readiness 探针失败）导致 Pod 不就绪、流量无法承接，首页 500。 rev2
+  - [refuted] Service/端点或依赖侧问题（选择器不匹配、下游依赖不可用如数据库/配置）导致 productcatalogservice 不可用，而非本次发布本身。 rev2

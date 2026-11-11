@@ -1,0 +1,11 @@
+== rollback for screenshot ==
+2026-11-11T12:09:22Z
+Warning: resource deployments/productcatalogservice was previously managed with 'kubectl apply'. Rolling back will not update the kubectl.kubernetes.io/last-applied-configuration annotation, which may cause unexpected behavior on future 'kubectl apply' operations. Consider using 'kubectl apply' with your previous configuration file instead.
+deployment.apps/productcatalogservice rolled back
+Waiting for deployment "productcatalogservice" rollout to finish: 0 out of 1 new replicas have been updated...
+Waiting for deployment "productcatalogservice" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "productcatalogservice" rollout to finish: 1 old replicas are pending termination...
+deployment "productcatalogservice" successfully rolled out
+home=200
+probe_success=1
+gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef

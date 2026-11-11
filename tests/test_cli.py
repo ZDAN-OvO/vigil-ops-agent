@@ -210,3 +210,23 @@ def test_act_exit_codes_follow_the_contract():
     assert act_exit_code("succeeded", "verified") == 0
     assert act_exit_code("failed", "failed") == 1
     assert act_exit_code("unknown", "unknown") == 1
+
+
+def test_open_executor_context_manager_yields_the_executor(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from aiops import cli
+
+    sentinel = object()
+
+    @asynccontextmanager
+    async def fake_open_executor(settings, *, store):
+        yield sentinel
+
+    monkeypatch.setattr(cli, "open_executor", fake_open_executor)
+
+    async def run():
+        async with cli._open_executor(Settings(), object()) as executor:
+            return executor
+
+    assert asyncio.run(run()) is sentinel

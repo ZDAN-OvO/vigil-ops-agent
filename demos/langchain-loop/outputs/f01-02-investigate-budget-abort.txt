@@ -1,0 +1,9 @@
+调查 inv-d82bf5cb0ea4：running
+任务阶段 waiting_approval
+有效运行：调查 164.1s、动作 0.0s，已过日历时间 164.3s
+动作提案：act-25882abdea10
+观测 14 条，工具调用 14 次，关系 11 条
+诊断预测：回滚到 revision 67（上游 productcatalogservice 镜像）后，新 Pod 就绪，probe_success{job="frontend-probe"} 在观察窗口内回到 1 并保持，frontend 日志不再出现 "product catalog unavailable"，recommendationservice 的 ListProducts 调用恢复成功，首页/商品页恢复 200。 → 实际 None（None）
+  - [supported] productcatalogservice 当前运行的是新发布镜像 vigil/productcatalogservice:canary-20261104（Deployment revision 68），该镜像存在功能回归：ListProducts 直接返回 gRPC INTERNAL "product catalog unavailable"，进程虽 Ready 但业务不可用，导致 frontend 首页大量 500。 rev3
+  - [refuted] 可用性下降是单副本滚动更新（replicas=1，旧 Pod Kill 与新 Pod 创建几乎同时）造成的发布间隙，而不是镜像内容问题。 rev2
+  - [refuted] productcatalogservice 不可用源于其自身运行环境（下游依赖、OOM/资源不足或 Service 路由错误），而非镜像版本。 rev2

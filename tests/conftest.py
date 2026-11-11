@@ -23,8 +23,10 @@ def cleanup():
             ("vigil-experiment", started_at, TEST_REASON),
         ).fetchall()
         for proposal_id in {row[0] for row in rows} | set(ids):
+            conn.execute("DELETE FROM investigation_tasks WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM action_followups WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM action_locks WHERE proposal_id = %s", (proposal_id,))
+            conn.execute("DELETE FROM tool_requests WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM action_attempts WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM approvals WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM audit_events WHERE correlation_id = %s", (proposal_id,))
@@ -41,6 +43,44 @@ def ids():
     }
     yield values
     with psycopg.connect(DSN) as conn:
+        # 新运行时的表要先删：它们对 hypotheses / investigations / proposals 有外键。
+        conn.execute(
+            "DELETE FROM tool_requests WHERE investigation_id = %s", (values["investigation"],)
+        )
+        conn.execute(
+            "DELETE FROM hypothesis_evidence WHERE investigation_id = %s",
+            (values["investigation"],),
+        )
+        conn.execute(
+            "DELETE FROM observations WHERE investigation_id = %s", (values["investigation"],)
+        )
+        conn.execute(
+            """
+            DELETE FROM hypothesis_revisions
+             WHERE hypothesis_id IN (
+                SELECT id FROM hypotheses WHERE investigation_id = %s
+             )
+            """,
+            (values["investigation"],),
+        )
+        for proposal_id in [
+            row[0]
+            for row in conn.execute(
+                "SELECT id FROM action_proposals WHERE investigation_id = %s",
+                (values["investigation"],),
+            ).fetchall()
+        ]:
+            conn.execute("DELETE FROM action_followups WHERE proposal_id = %s", (proposal_id,))
+            conn.execute("DELETE FROM tool_requests WHERE proposal_id = %s", (proposal_id,))
+            conn.execute("DELETE FROM investigation_tasks WHERE proposal_id = %s", (proposal_id,))
+            conn.execute("DELETE FROM action_attempts WHERE proposal_id = %s", (proposal_id,))
+            conn.execute("DELETE FROM approvals WHERE proposal_id = %s", (proposal_id,))
+            conn.execute("DELETE FROM action_locks WHERE proposal_id = %s", (proposal_id,))
+            conn.execute("DELETE FROM action_proposals WHERE id = %s", (proposal_id,))
+        conn.execute(
+            "DELETE FROM investigation_tasks WHERE investigation_id = %s",
+            (values["investigation"],),
+        )
         conn.execute("DELETE FROM audit_events WHERE correlation_id = %s", (values["correlation"],))
         conn.execute(
             "DELETE FROM audit_events WHERE correlation_id = %s", (values["investigation"],)

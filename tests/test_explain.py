@@ -59,11 +59,15 @@ class FakeModel:
     def __init__(self, explanation):
         self._explanation = explanation
         self.calls = 0
+        self.payload = None
 
     async def complete_json(
         self, messages, response_model, *, schema_name="response", temperature=None
     ):
         self.calls += 1
+        import json
+
+        self.payload = json.loads(messages[-1]["content"])
         return SimpleNamespace(value=self._explanation, model="fake-model")
 
 
@@ -260,3 +264,87 @@ def test_only_completed_investigation_is_explainable(status):
     assert caught.value.code == "not_completed"
     assert model.calls == 0
     assert store.audit == []
+
+
+class FakeAgentStore(FakeStore):
+    """单 Agent 调查：没有旧 evidence 行，只有观测账本与关系。"""
+
+    def __init__(self, observations=None, relations=None, evidence=None):
+        super().__init__(evidence=evidence if evidence is not None else [])
+        self._observations = observations if observations is not None else [observation("obs-1")]
+        self._relations = relations if relations is not None else [relation("obs-1", "hyp-1")]
+
+    async def get_task(self, investigation_id):
+        self.calls.append("get_task")
+        return SimpleNamespace(runtime_version="langchain-agent-1", phase="terminal")
+
+    async def list_observations(self, investigation_id):
+        self.calls.append("list_observations")
+        return self._observations
+
+    async def list_hypothesis_evidence(self, investigation_id):
+        self.calls.append("list_hypothesis_evidence")
+        return self._relations
+
+
+def observation(observation_id, status="ok", summary="currencyservice OOMKilled"):
+    return SimpleNamespace(
+        id=observation_id,
+        source="kubernetes",
+        status=SimpleNamespace(value=status),
+        summary=summary,
+        observation=None,
+        raw_ref=f"evidence/{observation_id}.json",
+        truncated=False,
+    )
+
+
+def relation(observation_id, hypothesis_id, relation_text="supporting"):
+    return SimpleNamespace(
+        id=f"he-{observation_id}",
+        observation_id=observation_id,
+        hypothesis_id=hypothesis_id,
+        relation=relation_text,
+        rationale="重启次数与内存上限一致",
+    )
+
+
+def test_agent_ledger_answer_cites_observations_and_snapshots_relations():
+    store = FakeAgentStore()
+    model = FakeModel(explanation(citations=["obs-1"]))
+
+    result = asyncio.run(ExplainService(store=store, model=model).answer("inv-1", "为什么？"))
+
+    assert result.citations == ["obs-1"]
+    requested, answered = store.audit
+    assert requested.payload["snapshot"] == answered.payload["snapshot"]
+    snapshot = requested.payload["snapshot"]
+    assert snapshot["version"] == 3
+    assert [item["id"] for item in snapshot["observations"]] == ["obs-1"]
+    assert [item["id"] for item in snapshot["relations"]] == ["he-obs-1"]
+    assert [item["id"] for item in model.payload["records"]] == ["obs-1"]
+
+
+def test_agent_ledger_records_carry_relation_and_exclude_non_ok_observations():
+    store = FakeAgentStore(
+        observations=[observation("obs-1"), observation("obs-2", status="error")]
+    )
+    model = FakeModel(explanation(citations=["obs-1"]))
+
+    asyncio.run(ExplainService(store=store, model=model).answer("inv-1", "为什么？"))
+
+    records = model.payload["records"]
+    assert [item["id"] for item in records] == ["obs-1"]
+    assert records[0]["relation"] == "supporting"
+    assert records[0]["rationale"] == "重启次数与内存上限一致"
+
+
+def test_agent_ledger_rejects_citing_a_failed_observation():
+    store = FakeAgentStore(observations=[observation("obs-err", status="error")], relations=[])
+    model = FakeModel(explanation(citations=["obs-err"]))
+
+    with pytest.raises(ExplainError) as caught:
+        asyncio.run(ExplainService(store=store, model=model).answer("inv-1", "为什么？"))
+
+    assert caught.value.code == "no_evidence"
+    assert model.calls == 0

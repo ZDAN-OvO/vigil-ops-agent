@@ -1,0 +1,11 @@
+调查 inv-2141db2fe0d9：completed
+任务阶段 terminal，结果 recovered，停止原因 business_recovered
+有效运行：调查 126.7s、动作 169.3s，已过日历时间 311.1s
+动作提案：act-14ff80e771a4
+根因候选：根因候选（高度确认）：currencyservice 的 Deployment revision 40 把容器内存上限从历史模板的 128Mi/64Mi 收紧到 16Mi/8Mi，镜像 digest 与 revision 39 完全相同（sha256:16d16968...），容器在启动后很快触达 16Mi 上限被内核 OOMKill（exit_code=137），形成 CrashLoopBackOff，单副本无可用后端导致 frontend-probe 失败。重启 Pod 路径被平台判定不适用（not_discardable，write_sent=false），改用 rollout_undo 回退到 revision 39（生成 revision 41）后内存上限恢复 128Mi/64Mi：新 Pod ready=true、restart_count=0、无终止记录，Deployment available_replicas=1，frontend-probe probe_success 由 0 持续转为 1，业务恢复。Service selector 与 7000 端口配置正确，readiness 超时是 OOM 循环的次生现象。
+观测 10 条，工具调用 10 次，关系 13 条
+诊断预测：回退到 revision 39 后 Deployment 模板 memory limit 由 16Mi 恢复为 128Mi、request 64Mi，新 Pod 不再 OOMKilled（last_terminated 不再是 OOMKilled、restart_count 停止增长、Ready=True），frontend-probe probe_success 在观察窗口内回到 1。 → 实际 improved（动作后业务与资源检查均通过）
+人工待办：核查 revision 40 的变更来源：change_cause=vigil rollback act-2b1286909a50 为何把 memory limit 设为 16Mi/request 8Mi，补充操作者、工单与变更审批记录；评估 128Mi 是否为 currencyservice 的长期合理上限：建议采集 container_memory_working_set_bytes 峰值后确定 limit/request，避免再次贴近上限；为 currencyservice 增加内存使用接近 limit 的告警（如 working_set / limit > 80%）以及 Pod 非预期重启告警，缩短下次发现时间；将此变更纳入准入校验：禁止把内存 limit 设置到明显低于历史基线（如低于 64Mi）的模板上线
+  - [supported] Deployment 当前 revision 40 的容器内存 limit 被压到 16Mi（request 8Mi），低于 currencyservice 正常运行所需，因此容器持续被 OOMKilled；重启 Pod 不能改变 limit，无法恢复。 rev6
+  - [refuted] 16Mi 只是症状表现，真实问题是镜像/应用版本本身的缺陷（例如内存泄漏或启动即高占用），因此回退到旧 revision 的 128Mi 模板才是有效处置路径。 rev2
+  - [supported] Service/端口配置正确，readiness 失败只是容器被 OOMKill 之后的次生现象，不是独立的连接/选择器错误。 rev2

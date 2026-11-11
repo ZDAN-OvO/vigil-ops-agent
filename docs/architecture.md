@@ -1,6 +1,6 @@
 # Vigil AIOps 架构
 
-状态：完整 MVP（MS01–MS08）已交付。本文同时描述已实现模块与后续里程碑的目标架构，未实现部分以契约和里程碑为准；已有选择及待确认细节见 [决策记录](decisions.md)，关键取舍见 [ADR 索引](README.md#架构决策记录)，领域术语见 [词汇表](../GLOSSARY.md)。
+状态：完整 MVP（MS01–MS08）已交付；2026-11-11 完成 LangChain 单 Agent 主循环重构（见 [ADR-0005](adr/0005-langchain-single-agent-loop.md) 与 [demos/langchain-loop](../demos/langchain-loop/README.md)）。本文同时描述已实现模块与后续里程碑的目标架构，未实现部分以契约和里程碑为准；已有选择及待确认细节见 [决策记录](decisions.md)，关键取舍见 [ADR 索引](README.md#架构决策记录)，领域术语见 [词汇表](../GLOSSARY.md)。
 
 ## 产品目标
 
@@ -17,8 +17,8 @@
 | 环境 | 宿主机运行 AIOps，独立 k3d 运行业务；MVP 真实浏览、加购、购物车路径，补齐 currency、shipping 等必要依赖；完整下单后置 |
 | 遥测 | Prometheus + AlertManager + Loki + Tempo；配套采集器按实际接入需要配置 |
 | 故障 | 四类共 12 场景；Python inject/verify/cleanup；首切片为坏发布回退，MVP 场景机制见 [场景卡](mvp.md#5-场景卡) |
-| 框架 | LangGraph 已明确选择；未确认替换为纯 Python 调查 runner |
-| 调查 | 显式假设树、结构化证据、可审计验证；固定主循环中由模型决定查询方向 |
+| 框架 | LangGraph 负责持久化、审批恢复与工具循环；调查主循环使用 LangChain `create_agent`；不替换为纯 Python 调查 runner |
+| 调查 | 单 Agent、显式假设树、结构化观测与关系、可审计验证；由模型决定查询方向，中间件约束批次、预算与无进展 |
 | 工具 | Python client / HTTP 直连 Prometheus、Loki、Tempo、Kubernetes；MCP 不进入关键路径 |
 | 存储 | 一个 PostgreSQL + pgvector 实例承载关系数据、知识向量与官方 checkpoint 表 |
 | 知识 | 结构化 runbook、历史事故记录、文本型 PDF 的最小导入管道 |
@@ -26,7 +26,7 @@
 | 风险 | 规则为主，自动/审批/禁止三级；eval 的自动批准也受白名单与硬限制约束 |
 | 恢复 | 动作前快照、执行后观察、恶化时补偿；补偿失败停止并升级人工 |
 | eval | 规则评定位与恢复，LLM judge 辅助报告评审，人工抽检校准 |
-| 并行 | 首版单 Agent + 并行工具；多 Agent 是后续增量，无独立模型 investigator |
+| 并行 | 首版单 Agent；本期工具按批次串行，多 Agent 与并行工具是后续增量，无独立模型 investigator |
 | 对话 | 调查后带引用追问、审批交互、调查前 context、调查中 hint |
 | 触发 | AlertManager webhook、CLI 手动、定时巡检 |
 | 节奏 | 完整范围不缩减，垂直切片优先，阶段验收；时间按实际进度修订 |
@@ -73,24 +73,31 @@ flowchart TD
 
 webhook 触发调查；是否执行集群写操作由后续证据、动作适用性和风险规则决定。同一 Incident 可以关联多次有版本的 Investigation，去重不等于永远禁止续查。字段映射、去重窗口和鉴权方式在接入实现阶段细化。
 
-### 调查：hypothesis loop
+### 调查：LangChain 单 Agent 循环
 
 ```mermaid
 flowchart TD
-    I[Incident 与初始 Context] --> H[提出或选择候选假设]
-    H --> Q[确定待验证观测与查询]
-    K[Runbook / 事故 / PDF 检索] --> Q
-    Q --> B{预算与取消检查}
-    B -->|可继续| T[有界并行调用只读工具]
-    B -->|耗尽或取消| N[记录终止原因与证据缺口]
-    T --> E[记录原始结果引用与 Evidence]
-    E --> V[审查支持证据与反证，更新假设树]
-    V -->|需要补查或展开| H
-    V -->|证据支持根因候选| R[输出根因候选与证据引用]
-    V -->|无法继续判定| N
+    I[Incident 与初始 Context] --> A[create_agent 主循环]
+    A -->|模型响应| G{中间件检查}
+    G -->|取消/预算耗尽/无进展| N[记录终止原因与证据缺口]
+    G -->|写动作与只读调用混批| X[整批拒绝，返回错误]
+    G -->|只读工具批次| T[按序执行取证工具]
+    G -->|动作单独成批| P[request_action：证据校验与适用性检查]
+    T --> L[(tool_requests 账本 + observations)]
+    L --> A
+    P -->|不需要审批| E[执行并反馈结果]
+    P -->|需要审批| W[interrupt：等待人工后恢复]
+    W --> E
+    E --> A
+    A -->|ReportDraft| R[校验引用并判定任务结果]
+    R --> N
 ```
 
-固定的是“提出候选 → 查询证据 → 审查与更新 → 继续或结束”的步骤；模型按观测决定假设、服务、时间窗和查询。预算是安全上限，不替代证据充分性判断。深度优先、排序权重、40 次工具/5 分钟等数值未获确认，不视为验收要求。信息不足输出 inconclusive；取消单独记录，不伪装为根因结论。
+循环只有一层：模型在预算内选择工具，工具结果以 Observation 入库并回填为 ToolMessage；`manage_hypotheses` 与 `assess_evidence` 维护假设树和证据关系；`request_action` 是唯一写入口。中间件负责三件横切事：写动作必须独占一个模型响应，业务恢复后拒绝新写；每次模型尝试先扣预算并限时；无新活动累计 3 轮后停止。终态报告由 `ToolStrategy` 约束，客户端只校验引用和证据边界，不替模型编造结论。
+
+审批在工具内部触发 `interrupt()`，恢复时同一工具从开头重跑；因此工具调用 ID、账本和提案在执行前先落库，重放按 `(investigation_id, tool_call_id)` 短路。checkpoint 只保存流程进度，外部写仍由执行器、审批表和审计保证幂等。任务结果与诊断状态分开记录，见 [ADR-0006](adr/0006-task-outcome-separation.md)。
+
+信息不足输出 `inconclusive`；取消、预算耗尽、模型失败和执行恶化为独立停止原因。深度优先、排序权重等搜索策略未获确认，不视为验收要求；预算数值以 [决策 D26](decisions.md#已确认的方向与边界) 为准。
 
 ### 决策：动作提案、风险分级与审批
 
@@ -165,7 +172,7 @@ flowchart LR
     F -->|引用、哈希与尺寸| B
 ```
 
-业务表、checkpoint 表和知识向量位于同一个 PostgreSQL 实例中，职责分别维护；大结果保存为文件引用。checkpoint 保存工作流进度，不是 Kubernetes 资源快照，也不撤销外部副作用。最小图状态、checkpoint 与执行意图在 MS01 接入，MS02 验证审批跨进程恢复，MS09 扩展执行中断协调，MS12 完善常驻任务领取与恢复；图中的逻辑模块不预设独立进程或微服务。
+业务表、checkpoint 表和知识向量位于同一个 PostgreSQL 实例中，职责分别维护；大结果保存为文件引用。调查的 `tool_requests`（账本）、`observations`（观测）、`hypothesis_evidence`（关系）和 `investigation_tasks`（运行状态）都在业务表，checkpoint 只保存图状态。checkpoint 不是 Kubernetes 资源快照，也不撤销外部副作用；LangGraph 恢复时会从工具开头重跑，账本先读后写防止二次写。最小图状态、checkpoint 与执行意图在 MS01 接入，MS02 验证审批跨进程恢复，MS09 扩展执行中断协调，MS12 完善常驻任务领取与恢复；图中的逻辑模块不预设独立进程或微服务。
 
 ## 可实现性边界
 
@@ -186,6 +193,8 @@ flowchart LR
 ## 已验证范围与后续待验证
 
 MVP 已验证并有证据：浏览、加购和购物车路径及遥测埋点（[环境](../env/README.md)）；F01–F03 与 A01 的注入、观测、判定和复位（[F01](../faults/f01-bad-release/README.md)、[A01](../faults/a01-pod-rebuild/README.md)）；调查预算与最小 webhook 的接收和任务运行（[demos/ms08](../demos/ms08/README.md)）；模型结构化输出（见[模型接入实测](decisions.md#模型接入实测2026-11-04)）。
+
+2026-11-11 的 LangChain 重构另有独立证据：自动化测试覆盖预算、无进展、审批恢复、写意图未知、重放不二次写、停止门与报告纠错；真实集群的运行矩阵、截图与结果见 [demos/langchain-loop](../demos/langchain-loop/README.md)。该证据只代表本机实验环境，不代表生产稳定性。
 
 以下仍待后续里程碑验证，不阻断当前交付：
 

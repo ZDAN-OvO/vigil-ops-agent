@@ -1,0 +1,11 @@
+2026-11-11T11:18:52Z OBSERVE restarts=0 last= home=500 probe=1 alert=none | currencyservice-f6d9b8f46-bpbfv restarts=0 ready=false last=/ state=ContainerCreating
+2026-11-11T11:19:02Z OBSERVE restarts=1 last=OOMKilled home=500 probe=0 alert=none | currencyservice-f6d9b8f46-bpbfv restarts=1 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T11:19:13Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=none | currencyservice-f6d9b8f46-bpbfv restarts=2 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T11:19:23Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-bpbfv restarts=2 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T11:19:33Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-bpbfv restarts=2 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T11:19:44Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-bpbfv restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T11:19:54Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-bpbfv restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T11:20:04Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-bpbfv restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T11:20:14Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-bpbfv restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T11:20:25Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=firing | currencyservice-f6d9b8f46-bpbfv restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T11:20:25Z VERIFIED sustained_oom=1 business_failure=1 alert_firing=1 revision=38 limit=16Mi
