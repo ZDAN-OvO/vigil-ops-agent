@@ -53,6 +53,7 @@ from aiops.agent.prompts import (
     missing_report_message,
 )
 from aiops.agent.schemas import ReportDraft
+from aiops.agent.skill_reader import SkillReadMiddleware
 from aiops.config import Settings
 from aiops.contracts import (
     AGENT_RUNTIME_VERSION,
@@ -227,6 +228,7 @@ class LangChainInvestigation:
             system_prompt=SUBAGENT_PROMPT,
             middleware=[
                 ReadOnlyGuardMiddleware(allowed),
+                SkillReadMiddleware(),
                 BudgetMiddleware(
                     configured_timeout=self._settings.model_timeout_seconds,
                     max_retries=self._settings.model_max_retries,
@@ -274,6 +276,7 @@ class LangChainInvestigation:
             response_format=ToolStrategy(ReportDraft, handle_errors=self._guard.handle),
             middleware=[
                 ActionBatchMiddleware(),
+                SkillReadMiddleware(),
                 BudgetMiddleware(
                     configured_timeout=self._settings.model_timeout_seconds,
                     max_retries=self._settings.model_max_retries,
