@@ -1,60 +1,36 @@
 # Vigil AIOps
 
-Kubernetes 故障调查与受控处置。真实告警进来，模型在有界预算内取证，规则或人工审批后执行限定动作，再用真实请求验证恢复，不看 Pod Ready。
+面向中小企业和个人开发者的 Kubernetes 故障调查与受控处置。告警或手动请求触发调查，Agent 按排查方法（Skill）在有界预算内取证并维护假设，程序按规则或人工审批执行限定动作，再用真实业务请求验证恢复。
 
-一次真实链路（2026-11-10，本机 k3d 实验集群）：坏发布让首页 500，告警 firing，调查完成并给出 14 条证据，生成回退提案，人工审批后执行 `rollout_undo`，首页 200、告警清零、坏 ReplicaSet 副本 0。
+- **调查**：LangChain `create_agent` 主循环，按需加载 Skill，可以委派只读子调查。
+- **处置**：只有 `rollout_undo` 与 `restart_pod` 两种动作；先做前置检查、风险分级与审批，执行后按业务请求验证。异常结果会停止后续动作，并生成人工待办。
+- **记录**：事件、调查、观测、假设与证据、提案、审批和执行都存进 PostgreSQL；审批可以跨进程恢复，重放不会重复写集群。
 
-完整 MVP（MS01–MS08）已交付：三个核心场景、两类真实动作、审批跨进程恢复、幂等与评估门槛 V01–V10。
+当前进度和验收结果见[路线图](docs/ROADMAP.md)。
 
-2026-11-11 主循环已切换到 LangChain 单 Agent：`create_agent` 负责取证、假设、证据关系、主动写诊断与报告，预算/动作批次/无进展由中间件约束；每次工具与模型调用都写入 PostgreSQL 账本，审批等待跨进程恢复，重放同一调用不重复写。真实运行与失败记录见 [demos/langchain-loop](demos/langchain-loop/README.md)。
-
-## 评估结果和它盖不住的事
-
-`aiops eval` 在 2026-11-10 复核 V01–V10 全部通过。这是功能门槛，不是稳定性证明：
-
-- 场景运行次数：f01 坏发布 13 次、f02 OOM 5 次、f03 Redis 延迟 4 次、a01 Pod 重建 3 次。
-- 最弱的一处：f03 在旧预算下一次都没对（1/4），预算按实测重定并改提示词后连续 3 次都对；旧的失败记录保留在清单里。
-- a01 原先只验证重建动作、不参与调查评分；2026-11-11 的单 Agent 运行已由模型自主提出 `restart_pod` 并恢复业务，但调查结论仍是竞争假设（未形成唯一根因），该次运行作为补充证据，不追溯改写旧的 a01 评分。
-- 门槛是「每个核心场景至少 3 次有效运行、至少 1 次正确」。
-- 历史 76 个调查的原始观测已丢失，只有清单登记的那次有仓库内副本。
-
-每条结论的证据位置见[主张—证据矩阵](docs/claims.md)。
-
-## 自己核对
+## 快速开始
 
 ```sh
-uv sync --frozen && make check-all   # 本机含实验数据库：386 passed；无数据库时相关用例跳过
-uv run aiops db migrate && uv run aiops eval   # 需要实验 PostgreSQL，输出 V01–V10
+make init                                   # 安装锁定依赖与开发工具
+cp .env.example .env                        # 按需填写 VIGIL_ 配置
+make check-all                              # 格式、lint 与测试；无数据库时相关用例跳过
+uv run --frozen aiops --help
+uv run --frozen aiops db migrate            # 需要 VIGIL_DATABASE_URL
+uv run --frozen aiops investigate --service frontend --symptoms "首页 500"
 ```
 
-项目直接位于仓库根目录，源码在 [src/aiops/](src/aiops/)，旧项目原样归档至 [deprecated/](deprecated/README.md)。
+调查需要实验集群、Prometheus、PostgreSQL 和模型网关，完整前置条件与演练见[操作手册](docs/USAGE.md)。
 
-**先看 [操作手册](docs/usage.md)**：环境前置、`.env` 配置、命令与退出码、一条可复现的坏发布演练。
+## 文档
 
-```sh
-make init
-make check-all
-make help
-uv run --frozen aiops status --output json
-uv run --frozen aiops db status          # 需要已配置 VIGIL_DATABASE_URL
-uv run --frozen aiops incidents
-uv run --frozen aiops investigate --service frontend --symptoms "首页 500" --mode rules
-```
+| 想了解什么 | 文档 |
+|---|---|
+| 怎么安装、配置、操作 | [操作手册](docs/USAGE.md) |
+| 系统怎样设计、必须遵守哪些规则 | [设计文档](docs/DESIGN.md) |
+| 单项决策的背景与备选方案 | [ADR](docs/adr/) |
+| 当前进度、验收门槛与结果 | [路线图](docs/ROADMAP.md) |
+| 术语的含义 | [词汇表](GLOSSARY.md) |
+| 实验环境怎么搭建和复位 | [实验环境](env/README.md) |
+| 故障场景怎样注入和判定 | [故障目录](faults/README.md) |
 
-`make init` 使用 uv 安装锁定依赖及开发工具，也可直接运行 `uv sync --group dev`。`status` 报告实现范围，不探测集群，也不声称依赖健康。`investigate`、`act`、`approve`、`resume`、`explain`、`eval`、`serve`、`knowledge` 等命令已实现，用法见 `aiops --help` 与各 `demos/`。
-
-配置变量使用 `VIGIL_` 前缀；可将 [.env.example](.env.example) 复制为根目录 `.env`。配置文件与相对运行路径始终以仓库根目录为基准，不随启动目录改变。业务记录与审计依赖 PostgreSQL；Agent 调查与 Explain 另需模型网关，规则基线评估与直接执行不需要。配置项见 `.env.example`。
-
-- [文档导航](docs/README.md)
-- [LangChain 主循环真实运行](demos/langchain-loop/README.md)
-- [已有决策与待确认事项](docs/decisions.md)
-- [领域词汇表](GLOSSARY.md)
-- [总体架构](docs/architecture.md)
-- [模块契约](docs/contracts.md)
-- [MVP 范围与验收](docs/mvp.md)
-- [里程碑与验收](docs/milestone.md)
-- [滚动迭代计划](docs/iterations.md)
-- [评估约定](docs/eval.md)
-- [归档校验与迁移说明](docs/migration.md)
-
-LangGraph、LangChain `create_agent`、PostgreSQL checkpoint、模型客户端与 Kubernetes、HTTP 依赖已锁定；pgvector 与向量检索按后续里程碑接入。旧锁文件和旧 `.env` 保留在归档目录，新项目不读取归档配置。旧 `.env` 在迁移前已被 Git 跟踪，本次没有清理 Git 历史；其中三个值（`POSTGRES_PASSWORD`、`JWT_SECRET_KEY`、`INITIAL_ADMIN_PASSWORD`）经确认已不在任何环境使用，也不需要轮换。
+源码在 [src/aiops/](src/aiops/)，排查方法在 [skills/](skills/)。旧项目原样归档在 [deprecated/](deprecated/README.md)，新代码不导入、不读取归档内容。

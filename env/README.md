@@ -1,8 +1,6 @@
 # 本地实验环境
 
-状态：2026-11-04 在当前开发机完成一次真实部署，并完成 F01 坏发布的注入、告警、操作者回退与复位。本文记录实际使用的版本、清单、步骤和实测结果，供同机复现与回查。这是单节点实验环境，不是生产环境，也不是其他机器的容量承诺。
-
-范围见 [MVP 运行环境](../docs/mvp.md#2-运行环境与已知基线)，近期顺序见[迭代计划](../docs/iterations.md#2-切片-i01已完成证明环境与坏发布实验可观测可复位)。F01 场景和运行记录见 [`faults/f01-bad-release/`](../faults/f01-bad-release/README.md)。
+单节点 k3d 实验环境的版本、清单、搭建步骤和复位方法。它是本机实验环境，不是生产环境，也不代表其他机器的容量。故障场景见[故障目录](../faults/README.md)。
 
 ## 1. 实测版本
 
@@ -18,7 +16,7 @@
 | kubeconfig | `~/.kube/vigil-lab.yaml`，未写入默认 `~/.kube/config` |
 | 存储 | k3s local-path，Prometheus PVC 2Gi、ReadWriteOnce |
 | 命名空间 | `vigil-shop` 承载业务，`vigil-monitoring` 承载观测 |
-| Python | 3.12.14（pyenv），仅用于本地查询脚本，运行栈尚未安装 |
+| Python | 3.12.14（pyenv） |
 
 k3d 与 kubectl 安装在 `~/.local/bin`，安装包均校验 SHA-256。
 
@@ -130,41 +128,22 @@ uv run --frozen aiops investigate --service frontend --symptoms "首页探测是
 
 该命令会写业务表与 checkpoint 表，但不修改集群。
 
-## 5. 资源实测
-
-2026-11-04T09:28Z 快照：
-
-| 项目 | 实测值 |
-|---|---|
-| 节点可分配 | 12 CPU，约 15.4 GiB 内存，110 个 Pod |
-| 节点实际占用 | 142m CPU，1292 MiB 内存 |
-| 业务 Pod 合计 | 约 476 MiB |
-| 监控 Pod 合计 | 约 132 MiB |
-| 宿主机可用内存 | 约 6.3 GiB |
-| Prometheus 数据卷 | 2Gi PVC，实测数据约 1.1 MiB |
-| 集群容器重启 | 业务与监控工作负载均为 0 重启 |
-
-这是单次快照。宿主机上还有其他项目在运行，可用内存不等于本集群可长期占用的余量。`kubectl top` 依赖 k3s 自带的 metrics-server。
-
-## 6. 已定位的配置问题
+## 5. 已定位的配置问题
 
 1. **blackbox-exporter 配置文件名不匹配。** ConfigMap 的键是 `blackbox.yml`，容器默认读取 `config.yml`。启动参数必须写成 `--config.file=/etc/blackbox_exporter/blackbox.yml`，否则进程反复退出。
 2. **Prometheus 的 RWO 数据卷不能滚动更新。** 默认 RollingUpdate 会让新旧 Pod 同时挂载同一个 PVC，新 Pod 报 `lock DB directory: resource temporarily unavailable` 并崩溃。Deployment 必须设置 `strategy.type: Recreate`；修改策略后需先缩到 0 再重建。
 3. **`ndots:5` 影响集群内域名解析。** Pod 的 `/etc/resolv.conf` 是 `ndots:5`，不带尾点的长域名会先拼接搜索域并解析到错误地址，Prometheus 抓取因此返回 EOF。同命名空间目标使用短名称，跨命名空间使用带尾点的绝对域名，例如 `frontend.vigil-shop.svc.cluster.local.`。
 4. **AlertManager 投递受同一解析问题影响。** Prometheus 的 `alerting.alertmanagers` 最初写成不带尾点的长域名，结果规则已 firing 而 AlertManager 收到 0 条。改为同命名空间的 `alertmanager:9093` 后恢复投递，规则和 `for` 未改。
 
-## 7. 边界与未完成
+## 6. 边界
 
-- 仓库还没有逐步截图和原始查询导出，证据以文本记录和清单为主。
-- 只记录了一次部署的资源快照，没有做容量规划或长时间稳定性测试。
-- 没有部署 Loki、Tempo、OTel Collector；F01 只使用 Prometheus、blackbox、kube-state-metrics 和 AlertManager。
-- 坏发布镜像由本地构建并通过 `k3d image import` 导入，没有推送镜像仓库。
-- 实验 PostgreSQL 16.15 已启动并完成业务表迁移；LangGraph checkpoint 的真实读写仍未验证。
-- 集群创建、清单部署和故障注入都是写操作。本文只记录已执行过的路径，不构成再次执行的授权。
+- 没有部署 Loki、Tempo 和 OTel Collector；当前只用 Prometheus、blackbox-exporter、kube-state-metrics 和 AlertManager。
+- 实验镜像在本地构建，通过 `k3d image import` 导入，没有推送镜像仓库。
+- 集群创建、清单部署和故障注入都是写操作。本文只记录执行路径，不构成再次执行的授权。
 
-## 8. 实验 PostgreSQL
+## 7. 实验 PostgreSQL
 
-2026-11-04 启动独立实例，承载业务表迁移。它不在 k3d 集群内，也不复用宿主已有的其他项目数据库。
+独立实例，承载业务表与 LangGraph checkpoint。它不在 k3d 集群内，也不复用宿主已有的其他项目数据库。
 
 | 项目 | 实测值 |
 |---|---|
@@ -183,17 +162,17 @@ uv run --frozen aiops db migrate
 uv run --frozen aiops db status
 ```
 
-业务表定义在 `src/aiops/migrations/0001_init.sql`，包含 `incidents`、`investigations`、`hypotheses`、`tool_calls`、`evidence`、`audit_events` 六张表和 `schema_migrations` 版本表，迁移可重复执行。LangGraph 官方 checkpoint 表尚未接入，接入后由 saver 自行管理，不并入这组迁移。
+业务表迁移在 `src/aiops/migrations/`，可重复执行；LangGraph checkpoint 表由官方 saver 管理，不在这组迁移中。
 
 这是单机实验实例，没有备份、副本或连接池容量规划，不构成生产建议。
 
-## 9. 告警入口
+## 8. 告警入口
 
 AlertManager 通过 webhook 把 firing 告警交给 `aiops serve`。接收端只保留白名单标签，`scenario` 等实验标记不会进入事件。
 
 | 项目 | 实测值 |
 |---|---|
-| 接收地址 | `http://172.20.0.1:8081/webhook/alertmanager` |
+| 接收地址 | `http://172.20.0.1:8091/webhook/alertmanager` |
 | 172.20.0.1 | k3d 网络网关，即宿主在 `k3d-vigil-lab` 网络上的地址；换机器要重新确认 |
 | 鉴权 | `Authorization: Bearer <token>`，token 存于 Secret `vigil-webhook-token` 的 `token` 键 |
 | 路由 | `alertname="FrontendProbeFailed"` 走 `vigil-webhook`，其余仍为 `default` |
@@ -213,45 +192,19 @@ kubectl create secret generic vigil-webhook-token -n vigil-monitoring \
 ```
 
 ```bash
-uv run --frozen aiops serve --host 172.20.0.1 --port 8081
+uv run --frozen aiops serve --host 172.20.0.1 --port 8091
 ```
 
 调查仍需要 Prometheus 的 port-forward 在位。收到告警后服务先返回 202，再异步发起调查；`aiops incidents` 查看事件，`aiops report <investigation_id>` 查看结论与证据统计。
 
-2026-11-04 实测：经 AlertManager 的 v2 API 投递一条带 `scenario` 标签的测试告警，接收端返回 202，建立事件 `inc-4845d5099c7c` 与调查 `inv-42f562005c5f`；事件上下文不含 `scenario`；同一指纹再次投递返回 `deduplicated`。调查结论为 `inconclusive`，因为真实探测当时健康，假设被证据反驳。
 
-## 10. 受控回退
+## 9. 受控处置
 
-`aiops act` 只创建提案并给出风险判定，`aiops approve` 才执行。执行前重新读取目标，比对 UID 与 resourceVersion；滚动完成后再观察业务探测的末段连续样本。
+动作的提案、审批、执行与验证用法见[操作手册](../docs/USAGE.md#4-命令手册)，规则见[设计文档](../docs/DESIGN.md#57-动作请求与风险决策)。
 
-```bash
-uv run --frozen aiops act --deployment productcatalogservice --reason "前端探测持续失败" --actor <name>
-uv run --frozen aiops approvals
-uv run --frozen aiops approve <proposal_id> --actor <name>
-```
+## 10. 复位与删除
 
-| 项目 | 实测值 |
-|---|---|
-| 白名单 | 只允许 `vigil-shop` 下的 `rollout_undo` |
-| 审批 | 首次执行一律需人工审批，规则不接受模型自评分 |
-| 回退目标 | 当前 revision 的前一 revision 的 Pod 模板，`resourceVersion` 作为并发前置 |
-| 并发 | `action_locks` 保证同一目标同时只有一个执行 |
-| 幂等 | 同一目标版本只允许一个进行中的提案；失败或拒绝后可重新提案 |
-| 业务验证 | 滚动完成后等两个抓取周期，窗口 90 秒、步长 15 秒；末段 3 个样本必须全为 1 |
-| 未知结果 | 写入异常记为 `unknown`，停止且不重放 |
-
-2026-11-04 实测：把 `productcatalogservice` 切到实验坏镜像（revision 16），探测失败后提案 `act-b5be04095a56`，审批后回退到 revision 15，滚动完成，窗口内 7 个样本全部为 1，状态 `verified`；集群恢复健康 digest，`probe_success=1`。
-
-同一天的前四次尝试都是失败记录，保留在库中：
-
-1. `act-e2edf74326b2`：dry-run 返回 HTTP 500。原因是 ReplicaSet 模板用 `to_dict()` 得到蛇形字段，`containerPort` 等合并键不匹配；改用 `sanitize_for_serialization`。
-2. `act-cd220f97659d`、`act-a52cb91c1f80`：执行成功但验证窗口覆盖了滚动前的失败样本，判为失败。
-3. `act-a384b3a40e42`：加了两个抓取周期的等待后仍有 1 个预热样本为 0，于是把判定改为末段连续样本。
-4. 期间还修正了一次性约束：原先 `idempotency_key` 全局唯一，失败后无法重新提案，改为只约束进行中的提案。
-
-## 11. 复位与删除
-
-故障实验的复位由 F01 脚本完成，保留坏 ReplicaSet 作为证据，最终业务和监控工作负载保持健康。
+故障实验的复位由各场景脚本完成，见[故障目录](../faults/README.md)。
 
 删除整个实验环境是破坏性操作，需要用户明确授权：
 
