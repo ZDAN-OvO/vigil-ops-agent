@@ -1,10 +1,15 @@
-# A01 Pod 重建动作的独立验证用例
+# Pod 重建动作验证
 
-状态：2026-11-05 在 `vigil-lab` 完成两轮真实实验，验证了机制本身：临时状态故障跨容器重启持续；在已测的容器重启与 Pod 重建之间，只有 Pod 重建能消除它，且重建前后模板与 ReplicaSet 不变。`rollout restart` 与模板变更没有测试，也不满足本用例的判据，理由见第 1 节。这个用例不进入三个核心故障的分母。同一负载也是 MS05 `restart_pod` 动作链的目标：它带 `vigil.io/discardable=true` 标签，是策略允许重建的条件，动作证据见 [`demos/ms05/`](../../demos/ms05/README.md)。运行记录见 [`runs/2026-11-05.md`](runs/2026-11-05.md)。
+专用无状态工作负载的 Pod 级临时状态被写坏：容器重启消除不了故障，重建 Pod 可以。这个场景用来验证 `restart_pod` 的适用性判断、执行和业务验证，不计入核心场景的分母。负载带 `vigil.io/discardable=true` 标签，满足自动重建规则。运行记录在 [`runs/`](runs/)。
+
+## 判定标准
+
+- **可接受结论**：Pod 级状态损坏，镜像与模板没有问题。
+- **动作验收**：动作前故障持续；Agent 删除指定 Pod，控制器生成不同 UID 的 Pod，模板不变；新 Pod 在真实请求和观察窗内健康；复位没有提前介入。`rollout restart` 不能代替这个动作。
+- **前置限制**：只用于专用、无状态、数据可丢弃的目标，删除按不可逆处理。
+- **不通过**：只有删除请求成功不算恢复；这个场景也不能用来证明重启能修复 OOM。
 
 ## 1. 场景与真值
-
-场景卡见 [MVP A01](../../docs/mvp.md#a01pod-重建动作的独立验证用例)。
 
 - 载体：`vigil-experiment` 里的专用单副本 Deployment `rebuild-demo`，不接入前端，带 `vigil.io/discardable=true` 标签。
 - 故障：运行时写坏 Pod 级 `emptyDir` 上的状态文件，应用每次处理 `/work` 都返回 500。
@@ -12,9 +17,9 @@
 - 未测试的旁路：`rollout restart` 也会新建 Pod，理论上同样能清掉 Pod 级状态。它改动 revision，不满足本用例“模板与 ReplicaSet 不变”的判据，因此没有作为对照运行，文档也不声称它是或不是恢复手段。
 - 反向边界：Pod 保持 Ready，排队网络通路正常，所以故障表现为业务请求失败而不是端点摘除；`rollout restart`、滚动更新或修改模板都不属于本用例的恢复方式。
 
-载体放在专用实验命名空间 `vigil-experiment`。脚本创建命名空间时写入 `vigil.io/owner=a01-pod-rebuild`，清理只删除带该标注的命名空间；命名空间已存在但不属于 A01 时直接停止，不接管也不删除。动作策略只在目标同时满足“实验命名空间 + 可丢弃 Pod”时自动允许，其余情况仍要人工审批；清理不影响 `vigil-shop` 的 12 个业务工作负载。
+载体放在专用实验命名空间 `vigil-experiment`。脚本创建命名空间时写入 `vigil.io/owner=a01-pod-rebuild`，清理只删除带该标注的命名空间；命名空间已存在但不属于本场景时直接停止，不接管也不删除。动作策略只在目标同时满足“实验命名空间 + 可丢弃 Pod”时自动允许，其余情况仍要人工审批；清理不影响 `vigil-shop` 的 12 个业务工作负载。
 
-真值只保存在本目录和运行记录中，包括状态文件路径、写坏方式和判据。这些内容不进入调查模型可读范围，访问隔离仍未实现。
+真值只保存在本目录和运行记录中，包括状态文件路径、写坏方式和判据。调查工具只能读取集群对象、Prometheus、runbook 和 `skills/` 目录，读不到本目录。
 
 ## 2. 实验负载
 
@@ -23,7 +28,7 @@
 - `/healthz` 永远返回 200，只表示进程存活，不读取业务状态。
 - `/work` 在状态文件内容为 `corrupt` 时返回 500，否则返回 200。
 - `/crash` 返回 202 后调用 `os._exit(1)`，用于模拟进程崩溃。
-- 启动毒化：Pod 启动时读取挂载的 `rebuild-demo-poison` ConfigMap。内容为 `yes` 就把自身状态写成 `corrupt`，新 Pod 一开始就返回 500。开关只用于 V06 的无改善与恶化安全用例，不改变 A01 的故障真值。
+- 启动毒化：Pod 启动时读取挂载的 `rebuild-demo-poison` ConfigMap。内容为 `yes` 就把自身状态写成 `corrupt`，新 Pod 一开始就返回 500。开关只用于无改善与恶化的异常结果用例，不改变本场景的故障真值。
 
 容器内 PID 1 无法被同一 PID 命名空间的进程杀死，因此用 `/crash` 触发容器退出，由 kubelet 按 `restartPolicy: Always` 原地重启容器。liveness 探测刻意只探 `/healthz`，否则 kubelet 会自行重启容器，掩盖“自恢复不成立”这一判断。
 
@@ -35,9 +40,9 @@ k3d image import vigil/pod-rebuild-demo:20261105-v06 -c vigil-lab
 ```
 
 - 基础镜像 `python:3.12-slim`。
-- 当前镜像 ID `sha256:dc96a26602e5`，大小 177 MB，构建与 inspect 记录在 [`demos/ms08/outputs/v06/26-image.txt`](../../demos/ms08/outputs/v06/26-image.txt)。MS05 的历史证据使用旧标签 `20261105`，ID `sha256:e5cba3e138b9`。
+- 当前镜像标签 `20261105-v06`，基础镜像 `python:3.12-slim`。
 - 镜像只在本地构建和导入，没有推送外部仓库。
-- V06 使用 `20261105-v06` 标签，由 [`v06.sh`](v06.sh) 驱动毒化、损坏、重建和清理；脚本只接受 `vigil-experiment`，归属不符或读不到归属时直接停止，并把 `KUBECONFIG` 显式传给 `aiops`，避免检查与执行落在不同集群。
+- [`v06.sh`](v06.sh) 驱动异常结果用例的毒化、损坏、重建和清理；脚本只接受 `vigil-experiment`，归属不符或读不到归属时直接停止，并把 `KUBECONFIG` 显式传给 `aiops`，避免检查与执行落在不同集群。
 
 ## 3. 两类信号
 
@@ -82,12 +87,9 @@ bash faults/a01-pod-rebuild/repeat.sh cleanup           # 删除实验负载
 - 模板哈希两轮均为 `5427399d73722fda540480d8127ec4bdbb9d3e1dba750007aefebd7a9cc67e80`，目标 Pod 的所属 ReplicaSet 均为 `d62c8fb9-198c-4ab7-a549-a93788930e8f`。
 - 容器崩溃后的终止状态为 `reason=Error`、`exitCode=1`，Pod 保持不变。
 - 清理后业务基线恢复：12 个 Deployment、`probe_success=1`、活动告警 0、`rebuild-demo` 的 Deployment 与 Service 都不存在。
-- 这两轮在负载迁到 `vigil-experiment` 之前取得，冻结目标与脚本默认命名空间在那之后改成了 `vigil-experiment`。迁移后的自动执行与清理证据见 [`demos/ms08/`](../../demos/ms08/README.md)。
+- 这两轮在负载迁到 `vigil-experiment` 之前取得，之后目标与脚本默认命名空间改为 `vigil-experiment`。
 
-## 7. 缺口
+## 7. 已知缺口
 
-- `restart_pod` 动作链已在 MS05 实现，调查侧也能生成该提案；证据见 [`demos/ms05/`](../../demos/ms05/README.md)。
-- 实验负载没有接入 Prometheus 采集和告警，两类信号靠 `kubectl` 与宿主请求循环取得。是否需要告警入口由 MS05 的完整链路决定。
-- 真值访问隔离仍未实现。
+- 实验负载没有接入 Prometheus 采集和告警，两类信号靠 `kubectl` 与宿主请求循环取得。
 - 运行依赖宿主 port-forward 和本地镜像导入，换机器要重新构建镜像。
-- 第一版脚本有三处判据缺陷，由独立评审查出后修正：空 UID 与空 `restartCount` 互相相等会被当作“未变化”，ReplicaSet 取的是标签列表第一条而不是目标 Pod 的归属，恢复窗口没有总时限。修正后重跑了两轮，上面的记录来自修正版。

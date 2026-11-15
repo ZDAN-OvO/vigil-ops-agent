@@ -1,2 +1,0 @@
-service proxy -> HTTP 503 Service Unavailable
-pod proxy -> {'ok': True, 'status': 200, 'bytes': 12059}

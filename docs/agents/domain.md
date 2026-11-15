@@ -15,8 +15,7 @@ requesting that they be created just to complete setup.
 2. Read ADRs under root `docs/adr/` that affect the current task.
 3. For changes to the new architecture or cross-module interfaces, also follow
    root [AGENTS.md](../../AGENTS.md): read
-   [architecture.md](../architecture.md) and
-   [contracts.md](../contracts.md).
+   [DESIGN.md](../DESIGN.md).
 
 `deprecated/` is a historical archive, not another active bounded context.
 Read it when investigating history or explicitly evaluating reuse. Its old
