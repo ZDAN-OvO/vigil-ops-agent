@@ -1231,24 +1231,12 @@ class ActionExecutor:
                 "同一工作负载最近一次执行未成功，自动授权失效，需人工重新提案",
             )
 
-        # Service 是删除后唯一的业务验证手段；删除前先确认选择关系成立（含 NotReady）。
+        # 审批、基线采样和 dry-run 期间都可能发生 OOM；身份未变不代表仍适用。
         service = str(proposal.parameters.get("service") or "")
-        endpoints = await asyncio.to_thread(
-            adapter.service_selects, plan.namespace, service, plan.ip, ready_only=False
-        )
-        if endpoints.get("ok") is not True:
-            logger.warning(
-                "Service 未选中目标 Pod：service={} pod={} ip={} endpoints={}",
-                service,
-                plan.name,
-                plan.ip,
-                endpoints,
-            )
-            raise await self._fail(
-                proposal,
-                "service_not_selecting",
-                "验证 Service 未选中目标 Pod，删除前停止",
-            )
+        try:
+            await self._restart_applicability(plan, service)
+        except ActionError as exc:
+            raise await self._fail(proposal, exc.code, exc.message) from exc
         return plan
 
     async def _require_approval_valid(self, proposal: ActionProposal, approval: Approval) -> None:
