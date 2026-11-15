@@ -26,6 +26,8 @@ from aiops.actions.executor import AutoExecutionError
 from aiops.actions.rollout_undo import ActionError
 from aiops.agent.budget import BudgetExhausted, WriteReserveUnavailable
 from aiops.agent.context import AgentContext
+from aiops.agent.delegation import CURRENT_DELEGATION
+from aiops.agent.errors import UngroundedAction
 from aiops.agent.schemas import (
     AssessEvidenceArgs,
     HypothesisOperation,
@@ -45,7 +47,6 @@ from aiops.contracts import (
     ProposalStatus,
     RiskDecision,
     RiskDisposition,
-    ToolCall,
     ToolRequest,
     ToolRequestState,
 )
@@ -223,10 +224,21 @@ def _tool_context(ctx: AgentContext) -> ToolContext:
 async def _run_read(
     runtime: ToolRuntime[AgentContext], *, tool_name: str, request: QueryRequest
 ) -> str:
+    ctx = runtime.context
+    repeated = await _find_repeated_request(
+        ctx, tool_name, request, str(runtime.tool_call_id or "")
+    )
+    if (
+        repeated is not None
+        and isinstance(repeated.result, dict)
+        and ctx.budget.remaining()["tool_calls"] > 0
+    ):
+        cached = repeated.result.get("tool_message")
+        if cached:
+            return str(cached)
     ctx, call_id, cached = await _prepare_request(runtime, tool_name, request.model_dump())
     if cached is not None:
         return cached
-    started_at = datetime.now(UTC)
     try:
         result = await ctx.toolbox.run(_tool_context(ctx), ctx.window, request)
     except Exception as exc:  # noqa: BLE001 - 工具异常不能中断整轮，但要留失败记录
@@ -240,7 +252,6 @@ async def _run_read(
             error_code="tool_exception",
         )
         return message
-    finished_at = datetime.now(UTC)
     status = (
         ObservationStatus.ERROR
         if result.error is not None
@@ -252,20 +263,6 @@ async def _run_read(
     # 工具的调用 ID 由模型生成，跨调查并不保证唯一；业务表用调查前缀做主键。
     record_id = f"{ctx.investigation_id}:{call_id}"
     observation_id = f"obs-{uuid.uuid4().hex[:12]}"
-    await ctx.store.save_tool_call(
-        ToolCall(
-            id=record_id,
-            investigation_id=ctx.investigation_id,
-            tool=tool_name,
-            parameters=request.model_dump(),
-            time_range=result.time_range,
-            started_at=started_at,
-            finished_at=finished_at,
-            error_code=result.error.code if result.error else None,
-            truncated=result.truncated,
-            raw_ref=result.raw_ref,
-        )
-    )
     payload: dict[str, Any] = {
         "tool_call_id": call_id,
         "observation_id": observation_id if result.error is None else None,
@@ -288,6 +285,7 @@ async def _run_read(
                 raw_ref=result.raw_ref or "",
                 status=status,
                 truncated=result.truncated,
+                delegation_id=CURRENT_DELEGATION.get(),
                 time_range=result.time_range,
             )
         )
@@ -317,6 +315,23 @@ async def _run_read(
             if runbook_id not in ctx.progress.runbook_ids:
                 ctx.progress.runbook_ids.append(runbook_id)
     return message
+
+
+async def _find_repeated_request(
+    ctx: AgentContext, tool_name: str, request: QueryRequest, call_id: str
+) -> ToolRequest | None:
+    """同一调查里工具与参数完全相同的读取直接复用，不重复计数或写观测。"""
+    payload = request.model_dump()
+    for item in await ctx.store.list_tool_requests(ctx.investigation_id):
+        if item.tool_call_id == call_id:
+            continue
+        if (
+            item.tool == tool_name
+            and item.arguments == payload
+            and item.state in TERMINAL_LEDGER_STATES
+        ):
+            return item
+    return None
 
 
 def _runbook_ids(data: Any) -> list[str]:
@@ -453,10 +468,7 @@ def _hypothesis_payload(hypothesis: Hypothesis, *, temp_id: str = "") -> dict[st
         "temp_id": temp_id,
         "parent_id": hypothesis.parent_id,
         "statement": hypothesis.statement,
-        "expected_observations": hypothesis.expected_observations,
-        "refutation_criteria": hypothesis.refutation_criteria,
         "status": hypothesis.status.value,
-        "revision": hypothesis.revision,
     }
 
 
@@ -551,13 +563,7 @@ async def manage_hypotheses(
                 investigation_id=ctx.investigation_id,
                 parent_id=parent_id or None,
                 statement=operation.statement.strip(),
-                expected_observations=[
-                    item for item in operation.expected_observations if item.strip()
-                ],
                 origin="model",
-                refutation_criteria=[
-                    item for item in operation.refutation_criteria if item.strip()
-                ],
                 update_reason=operation.reason or "模型创建假设",
             )
             await ctx.store.save_hypothesis(hypothesis)
@@ -618,19 +624,8 @@ async def manage_hypotheses(
         updated = await ctx.store.update_hypothesis(
             current.id,
             statement=operation.statement.strip() or current.statement,
-            expected_observations=(
-                [item for item in operation.expected_observations if item.strip()]
-                if operation.expected_observations
-                else current.expected_observations
-            ),
-            refutation_criteria=(
-                [item for item in operation.refutation_criteria if item.strip()]
-                if operation.refutation_criteria
-                else current.refutation_criteria
-            ),
             status=status,
             update_reason=operation.reason.strip(),
-            actor="agent",
             parent_id=parent_id or None,
             update_parent=bool(parent_id),
         )
@@ -781,11 +776,8 @@ async def assess_evidence(
         updated = await ctx.store.update_hypothesis(
             current.id,
             statement=current.statement,
-            expected_observations=current.expected_observations,
-            refutation_criteria=current.refutation_criteria,
             status=update.status,
             update_reason=update.reason,
-            actor="agent",
         )
         hypotheses[updated.id] = updated
         updated_hypotheses.append(_hypothesis_payload(updated))
@@ -946,7 +938,10 @@ async def _validate_action_references(ctx: AgentContext, args: RequestActionArgs
         for link in links
         if link.hypothesis_id == hypothesis.id and link.relation == "supporting"
     }
-    calls = {item.id: item for item in await ctx.store.list_tool_calls(ctx.investigation_id)}
+    calls = {
+        f"{ctx.investigation_id}:{item.tool_call_id}": item
+        for item in await ctx.store.list_tool_requests(ctx.investigation_id)
+    }
     has_platform = False
     has_business = False
     target_scoped = False
@@ -965,8 +960,8 @@ async def _validate_action_references(ctx: AgentContext, args: RequestActionArgs
                 "请先用 assess_evidence 记录 supporting 关系"
             )
         call = calls.get(item.tool_call_id)
-        tool = call.tool if call else ""
-        params = call.parameters if call else {}
+        params = call.arguments if call else {}
+        tool = str(params.get("tool") or (call.tool if call else ""))
         if tool.startswith("kubernetes."):
             has_platform = True
             selector = str(params.get("selector") or "")
@@ -1057,6 +1052,9 @@ async def request_action(
 
     problem = await _validate_action_references(ctx, args)
     if problem is not None:
+        ctx.progress.ungrounded_actions += 1
+        if ctx.progress.ungrounded_actions >= 2:
+            raise UngroundedAction(f"连续两次动作请求缺少有效依据：{problem}")
         message = _error("invalid_action_request", problem)
         await _finish_request(
             ctx,
@@ -1066,6 +1064,8 @@ async def request_action(
             error_code="invalid_action_request",
         )
         return message
+
+    ctx.progress.ungrounded_actions = 0
 
     executor = ctx.executor
     if executor is None:

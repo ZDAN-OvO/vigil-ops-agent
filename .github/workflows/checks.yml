@@ -2,7 +2,7 @@ name: checks
 
 # 只跑离线可核对的部分：ruff 与不依赖数据库的测试。
 # 需要 VIGIL_DATABASE_URL 的用例会自动跳过，所以这里不装 PostgreSQL；
-# 真实库与集群行为由 eval/scenarios.json 的证据和人工复核覆盖，不在 CI 里假装跑过。
+# 真实库与集群行为由 faults/<场景>/runs/ 的运行记录和 PR 评论中的截图覆盖，不在 CI 里假装跑过。
 on:
   push:
     branches: [main, 'ci/**']

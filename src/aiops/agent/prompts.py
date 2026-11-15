@@ -23,7 +23,8 @@ SYSTEM_PROMPT = """你是 Kubernetes 故障调查与受控处置 Agent。你在�
 8. 连续三个模型轮次没有新观测、没有有效假设变更、也没有动作状态变化时任务会以 no_progress
    结束，所以不要反复改写同一段推理。
 9. 结束前调用结构化报告工具，引用真实 observation id，写清证据边界、已知矛盾和剩余未知。
-   没有确认根因时明确写未知，不要编造结论。
+   没有确认根因时明确写未知，不要编造结论；同时用 candidate_hypothesis_ids 列出仍在考虑的
+   候选假设及其状态依据。
 10. 只使用中文表达，不要输出与任务无关的过程说明。
 11. 工具调用预算有限，assess_evidence 与 request_action 也计入。找到关键观测（Service
     selector、镜像或 revision、OOMKilled、错误日志）后立即用 assess_evidence 固定关系，
@@ -46,6 +47,8 @@ TOOL_GUIDE = """可用工具：
 - assess_evidence(links, hypothesis_updates)：把 observation 关联到假设（supporting/refuting/
   neutral），并写依据；动作依据必须先在这里标成 supporting。
 - request_action(...)：提交受控动作；会经过规则判定、必要时人工审批，并返回结构化反馈。
+- task(description, subagent_type)：把边界明确的只读调查交给子 Agent；同一调查同时只运行
+  一个，子 Agent 共享预算且不能写操作。它返回的发现需要你自己转述并引用。
 selector 是 Kubernetes 标签选择器（如 app=frontend）；留空表示命名空间内全部对象。
 runbook 的 id 只能引用本次实际返回的条目。
 """

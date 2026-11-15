@@ -1,12 +1,14 @@
-"""LangChain 接入关卡：用真实网关与真实 PostgreSQL 验证四件事。
+"""Skill/委派运行时接入关卡：真实网关 + 真实 PostgreSQL + 仓库内置 Skill。
 
+检查项：
 1. 网关原生 tool calling 可用；
 2. ToolMessage 往返后模型能给出终态内容；
 3. 显式 `ToolStrategy` 的结构化终态可解析；
-4. 官方 `AsyncPostgresSaver` 能把进度写进实验 PostgreSQL 并按 thread_id 读回。
+4. 官方 `AsyncPostgresSaver` 能按 thread_id 读回进度；
+5. 仓库 Skill 能被解析，信号触发能按来源与 alertname 匹配；
+6. 子 Agent 工具集只包含只读工具，写入工具会被只读闸门拒绝。
 
-失败时以非零退出码结束，并打印具体检查项。本脚本只做最小探测，不写集群、
-不创建调查，也不会把密钥写进输出。
+失败时以非零退出码结束，并逐项打印原因。脚本不写集群、不执行动作。
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from langchain.agents import create_agent
@@ -25,7 +27,11 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel, ConfigDict, Field
 
+from aiops.agent.delegation import ReadOnlyGuardMiddleware, ReadOnlyViolation
 from aiops.config import Settings
+from aiops.contracts import Incident, TimeRange
+from aiops.skills import load_skill_catalog, match_signal_skills
+from aiops.tools.registry import build_registry, read_only_names, select_tools, tool_name
 
 
 class GateReport(BaseModel):
@@ -44,8 +50,6 @@ def echo_probe(text: str) -> str:
 
 
 def _api_key(settings: Settings) -> str:
-    """本地网关不校验密钥；OpenAI SDK 仍要求非空，所以空值用占位串。"""
-
     if settings.model_api_key is None:
         return "sk-vigil-local-no-auth"
     value = settings.model_api_key.get_secret_value().strip()
@@ -60,7 +64,6 @@ def _model(settings: Settings) -> ChatOpenAI:
         base_url=settings.model_base_url,
         api_key=_api_key(settings),
         timeout=settings.model_timeout_seconds,
-        # 关卡要求关闭 provider 隐藏重试：重试由预算中间件统一管理。
         max_retries=0,
         temperature=0,
     )
@@ -130,17 +133,8 @@ async def _checkpoint(settings: Settings, model: ChatOpenAI) -> dict[str, Any]:
     if not dsn:
         raise RuntimeError("未配置 VIGIL_DATABASE_URL")
     thread_id = f"gate-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
-    agent = create_agent(
-        model,
-        tools=[echo_probe],
-        system_prompt="只调用给定工具；需要结束时给出结构化终态。",
-        response_format=ToolStrategy(GateReport),
-        checkpointer=None,
-    )
     async with AsyncPostgresSaver.from_conn_string(dsn) as saver:
         await saver.setup()
-        with_checkpointer = agent.with_config({"recursion_limit": 12})
-        # 只在本次关卡里替换 checkpointer，避免影响其它线程。
         graph = create_agent(
             model,
             tools=[echo_probe],
@@ -161,12 +155,64 @@ async def _checkpoint(settings: Settings, model: ChatOpenAI) -> dict[str, Any]:
         messages = state.values.get("messages") or []
     if not messages:
         raise RuntimeError("checkpoint 里读不到消息")
-    del with_checkpointer
     return {
         "thread_id": thread_id,
         "messages": len(messages),
         "has_structured_response": bool(state.values.get("structured_response")),
     }
+
+
+async def _skills(settings: Settings) -> dict[str, Any]:
+    catalog = load_skill_catalog(settings.skills_path)
+    now = datetime.now(UTC)
+    alert = Incident(
+        id="gate-alert",
+        environment="local",
+        cluster=settings.cluster,
+        namespace=settings.namespace,
+        service="frontend",
+        trigger="alert",
+        symptoms="PodOOMKilled",
+        time_range=TimeRange(start=now - timedelta(minutes=10), end=now),
+        alert_names=["PodOOMKilled"],
+    )
+    manual = alert.model_copy(update={"trigger": "manual", "alert_names": []})
+    alert_skills = [item.name for item in match_signal_skills(catalog, alert)]
+    manual_skills = [item.name for item in match_signal_skills(catalog, manual)]
+    if "oom" not in alert_skills:
+        raise RuntimeError(f"OOM 告警没有命中 OOM Skill：{alert_skills}")
+    if "hypothesis-driven-investigation" not in manual_skills:
+        raise RuntimeError(f"手动调查没有命中 hypothesis-driven Skill：{manual_skills}")
+    return {
+        "skills": [item.name for item in catalog],
+        "alert_matched": alert_skills,
+        "manual_matched": manual_skills,
+        "hashes": {item.name: item.content_hash for item in catalog},
+    }
+
+
+async def _read_only_subagent() -> dict[str, Any]:
+    registry = build_registry()
+    allowed = read_only_names(registry)
+    tools = [tool_name(item) for item in select_tools(registry, read_only=True)]
+    if "request_action" in allowed or "request_action" in tools:
+        raise RuntimeError("只读工具集包含 request_action")
+
+    class Request:
+        tool_call = {"name": "request_action", "id": "gate-1"}
+
+    async def handler(_request):
+        return "should not run"
+
+    try:
+        await ReadOnlyGuardMiddleware(allowed).awrap_tool_call(Request(), handler)
+    except ReadOnlyViolation:
+        blocked = True
+    else:
+        blocked = False
+    if not blocked:
+        raise RuntimeError("只读闸门没有拒绝 request_action")
+    return {"tools": tools, "blocked_write": True}
 
 
 async def main() -> int:
@@ -178,6 +224,8 @@ async def main() -> int:
         ("tool_calling", lambda: _tool_calling(model)),
         ("structured_output", lambda: _structured_output(model)),
         ("checkpoint", lambda: _checkpoint(settings, model)),
+        ("skills", lambda: _skills(settings)),
+        ("read_only_subagent", lambda: _read_only_subagent()),
     ):
         try:
             report["checks"][name] = {"ok": True, "detail": await factory()}

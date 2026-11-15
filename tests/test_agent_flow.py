@@ -148,13 +148,12 @@ def test_failed_query_is_not_evidence(ids):
         async with agent_case(ids, responses=responses, toolbox=FakeToolbox(failing)) as case:
             report = await case.runtime.run()
             observations = await case.store.list_observations(ids["investigation"])
-            calls = await case.store.list_tool_calls(ids["investigation"])
             requests = await case.store.list_tool_requests(ids["investigation"])
-            return report, observations, calls, requests
+            return report, observations, requests
 
-    report, observations, calls, requests = asyncio.run(run())
+    report, observations, requests = asyncio.run(run())
     assert observations == []
-    assert [item.error_code for item in calls] == ["timeout"]
+    assert [item.error_code for item in requests if item.error_code] == ["timeout"]
     assert any(item.state.value == "failed" for item in requests)
     assert report.status is InvestigationStatus.INCONCLUSIVE
     assert report.evidence_count == 0
@@ -274,7 +273,7 @@ def test_model_budget_exhaustion_aborts(ids):
     assert report.task["used_model_calls"] == 2
 
 
-def test_hypothesis_refine_refute_reopen_and_revision_history(ids):
+def test_hypothesis_refine_refute_and_reopen(ids):
     def refine(messages):
         return call(
             "manage_hypotheses",
@@ -284,8 +283,6 @@ def test_hypothesis_refine_refute_reopen_and_revision_history(ids):
                         "op": "refine",
                         "hypothesis_id": hypothesis_id(messages),
                         "statement": "细化：Pod 的 emptyDir 状态损坏",
-                        "expected_observations": ["/work 500 且 Pod 就绪"],
-                        "refutation_criteria": ["重建后仍然 500"],
                         "reason": "日志限定到 Pod 级状态",
                     }
                 ]
@@ -337,17 +334,14 @@ def test_hypothesis_refine_refute_reopen_and_revision_history(ids):
         async with agent_case(ids, responses=responses) as case:
             report = await case.runtime.run()
             hypotheses = await case.store.list_hypotheses(ids["investigation"])
-            revisions = await case.store.list_hypothesis_revisions(ids["investigation"])
-            return report, hypotheses, revisions
+            return report, hypotheses
 
-    report, hypotheses, revisions = asyncio.run(run())
+    report, hypotheses = asyncio.run(run())
     assert report.status is InvestigationStatus.INCONCLUSIVE
     assert len(hypotheses) == 1
-    assert hypotheses[0].revision == 4
     assert hypotheses[0].status.value == "pending"
     assert "emptyDir" in hypotheses[0].statement
-    assert [row["revision"] for row in revisions] == [1, 2, 3, 4]
-    assert [row["status"] for row in revisions] == ["pending", "pending", "refuted", "pending"]
+    assert hypotheses[0].update_reason == "新证据说明重建没有真正发生"
 
 
 def test_hypothesis_parent_must_exist_and_be_in_batch(ids):
@@ -360,8 +354,6 @@ def test_hypothesis_parent_must_exist_and_be_in_batch(ids):
                         "op": "create",
                         "temp_id": "parent",
                         "statement": "父假设",
-                        "expected_observations": ["y"],
-                        "refutation_criteria": ["z"],
                         "reason": "测试",
                     },
                     {
@@ -369,8 +361,6 @@ def test_hypothesis_parent_must_exist_and_be_in_batch(ids):
                         "temp_id": "child",
                         "parent_id": "parent",
                         "statement": "子假设",
-                        "expected_observations": ["y"],
-                        "refutation_criteria": ["z"],
                         "reason": "测试",
                     },
                 ]
@@ -386,8 +376,6 @@ def test_hypothesis_parent_must_exist_and_be_in_batch(ids):
                         "temp_id": "x",
                         "parent_id": "hyp-does-not-exist",
                         "statement": "引用不存在父节点",
-                        "expected_observations": ["y"],
-                        "refutation_criteria": ["z"],
                         "reason": "测试",
                     }
                 ]
@@ -433,7 +421,6 @@ def test_cross_investigation_parent_is_rejected(ids):
                 id=f"hyp-other-{other_id[-6:]}",
                 investigation_id=other_id,
                 statement="别的调查的假设",
-                expected_observations=["x"],
             )
             await case.store.save_hypothesis(other_hypothesis)
             _, context = await case.runtime._open_context()
@@ -452,8 +439,6 @@ def test_cross_investigation_parent_is_rejected(ids):
                             op="create",
                             parent_id=other_hypothesis.id,
                             statement="子假设",
-                            expected_observations=["y"],
-                            refutation_criteria=["z"],
                             reason="跨调查测试",
                         )
                     ],
@@ -461,10 +446,6 @@ def test_cross_investigation_parent_is_rejected(ids):
                 )
             finally:
                 async with case.store._pool.connection() as conn:
-                    await conn.execute(
-                        "DELETE FROM hypothesis_revisions WHERE hypothesis_id = %s",
-                        (other_hypothesis.id,),
-                    )
                     await conn.execute(
                         "DELETE FROM hypotheses WHERE investigation_id = %s", (other_id,)
                     )
@@ -490,7 +471,6 @@ def test_hypothesis_parent_cycle_is_rejected(ids):
                 id=f"hyp-cycle-a-{ids['investigation'][-6:]}",
                 investigation_id=ids["investigation"],
                 statement="根假设",
-                expected_observations=["x"],
             )
             await case.store.save_hypothesis(parent)
             child = Hypothesis(
@@ -498,7 +478,6 @@ def test_hypothesis_parent_cycle_is_rejected(ids):
                 investigation_id=ids["investigation"],
                 parent_id=parent.id,
                 statement="子假设",
-                expected_observations=["y"],
             )
             await case.store.save_hypothesis(child)
             _, context = await case.runtime._open_context()
@@ -540,7 +519,6 @@ def test_hypothesis_refine_can_move_to_another_parent(ids):
                 id=f"hyp-move-root-{ids['investigation'][-6:]}",
                 investigation_id=ids["investigation"],
                 statement="根",
-                expected_observations=["x"],
             )
             await case.store.save_hypothesis(root)
             child = Hypothesis(
@@ -548,14 +526,12 @@ def test_hypothesis_refine_can_move_to_another_parent(ids):
                 investigation_id=ids["investigation"],
                 parent_id=root.id,
                 statement="子",
-                expected_observations=["y"],
             )
             await case.store.save_hypothesis(child)
             other = Hypothesis(
                 id=f"hyp-move-other-{ids['investigation'][-6:]}",
                 investigation_id=ids["investigation"],
                 statement="新父",
-                expected_observations=["z"],
             )
             await case.store.save_hypothesis(other)
             _, context = await case.runtime._open_context()
@@ -579,18 +555,12 @@ def test_hypothesis_refine_can_move_to_another_parent(ids):
                 runtime=fake_runtime,
             )
             moved = await case.store.get_hypothesis(child.id)
-            revisions = [
-                row
-                for row in await case.store.list_hypothesis_revisions(ids["investigation"])
-                if row["hypothesis_id"] == child.id
-            ]
-            return message, moved, revisions
+            return message, moved
 
-    message, moved, revisions = asyncio.run(run())
+    message, moved = asyncio.run(run())
     assert '"status": "ok"' in message
     assert moved.parent_id is not None
     assert moved.parent_id.startswith("hyp-move-other-")
-    assert [row["revision"] for row in revisions] == [1, 2]
 
 
 def test_cross_investigation_observation_is_rejected(ids):
@@ -605,7 +575,6 @@ def test_cross_investigation_observation_is_rejected(ids):
                 id=f"hyp-own-{ids['investigation'][-6:]}",
                 investigation_id=ids["investigation"],
                 statement="本次调查的假设",
-                expected_observations=["x"],
             )
             await case.store.save_hypothesis(hypothesis)
             _, context = await case.runtime._open_context()

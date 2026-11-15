@@ -7,21 +7,34 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.middleware.skills import SkillsMiddleware
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.types import Command
 from loguru import logger
 
 from aiops.actions.executor import ActionExecutor
 from aiops.agent.budget import BudgetExhausted, BudgetLedger
 from aiops.agent.context import AgentContext, Progress
+from aiops.agent.delegation import (
+    CURRENT_CONTEXT,
+    DelegationFailure,
+    ReadOnlyGuardMiddleware,
+    ReadOnlyViolation,
+    build_task_runnable,
+)
+from aiops.agent.errors import UngroundedAction
 from aiops.agent.middleware import (
     ActionBatchMiddleware,
     BudgetMiddleware,
@@ -39,19 +52,6 @@ from aiops.agent.prompts import (
     missing_report_message,
 )
 from aiops.agent.schemas import ReportDraft
-from aiops.agent.tools import (
-    assess_evidence,
-    knowledge_get_runbook,
-    knowledge_list_runbooks,
-    kubernetes_list_deployments,
-    kubernetes_list_events,
-    kubernetes_list_logs,
-    kubernetes_list_pods,
-    kubernetes_list_services,
-    manage_hypotheses,
-    prometheus_query_range,
-    request_action,
-)
 from aiops.config import Settings
 from aiops.contracts import (
     AGENT_RUNTIME_VERSION,
@@ -63,6 +63,7 @@ from aiops.contracts import (
     InvestigationTask,
     ObservationStatus,
     ProposalStatus,
+    SkillTrigger,
     TaskOutcome,
     TaskPhase,
     TerminationCode,
@@ -70,20 +71,26 @@ from aiops.contracts import (
 from aiops.db import Store
 from aiops.investigation.toolbox import Toolbox
 from aiops.report import Report
+from aiops.skills import (
+    SkillLoadError,
+    SkillSpec,
+    detect_loaded_skills,
+    load_skill_catalog,
+    match_signal_skills,
+    render_signal_block,
+)
+from aiops.tools.registry import build_registry, read_only_names, select_tools, tool_name
+from aiops.tracing import configure_tracing, tracing_callbacks
 
-AGENT_TOOLS = [
-    prometheus_query_range,
-    kubernetes_list_deployments,
-    kubernetes_list_pods,
-    kubernetes_list_events,
-    kubernetes_list_services,
-    kubernetes_list_logs,
-    knowledge_list_runbooks,
-    knowledge_get_runbook,
-    manage_hypotheses,
-    assess_evidence,
-    request_action,
-]
+AGENT_TOOLS = select_tools(build_registry())
+READ_ONLY_TOOLS = select_tools(build_registry(), read_only=True)
+
+SUBAGENT_PROMPT = """你是主调查 Agent 委派的只读调查员。
+
+只做取证和分析：查询指标、Kubernetes 资源、日志与 runbook，返回可引用的发现。
+不要提出或执行任何写操作，不要修改假设或证据关系；这些属于主 Agent。
+最终回复要列出关键观测、它们支持或反驳什么，以及仍未知的部分。
+"""
 
 ACTION_NEEDS_HUMAN = {
     "no_improvement": TerminationCode.ACTION_NO_IMPROVEMENT,
@@ -132,6 +139,8 @@ class LangChainInvestigation:
         self._model = model or self._build_model(settings)
         self._guard = ReportErrorGuard()
         self._lease_owner = f"agent-{uuid.uuid4().hex[:10]}"
+        configure_tracing(settings)
+        self._callbacks = tracing_callbacks(settings)
 
     def _build_model(self, settings: Settings) -> ChatOpenAI:
         api_key = (
@@ -193,7 +202,63 @@ class LangChainInvestigation:
         )
         return task, context
 
-    def _build_graph(self, saver: AsyncPostgresSaver):
+    def _skill_backend(self) -> FilesystemBackend:
+        return FilesystemBackend(root_dir=str(self._settings.skills_path), virtual_mode=True)
+
+    def _saver(self):
+        """显式允许结构化报告类型；严格 msgpack 模式下也能恢复 checkpoint。"""
+        return AsyncPostgresSaver.from_conn_string(
+            self._dsn,
+            serde=JsonPlusSerializer(allowed_msgpack_modules=[ReportDraft]),
+        )
+
+    def _build_subagent_app(self, catalog: Sequence[SkillSpec]):
+        allowed = read_only_names(build_registry())
+        leaked = [
+            name for name in (tool_name(tool) for tool in READ_ONLY_TOOLS) if name not in allowed
+        ]
+        if "request_action" in allowed or leaked:
+            raise ReadOnlyViolation(f"子 Agent 工具越界：{leaked or ['request_action']}")
+        backend = self._skill_backend()
+        return create_agent(
+            self._model,
+            tools=READ_ONLY_TOOLS,
+            system_prompt=SUBAGENT_PROMPT,
+            middleware=[
+                ReadOnlyGuardMiddleware(allowed),
+                BudgetMiddleware(
+                    configured_timeout=self._settings.model_timeout_seconds,
+                    max_retries=self._settings.model_max_retries,
+                ),
+                SkillsMiddleware(backend=backend, sources=["/"]),
+            ],
+            context_schema=AgentContext,
+        ).with_config({"recursion_limit": 100})
+
+    def _build_graph(
+        self,
+        saver: AsyncPostgresSaver,
+        catalog: Sequence[SkillSpec],
+        signal_skills: Sequence[SkillSpec] = (),
+    ):
+        backend = self._skill_backend()
+        subagent = SubAgentMiddleware(
+            backend=backend,
+            subagents=[
+                CompiledSubAgent(
+                    name="general-purpose",
+                    description=(
+                        "只读调查员：可以查询指标、Kubernetes 资源、日志和 runbook，"
+                        "返回证据与判断，但不能执行写操作。"
+                    ),
+                    runnable=build_task_runnable(
+                        self._build_subagent_app(catalog),
+                        catalog=catalog,
+                        pinned=signal_skills,
+                    ),
+                )
+            ],
+        )
         return create_agent(
             self._model,
             tools=AGENT_TOOLS,
@@ -206,13 +271,53 @@ class LangChainInvestigation:
                     max_retries=self._settings.model_max_retries,
                 ),
                 ProgressMiddleware(),
+                SkillsMiddleware(backend=backend, sources=["/"]),
+                subagent,
             ],
             context_schema=AgentContext,
             checkpointer=saver,
         ).with_config({"recursion_limit": 200})
 
     def _config(self) -> dict[str, Any]:
-        return {"configurable": {"thread_id": self._investigation_id}, "recursion_limit": 200}
+        config: dict[str, Any] = {
+            "configurable": {"thread_id": self._investigation_id},
+            "recursion_limit": 200,
+        }
+        if self._callbacks:
+            config["callbacks"] = self._callbacks
+        return config
+
+    async def _load_skills(self, context: AgentContext) -> list[SkillSpec] | Report:
+        try:
+            return load_skill_catalog(self._settings.skills_path)
+        except SkillLoadError as exc:
+            logger.error("Skill 加载失败：{}", exc)
+            return await self._abort(context, TerminationCode.SKILL_LOAD_FAILED, str(exc))
+
+    async def _record_loaded_skills(self, catalog: Sequence[SkillSpec], result: dict) -> None:
+        detected = detect_loaded_skills(result.get("messages") or [], catalog)
+        if not detected:
+            return
+        saved = await self._store.get_investigation(self._investigation_id)
+        existing = {item.name: item for item in (saved.skills if saved else [])}
+        for spec in detected:
+            existing.setdefault(spec.name, spec.usage(SkillTrigger.DESCRIPTION))
+        await self._store.set_investigation_skills(self._investigation_id, list(existing.values()))
+
+    async def _read_only_abort(self, context: AgentContext, exc: Exception) -> Report:
+        await self._store.append_audit(
+            [
+                AuditEvent(
+                    id=f"audit-{uuid.uuid4().hex[:12]}",
+                    correlation_id=self._investigation_id,
+                    actor="agent-runtime",
+                    event="delegation.read_only_violation",
+                    occurred_at=datetime.now(UTC),
+                    payload={"detail": str(exc)[:500]},
+                )
+            ]
+        )
+        return await self._abort(context, TerminationCode.READ_ONLY_VIOLATION, str(exc))
 
     async def _acquire_lease(self, task: InvestigationTask, *, resuming: bool) -> None:
         if not await self._store.acquire_task_lease(
@@ -234,10 +339,21 @@ class LangChainInvestigation:
             return await self._abort(context, TerminationCode.CANCELLED, "任务在启动前已被取消")
         await self._acquire_lease(task, resuming=False)
         try:
+            catalog = await self._load_skills(context)
+            if isinstance(catalog, Report):
+                return catalog
+            matched = match_signal_skills(catalog, self._incident)
+            await self._store.set_investigation_skills(
+                self._investigation_id,
+                [spec.usage(SkillTrigger.SIGNAL) for spec in matched],
+            )
             await context.budget.start()
-            async with AsyncPostgresSaver.from_conn_string(self._dsn) as saver:
+            async with self._saver() as saver:
                 await saver.setup()
-                graph = self._build_graph(saver)
+                try:
+                    graph = self._build_graph(saver, catalog, matched)
+                except ReadOnlyViolation as exc:
+                    return await self._read_only_abort(context, exc)
                 result = await self._invoke(
                     graph,
                     {
@@ -247,6 +363,7 @@ class LangChainInvestigation:
                                     self._incident.model_dump(mode="json"),
                                     context.budget.remaining(),
                                 )
+                                + render_signal_block(matched)
                             )
                         ]
                     },
@@ -254,6 +371,7 @@ class LangChainInvestigation:
                 )
                 if isinstance(result, Report):
                     return result
+                await self._record_loaded_skills(catalog, result)
                 return await self._finish_graph(graph, result, context)
         finally:
             await self._store.release_task_lease(self._investigation_id, self._lease_owner)
@@ -271,12 +389,19 @@ class LangChainInvestigation:
                 return await self._abort(
                     context, TerminationCode.CANCELLED, "任务已被取消，不恢复执行"
                 )
+            catalog = await self._load_skills(context)
+            if isinstance(catalog, Report):
+                return catalog
+            matched = match_signal_skills(catalog, self._incident)
             if task.phase is TaskPhase.WAITING_APPROVAL:
                 await self._store.resume_task(self._investigation_id)
             await context.budget.start()
-            async with AsyncPostgresSaver.from_conn_string(self._dsn) as saver:
+            async with self._saver() as saver:
                 await saver.setup()
-                graph = self._build_graph(saver)
+                try:
+                    graph = self._build_graph(saver, catalog, matched)
+                except ReadOnlyViolation as exc:
+                    return await self._read_only_abort(context, exc)
                 state = await graph.aget_state(self._config())
                 if not state.interrupts:
                     raise TaskNotResumable("没有待恢复的中断点；任务可能在运行中崩溃，需人工核实")
@@ -293,12 +418,14 @@ class LangChainInvestigation:
                 )
                 if isinstance(result, Report):
                     return result
+                await self._record_loaded_skills(catalog, result)
                 return await self._finish_graph(graph, result, context)
         finally:
             await self._store.release_task_lease(self._investigation_id, self._lease_owner)
 
     async def _invoke(self, graph, payload, context: AgentContext) -> dict[str, Any] | Report:
         """执行一次图调用；把运行故障改写成确定性终态，不伪装成调查结论。"""
+        token = CURRENT_CONTEXT.set(context)
         try:
             return await graph.ainvoke(payload, self._config(), context=context)
         except RunCancelled:
@@ -349,6 +476,12 @@ class LangChainInvestigation:
                     detail=f"模型收尾失败：{exc}",
                 )
             return await self._abort(context, TerminationCode.MODEL_FAILURE, str(exc))
+        except DelegationFailure as exc:
+            return await self._abort(context, TerminationCode.DELEGATION_FAILED, str(exc))
+        except ReadOnlyViolation as exc:
+            return await self._read_only_abort(context, exc)
+        except UngroundedAction as exc:
+            return await self._abort(context, TerminationCode.UNGROUNDED_ACTION, str(exc))
         except InvalidReport as exc:
             if context.progress.recovered:
                 return await self._complete(
@@ -376,6 +509,8 @@ class LangChainInvestigation:
                 TerminationCode.RUNTIME_ERROR,
                 f"运行时异常：{exc.__class__.__name__}",
             )
+        finally:
+            CURRENT_CONTEXT.reset(token)
 
     async def _finish_graph(self, graph, result: dict[str, Any], context: AgentContext) -> Report:
         if result.get("__interrupt__"):
@@ -449,6 +584,24 @@ class LangChainInvestigation:
         observations = {
             item.id: item for item in await self._store.list_observations(self._investigation_id)
         }
+        hypotheses = {
+            item.id: item for item in await self._store.list_hypotheses(self._investigation_id)
+        }
+        relations = await self._store.list_hypothesis_evidence(self._investigation_id)
+        for hypothesis_id in draft.candidate_hypothesis_ids:
+            hypothesis = hypotheses.get(hypothesis_id)
+            if hypothesis is None:
+                problems.append(f"引用了不存在的假设：{hypothesis_id}")
+                continue
+            links = [item for item in relations if item.hypothesis_id == hypothesis_id]
+            if hypothesis.status.value == "supported" and not any(
+                item.relation == "supporting" for item in links
+            ):
+                problems.append(f"假设 {hypothesis_id} 标记 supported 但没有支持观测")
+            if hypothesis.status.value == "refuted" and not any(
+                item.relation == "refuting" for item in links
+            ):
+                problems.append(f"假设 {hypothesis_id} 标记 refuted 但没有反驳观测")
         if draft.root_cause_confirmed:
             if not draft.conclusion.strip():
                 problems.append("root_cause_confirmed=true 但 conclusion 为空")
@@ -608,7 +761,8 @@ class LangChainInvestigation:
         hypotheses = await self._store.list_hypotheses(self._investigation_id)
         observations = await self._store.list_observations(self._investigation_id)
         relations = await self._store.list_hypothesis_evidence(self._investigation_id)
-        tools = await self._store.list_tool_calls(self._investigation_id)
+        tools = await self._store.list_tool_requests(self._investigation_id)
+        delegations = await self._store.list_delegations(self._investigation_id)
         proposals = await self._store.list_proposals_for_investigation(self._investigation_id)
         latest = proposals[-1] if proposals else None
         prediction = None
@@ -662,9 +816,7 @@ class LangChainInvestigation:
                     "parent_id": item.parent_id,
                     "statement": item.statement,
                     "status": item.status.value,
-                    "revision": item.revision,
-                    "expected_observations": item.expected_observations,
-                    "refutation_criteria": item.refutation_criteria,
+                    "update_reason": item.update_reason,
                 }
                 for item in hypotheses
             ],
@@ -691,6 +843,19 @@ class LangChainInvestigation:
                     "raw_ref": item.raw_ref,
                 }
                 for item in observations
+            ],
+            skills=[item.model_dump(mode="json") for item in saved.skills],
+            delegations=[
+                {
+                    "id": item.id,
+                    "objective": item.objective,
+                    "status": item.status.value,
+                    "result_summary": item.result_summary,
+                    "skills": item.skills,
+                    "started_at": item.started_at.isoformat(),
+                    "finished_at": item.finished_at.isoformat() if item.finished_at else None,
+                }
+                for item in delegations
             ],
             remaining_budget=context.budget.remaining(),
             needs_human=needs_human,

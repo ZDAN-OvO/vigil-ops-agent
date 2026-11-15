@@ -30,12 +30,8 @@ from aiops.contracts import (
     TimeRange,
 )
 from aiops.db import Store, StoreUnavailable
-from aiops.eval import evaluate, load_manifest
-from aiops.investigation.baseline import RULES_VERSION
-from aiops.investigation.explain import ExplainError, ExplainService
-from aiops.investigation.factory import open_agent, open_baseline, open_executor
+from aiops.investigation.factory import open_agent, open_executor
 from aiops.knowledge import load_runbooks
-from aiops.model import ModelClient
 from aiops.report import Report
 from aiops.webhook import build_app
 
@@ -51,11 +47,6 @@ app.add_typer(db_app, name="db")
 class OutputFormat(StrEnum):
     TEXT = "text"
     JSON = "json"
-
-
-class InvestigationMode(StrEnum):
-    AGENT = "agent"
-    RULES = "rules"
 
 
 def _require_dsn() -> str:
@@ -140,6 +131,8 @@ def _report_payload(report: Report) -> dict:
             "tool_call_count": report.tool_call_count,
             "action_ids": report.action_ids,
             "relations": report.relations,
+            "skills": report.skills,
+            "delegations": report.delegations,
             "prediction": report.prediction,
             "remaining_budget": report.remaining_budget,
             "needs_human": report.needs_human,
@@ -175,6 +168,15 @@ def _print_report(report: Report, output: OutputFormat) -> None:
         f"观测 {report.evidence_count} 条，工具调用 {report.tool_call_count} 次，"
         f"关系 {len(report.relations)} 条"
     )
+    if report.skills:
+        typer.echo(
+            "已加载 Skill："
+            + "、".join(f"{item['name']}（{item['trigger']}）" for item in report.skills)
+        )
+    if report.delegations:
+        typer.echo(f"委派调查 {len(report.delegations)} 次")
+        for item in report.delegations:
+            typer.echo(f"  - [{item['status']}] {item['objective'][:80]}")
     if report.prediction:
         typer.echo(
             "诊断预测："
@@ -187,10 +189,7 @@ def _print_report(report: Report, output: OutputFormat) -> None:
         typer.echo("模型总结未完成；报告使用确定性结果保存真实状态。")
     for hypothesis in report.hypotheses:
         parent = f"（父 {hypothesis.get('parent_id')}）" if hypothesis.get("parent_id") else ""
-        typer.echo(
-            f"  - [{hypothesis['status']}] {hypothesis['statement']}"
-            f"{parent} rev{hypothesis.get('revision', 1)}"
-        )
+        typer.echo(f"  - [{hypothesis['status']}] {hypothesis['statement']}{parent}")
 
 
 @app.command()
@@ -201,16 +200,11 @@ def investigate(
     cluster: str = typer.Option("vigil-lab", help="集群名，仅用于记录"),
     lookback_minutes: int = typer.Option(15, min=1, max=180, help="取证时间窗"),
     context: Annotated[list[str] | None, typer.Option(help="人工补充的上下文，可重复")] = None,
-    mode: Annotated[
-        InvestigationMode, typer.Option(help="agent 调用模型；rules 运行固定规则基线")
-    ] = InvestigationMode.AGENT,
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
     """运行一次调查；命中自动规则的可丢弃 Pod 重建会立即执行，其余只提案等待审批。"""
     settings = Settings()
-    model_name = (
-        f"rules:{RULES_VERSION}" if mode is InvestigationMode.RULES else settings.model_name
-    )
+    model_name = settings.model_name
     if not model_name:
         typer.echo("未配置 VIGIL_MODEL_NAME，无法调用模型。", err=True)
         raise typer.Exit(code=2)
@@ -256,18 +250,10 @@ def investigate(
                         actor="cli",
                         event="investigation.started",
                         occurred_at=now,
-                        payload={"service": service, "model": model_name, "mode": mode.value},
+                        payload={"service": service, "model": model_name},
                     )
                 ]
             )
-            if mode is InvestigationMode.RULES:
-                async with open_baseline(
-                    settings=settings,
-                    store=store,
-                    incident=incident,
-                    investigation=investigation,
-                ) as baseline:
-                    return await baseline.run()
             async with open_agent(
                 settings=settings,
                 store=store,
@@ -343,8 +329,9 @@ def report(investigation_id: str, output: OutputFormat = OutputFormat.TEXT) -> N
             hypotheses = await store.list_hypotheses(investigation_id)
             observations = await store.list_observations(investigation_id)
             relations = await store.list_hypothesis_evidence(investigation_id)
-            calls = await store.list_tool_calls(investigation_id)
+            calls = await store.list_tool_requests(investigation_id)
             proposals = await store.list_proposals_for_investigation(investigation_id)
+            delegations = await store.list_delegations(investigation_id)
             task = await store.get_task(investigation_id)
         task_payload = None
         if task is not None:
@@ -360,6 +347,10 @@ def report(investigation_id: str, output: OutputFormat = OutputFormat.TEXT) -> N
                 "action_seconds": round(task.action_seconds, 1),
                 "used_model_calls": task.used_model_calls,
                 "used_tool_calls": task.used_tool_calls,
+                "calendar_seconds": round(
+                    ((saved.finished_at or datetime.now(UTC)) - saved.started_at).total_seconds(),
+                    1,
+                ),
             }
         return Report(
             investigation_id=saved.id,
@@ -372,7 +363,6 @@ def report(investigation_id: str, output: OutputFormat = OutputFormat.TEXT) -> N
                     "parent_id": hypothesis.parent_id,
                     "statement": hypothesis.statement,
                     "status": hypothesis.status.value,
-                    "revision": hypothesis.revision,
                 }
                 for hypothesis in hypotheses
             ],
@@ -389,6 +379,19 @@ def report(investigation_id: str, output: OutputFormat = OutputFormat.TEXT) -> N
                     "rationale": item.rationale,
                 }
                 for item in relations
+            ],
+            skills=[item.model_dump(mode="json") for item in saved.skills],
+            delegations=[
+                {
+                    "id": item.id,
+                    "objective": item.objective,
+                    "status": item.status.value,
+                    "result_summary": item.result_summary,
+                    "skills": item.skills,
+                    "started_at": item.started_at.isoformat(),
+                    "finished_at": item.finished_at.isoformat() if item.finished_at else None,
+                }
+                for item in delegations
             ],
         )
 
@@ -475,111 +478,6 @@ def _duration(since: datetime) -> str:
     if seconds < 3600:
         return f"{seconds // 60}m{seconds % 60:02d}s"
     return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
-
-
-@app.command("eval")
-def eval_report(
-    manifest_path: str = typer.Option("eval/scenarios.json", help="冻结的评估清单"),
-    output: OutputFormat = OutputFormat.TEXT,
-) -> None:
-    """按冻结清单核对 MVP 门槛；只读数据库记录，不触发运行。"""
-
-    async def run():
-        manifest = load_manifest(Path(manifest_path))
-        async with Store.open(_require_dsn()) as store:
-            return await evaluate(manifest, store)
-
-    try:
-        report = asyncio.run(run())
-    except (OSError, ValueError) as exc:
-        typer.echo(f"清单读取失败：{exc}", err=True)
-        raise typer.Exit(code=2) from exc
-    except StoreUnavailable as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1) from exc
-
-    if output == OutputFormat.JSON:
-        typer.echo(
-            json.dumps(
-                {
-                    "schema_version": "1",
-                    "status": "passed" if report.passed else "failed",
-                    "data": {
-                        "frozen_at": report.frozen_at,
-                        "criteria": [
-                            {"id": item.id, "passed": item.passed, "detail": item.detail}
-                            for item in report.criteria
-                        ],
-                    },
-                },
-                ensure_ascii=False,
-            )
-        )
-    else:
-        for item in report.criteria:
-            mark = "通过" if item.passed else "未通过"
-            typer.echo(f"{item.id} {mark}：{item.detail}")
-    raise typer.Exit(code=0 if report.passed else 1)
-
-
-@app.command()
-def explain(
-    investigation_id: str = typer.Argument(..., help="已完成调查的 ID"),
-    question: str = typer.Argument(..., help="追问内容"),
-    output: OutputFormat = OutputFormat.TEXT,
-) -> None:
-    """只读追问已有调查：只用已存记录回答，不新增查询，也不执行动作。"""
-    settings = Settings()
-    if not settings.model_name:
-        typer.echo("未配置 VIGIL_MODEL_NAME，无法调用模型。", err=True)
-        raise typer.Exit(code=2)
-
-    async def run():
-        async with Store.open(_require_dsn()) as store:
-            async with ModelClient.connect(
-                settings.model_base_url,
-                model=settings.model_name,
-                api_key=settings.model_api_key,
-                timeout_seconds=settings.model_timeout_seconds,
-                max_retries=settings.model_max_retries,
-            ) as model:
-                return await ExplainService(store=store, model=model).answer(
-                    investigation_id, question
-                )
-
-    try:
-        result = asyncio.run(run())
-    except ExplainError as exc:
-        typer.echo(f"无法回答（{exc.code}）：{exc.message}", err=True)
-        raise typer.Exit(code=1) from exc
-    except StoreUnavailable as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1) from exc
-
-    if output == OutputFormat.JSON:
-        typer.echo(
-            json.dumps(
-                {
-                    "schema_version": "1",
-                    "status": "answered",
-                    "investigation_id": result.investigation_id,
-                    "data": {
-                        "answer": result.answer,
-                        "citations": result.citations,
-                        "missing": result.missing,
-                        "needs_new_query": result.needs_new_query,
-                    },
-                },
-                ensure_ascii=False,
-            )
-        )
-        return
-    typer.echo(result.answer)
-    typer.echo(f"引用：{', '.join(result.citations) if result.citations else '无'}")
-    if result.missing:
-        typer.echo(f"缺少：{'；'.join(result.missing)}")
-    if result.needs_new_query:
-        typer.echo("需要新的取证才能回答；本次没有发出任何查询或动作。")
 
 
 @app.command("knowledge")
