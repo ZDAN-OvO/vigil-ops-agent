@@ -110,7 +110,7 @@ def build_task_runnable(
                     {**config, "recursion_limit": recursion_limit},
                     context=ctx,
                 )
-            except (BudgetExhausted, RunCancelled, NoProgress) as exc:
+            except (BudgetExhausted, RunCancelled, NoProgress, ReadOnlyViolation) as exc:
                 await ctx.store.finish_delegation(
                     delegation.id,
                     status=DelegationStatus.FAILED,
@@ -118,7 +118,7 @@ def build_task_runnable(
                     skills=[item.name for item in pinned],
                     finished_at=datetime.now(UTC),
                 )
-                # 预算是共享的：终止信号必须冒泡到主循环，不能降级成一次委派失败。
+                # 共享预算与只读边界的终止信号必须传回主循环，不能降级成普通失败。
                 raise
             except BaseException as exc:  # noqa: BLE001 - 失败要落库并计数
                 logger.warning("委派调查失败：{}", exc.__class__.__name__)

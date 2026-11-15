@@ -1437,11 +1437,12 @@ class Store:
     async def count_failed_delegations(self, investigation_id: str) -> int:
         async with self._pool.connection() as conn:
             cursor = await conn.execute(
-                "SELECT count(*) FROM delegations WHERE investigation_id = %s AND status = %s",
+                "SELECT count(*) AS failed_count FROM delegations "
+                "WHERE investigation_id = %s AND status = %s",
                 (investigation_id, DelegationStatus.FAILED.value),
             )
             row = await cursor.fetchone()
-        return int(row[0]) if row else 0
+        return int(row["failed_count"]) if row else 0
 
     # ---- 工具请求账本 ----
 

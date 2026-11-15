@@ -321,11 +321,20 @@ async def _run_read(
 async def _find_repeated_request(
     ctx: AgentContext, tool_name: str, request: QueryRequest, call_id: str
 ) -> ToolRequest | None:
-    """同一调查里工具与参数完全相同的读取直接复用，不重复计数或写观测。"""
+    """同参读取复用已保存结果；可重试失败只按原 call ID 重放。"""
     payload = request.model_dump()
-    for item in await ctx.store.list_tool_requests(ctx.investigation_id):
-        if item.tool_call_id == call_id:
-            continue
+    requests = await ctx.store.list_tool_requests(ctx.investigation_id)
+    if any(item.tool_call_id == call_id for item in requests):
+        return None
+    for item in requests:
+        if item.state is ToolRequestState.FAILED and isinstance(item.result, dict):
+            try:
+                saved = json.loads(item.result.get("tool_message") or "{}")
+            except (TypeError, ValueError):
+                saved = {}
+            error = saved.get("error") if isinstance(saved, dict) else None
+            if isinstance(error, dict) and error.get("retryable") is True:
+                continue
         if (
             item.tool == tool_name
             and item.arguments == payload
