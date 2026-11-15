@@ -1,0 +1,9 @@
+调查 inv-8717f8e23b0d：running
+任务阶段 waiting_approval
+有效运行：调查 68.8s、动作 0.0s，已过日历时间 68.9s
+动作提案：act-c2f1258016e0
+观测 13 条，工具调用 13 次，关系 9 条
+诊断预测：回滚后 Pod 以 revision 71 官方镜像启动，productcatalogservice 不再返回 "product catalog unavailable"，frontend 商品页恢复 200，probe_success{job="frontend-probe"} 在观察窗口内回到 1 并保持。 → 实际 None（None）
+  - [supported] 刚发布的 productcatalogservice 新镜像(canary-20261104, revision 72)存在应用级缺陷：Pod 能启动并 Ready，但 gRPC 请求返回错误，导致首页大量 500；回滚到上一个已知良好 revision 可恢复。 rev2
+  - [refuted] 资源限制导致故障：容器 CPU limit 200m / 内存 limit 128Mi 触发 OOMKill 或严重限流，使 productcatalogservice 无法及时响应请求。 rev2
+  - [refuted] 发布引入的配置/网络侧问题：Service 端口或 Pod 标签选择器不匹配、依赖地址变更，导致请求无法到达后端或后端无法连依赖，表现为 500。 rev2

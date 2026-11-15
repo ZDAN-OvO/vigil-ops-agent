@@ -1,0 +1,46 @@
+--- home ---
+500
+--- probe ---
+E1111 19:12:59.640356  653254 memcache.go:381] "Couldn't get current server API group list" err="the server could not find the requested resource"
+E1111 19:12:59.643201  653254 memcache.go:381] "Couldn't get current server API group list" err="the server could not find the requested resource"
+E1111 19:12:59.645624  653254 memcache.go:381] "Couldn't get current server API group list" err="the server could not find the requested resource"
+E1111 19:12:59.647931  653254 memcache.go:381] "Couldn't get current server API group list" err="the server could not find the requested resource"
+Error from server (NotFound): the server could not find the requested resource
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/home/zdan/.pyenv/versions/3.12.14/lib/python3.12/json/__init__.py", line 293, in load
+    return loads(fp.read(),
+           ^^^^^^^^^^^^^^^^
+  File "/home/zdan/.pyenv/versions/3.12.14/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zdan/.pyenv/versions/3.12.14/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zdan/.pyenv/versions/3.12.14/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+--- alert ---
+E1111 19:12:59.739595  653360 memcache.go:381] "Couldn't get current server API group list" err="the server could not find the requested resource"
+E1111 19:12:59.742603  653360 memcache.go:381] "Couldn't get current server API group list" err="the server could not find the requested resource"
+E1111 19:12:59.744830  653360 memcache.go:381] "Couldn't get current server API group list" err="the server could not find the requested resource"
+E1111 19:12:59.747272  653360 memcache.go:381] "Couldn't get current server API group list" err="the server could not find the requested resource"
+Error from server (NotFound): the server could not find the requested resource
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/home/zdan/.pyenv/versions/3.12.14/lib/python3.12/json/__init__.py", line 293, in load
+    return loads(fp.read(),
+           ^^^^^^^^^^^^^^^^
+  File "/home/zdan/.pyenv/versions/3.12.14/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zdan/.pyenv/versions/3.12.14/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zdan/.pyenv/versions/3.12.14/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+--- probe ---
+0
+--- alert ---
+pending

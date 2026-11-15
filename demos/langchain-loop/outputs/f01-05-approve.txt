@@ -1,0 +1,11 @@
+调查 inv-a42bb167ef79：completed
+任务阶段 terminal，结果 recovered，停止原因 business_recovered
+有效运行：调查 160.1s、动作 122.3s，已过日历时间 291.6s
+动作提案：act-a04ad9d95064
+根因候选：根因候选（已确认到镜像变更层面）：productcatalogservice 的 Deployment 于 09:19:34 从正式镜像 gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5…（revision 67）切换到 vigil/productcatalogservice:canary-20261104（revision 68）。新镜像进程本身健康（Ready=True、零重启、无 OOM），但对前端 gRPC 调用返回 code=Internal desc="product catalog unavailable"，导致 frontend GET / 无法取到商品目录并返回 500，probe_success 自 09:20 起持续为 0。执行 rollout_undo 回滚到 revision 69（原 gcr.io 镜像）后，探针恢复为 1、首页与商品页恢复 200、错误日志消失，形成“变更引入—回滚消除”的双向验证。镜像内部的具体代码缺陷未定位（Pod 日志为空），仅确认到镜像/版本层面。
+观测 15 条，工具调用 15 次，关系 9 条
+诊断预测：回滚后 Deployment 使用 revision 67 的 gcr.io 正式镜像，Pod 重新创建并 Ready；probe_success{job="frontend-probe"} 在观察窗口内由 0 回升为 1，frontend 日志中不再出现 product catalog unavailable，首页 GET / 返回 200。 → 实际 improved（动作后业务与资源检查均通过）
+人工待办：由服务负责方复核 canary-20261104 镜像的构建与变更内容，修复后重新走灰度发布，禁止直接以该镜像全量上线。；排查 productcatalogservice 容器日志为空的问题（日志采集/容器 stdout 配置），补齐应用层可观测性。；为 productcatalogservice 增加发布后自动校验（探针成功率/错误率门限）与自动回滚策略，缩短本次约 20 分钟的故障窗口。；另行评估 currencyservice、paymentservice 的内存 limit（128Mi）与历史 OOMKilled 事件，避免无关服务的稳定性风险。
+  - [supported] productcatalogservice 新版本引入错误（镜像/代码缺陷），导致 Pod 崩溃或返回 500，进而首页大量 500。 rev2
+  - [refuted] 新版本资源规格/探针配置不当（如 CPU/内存限制过低或 readiness 探针失败）导致 Pod 不就绪、流量无法承接，首页 500。 rev2
+  - [refuted] Service/端点或依赖侧问题（选择器不匹配、下游依赖不可用如数据库/配置）导致 productcatalogservice 不可用，而非本次发布本身。 rev2

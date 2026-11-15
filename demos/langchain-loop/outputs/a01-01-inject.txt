@@ -1,0 +1,2 @@
+2026-11-11T10:53:00Z BASELINE pod=rebuild-demo-f4b67fbd9-7sls9 uid=9ca9b39b-a525-4f76-afde-968019d20c7a rs=15f7b18b-91ea-499d-b021-0a60b9748c30 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 restarts=0 work=200
+2026-11-11T10:53:00Z INJECTED pod=rebuild-demo-f4b67fbd9-7sls9 uid=9ca9b39b-a525-4f76-afde-968019d20c7a restarts=0 work=500

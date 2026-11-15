@@ -1,0 +1,9 @@
+调查 inv-120e286e8bcc：inconclusive
+任务阶段 terminal，结果 inconclusive，停止原因 invalid_report
+有效运行：调查 66.7s、动作 0.0s，已过日历时间 66.8s
+终止原因：模型没有提交结构化报告
+观测 20 条，工具调用 20 次，关系 0 条
+模型总结未完成；报告使用确定性结果保存真实状态。
+  - [pending] 当前部署的 canary 镜像 vigil/productcatalogservice:canary-20261104（revision 68）本身存在应用层缺陷，Pod 处于 Ready 但返回错误，导致首页 500；且 rollback act-e9147e24018b 把 Deployment 回到含缺陷的 revision 68 而非已知良好的 revision 67。 rev1
+  - [pending] 资源限制（128Mi/200m）导致容器 OOM 或被 CPU 节流，服务不可用。 rev1
+  - [pending] Service/端点或网络配置错误（selector、端口不匹配）导致 frontend 无法访问 productcatalogservice。 rev1

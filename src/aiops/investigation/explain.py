@@ -45,7 +45,8 @@ SYSTEM_PROMPT = """你只回答对已有调查记录的追问，不做新的取�
 
 规则：
 1. 只能使用下面给出的调查记录。不要补充记录里没有的事实，也不要猜测。
-2. 引用记录时在 citations 里写 evidence id；没有对应记录就不要引用。编造的 id 会被拒绝。
+2. 引用记录时在 citations 里写记录的 id（旧证据的 evidence id 或新观测的 observation id），
+   没有对应记录就不要引用。编造的 id 会被拒绝。
 3. 记录不足以回答时，在 missing 里写清缺什么，并把 needs_new_query 设为 true，不要编造答案。
 4. 不提出新的工具调用，也不建议执行任何动作；可以说明需要哪些证据才能回答。
 5. 回答用简体中文，直接回应问题，不要复述整份记录。
@@ -72,6 +73,43 @@ class StoreProtocol(Protocol):
     async def append_audit(self, events: list[AuditEvent]) -> None: ...
 
 
+class AgentLedgerStore(Protocol):
+    async def get_task(self, investigation_id: str) -> Any: ...
+    async def list_observations(self, investigation_id: str) -> list[Any]: ...
+    async def list_hypothesis_evidence(self, investigation_id: str) -> list[Any]: ...
+
+
+def _record(item: Any, relation: Any = None) -> dict[str, Any]:
+    """统一旧证据与新观测的引用形态；relation 是关系表的行。"""
+    return {
+        "id": item.id,
+        "source": item.source,
+        "relation": getattr(relation, "relation", "") or getattr(item, "relation", ""),
+        "observation": (getattr(item, "observation", None) or getattr(item, "summary", ""))[:1500],
+        "rationale": getattr(relation, "rationale", "") or getattr(item, "rationale", ""),
+        "status": str(getattr(getattr(item, "status", ""), "value", getattr(item, "status", ""))),
+        "truncated": bool(getattr(item, "truncated", False)),
+        "raw_ref": getattr(item, "raw_ref", ""),
+    }
+
+
+def _records(
+    *,
+    agent_ledger: bool,
+    evidence: list[Any],
+    observations: list[Any],
+    relations: list[Any],
+) -> list[dict[str, Any]]:
+    if not agent_ledger:
+        return [_record(item) for item in evidence]
+    relation_by_observation = {getattr(item, "observation_id", ""): item for item in relations}
+    return [
+        _record(item, relation_by_observation.get(item.id))
+        for item in observations
+        if str(getattr(getattr(item, "status", ""), "value", "")) == "ok"
+    ]
+
+
 class ExplainService:
     def __init__(self, *, store: StoreProtocol, model: ModelProtocol) -> None:
         self._store = store
@@ -89,11 +127,31 @@ class ExplainService:
         incident = await self._store.get_incident(investigation.incident_id)
         hypotheses = await self._store.list_hypotheses(investigation_id)
         evidence = await self._store.list_evidence(investigation_id)
-        if not evidence:
-            raise ExplainError("no_evidence", "该调查没有记录任何证据，无法追问")
+        task = await self._task(investigation_id)
+        agent_ledger = bool(
+            task is not None and str(getattr(task, "runtime_version", "")).startswith("langchain")
+        )
+        observations = (
+            list(await self._store.list_observations(investigation_id))  # type: ignore[attr-defined]
+            if agent_ledger
+            else []
+        )
+        relations = (
+            list(await self._store.list_hypothesis_evidence(investigation_id))  # type: ignore[attr-defined]
+            if agent_ledger
+            else []
+        )
+        records = _records(
+            agent_ledger=agent_ledger,
+            evidence=evidence,
+            observations=observations,
+            relations=relations,
+        )
+        if not records:
+            raise ExplainError("no_evidence", "该调查没有记录任何可用观测，无法追问")
 
         request_id = f"expl-{uuid.uuid4().hex[:12]}"
-        before = await state_snapshot(self._store, investigation, hypotheses, evidence)
+        before = await self._snapshot(investigation, hypotheses, evidence, observations, relations)
         await self._audit(
             investigation_id,
             "explain.requested",
@@ -115,15 +173,7 @@ class ExplainService:
                 {"id": item.id, "statement": item.statement, "status": item.status}
                 for item in hypotheses
             ],
-            "evidence": [
-                {
-                    "id": item.id,
-                    "source": item.source,
-                    "relation": item.relation,
-                    "observation": item.observation[:1500],
-                }
-                for item in evidence
-            ],
+            "records": records,
             "question": question,
         }
         messages = [
@@ -137,13 +187,23 @@ class ExplainService:
 
         # 回答前后各取一次状态，拒绝路径也要留下调用后的快照。
         current = await self._store.get_investigation(investigation_id) or investigation
-        after = await state_snapshot(
-            self._store,
+        after = await self._snapshot(
             current,
             await self._store.list_hypotheses(investigation_id),
             await self._store.list_evidence(investigation_id),
+            (
+                list(await self._store.list_observations(investigation_id))  # type: ignore[attr-defined]
+                if agent_ledger
+                else []
+            ),
+            (
+                list(await self._store.list_hypothesis_evidence(investigation_id))  # type: ignore[attr-defined]
+                if agent_ledger
+                else []
+            ),
         )
-        visible = {item.id for item in evidence}
+        # 引用可以落在旧证据或新观测上；两者都在调查内，越界仍拒绝。
+        visible = {item["id"] for item in records} | {item.id for item in evidence}
         unknown = sorted({citation for citation in call.value.citations if citation not in visible})
         if unknown:
             await self._audit(
@@ -211,6 +271,29 @@ class ExplainService:
             },
         )
         return result
+
+    async def _task(self, investigation_id: str) -> Any:
+        getter = getattr(self._store, "get_task", None)
+        return await getter(investigation_id) if getter is not None else None
+
+    async def _snapshot(
+        self,
+        investigation: Any,
+        hypotheses: list[Any],
+        evidence: list[Any],
+        observations: list[Any],
+        relations: list[Any],
+    ) -> dict[str, Any]:
+        if observations or relations:
+            return await state_snapshot(
+                self._store,
+                investigation,
+                hypotheses,
+                evidence,
+                observations=observations,
+                relations=relations,
+            )
+        return await state_snapshot(self._store, investigation, hypotheses, evidence)
 
     async def _audit(self, investigation_id: str, event: str, payload: dict[str, Any]) -> None:
         await self._store.append_audit(

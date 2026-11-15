@@ -133,7 +133,10 @@ def test_auto_restart_stops_after_a_pre_delete_failure(tmp_path, cleanup):
                 FakePrometheus([200.0]),
                 tmp_path,
                 restart_adapter=FakeRestartAdapter(
-                    pod_plan(namespace="vigil-experiment"), service_selects=False
+                    pod_plan(namespace="vigil-experiment"),
+                    service_selects=True,
+                    service_selects_after=False,
+                    service_selects_after_call=1,
                 ),
                 verify_seconds=1,
                 sample_seconds=0.2,
@@ -364,6 +367,45 @@ def test_audit_failure_does_not_hide_the_proposal_id(tmp_path, cleanup, monkeypa
     assert info.value.proposal_id
 
 
+def test_stop_gate_does_not_block_a_different_workload(tmp_path, cleanup):
+    """同一工作负载失败会停止自动写；另一个工作负载满足规则时仍可自动执行。"""
+    suffix = uuid4().hex[:8]
+    first = FakeRestartAdapter(
+        pod_plan(
+            namespace="vigil-experiment",
+            name=f"gate-a-{suffix}",
+            uid=f"pod-a-{suffix}",
+            owner_name=f"gate-a-{suffix}",
+            owner_uid=f"rs-a-{suffix}",
+        ),
+        fail_on_delete=True,
+    )
+    _, first_decision, first_attempt, _ = asyncio.run(
+        run_restart(first, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+    assert first_decision.disposition is RiskDisposition.AUTO
+    assert first_attempt is not None
+    assert first_attempt.status.value in {"failed", "unknown"}
+
+    other = FakeRestartAdapter(
+        pod_plan(
+            namespace="vigil-experiment",
+            name=f"gate-b-{suffix}",
+            uid=f"pod-b-{suffix}",
+            owner_name=f"gate-b-{suffix}",
+            owner_uid=f"rs-b-{suffix}",
+        )
+    )
+    _, decision, attempt, _ = asyncio.run(
+        run_restart(other, tmp_path, cleanup, namespace="vigil-experiment", approve=False)
+    )
+
+    assert decision.disposition is RiskDisposition.AUTO
+    assert attempt is not None
+    assert attempt.status.value == "verified"
+    assert [call[0] for call in other.calls] == ["dry_run", "execute", "wait"]
+
+
 def test_authorized_auto_proposal_is_stopped_when_the_workload_failed_meanwhile(tmp_path, cleanup):
     first = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), service_status=500)
     asyncio.run(run_restart(first, tmp_path, cleanup, namespace="vigil-experiment", approve=False))
@@ -466,12 +508,13 @@ def test_restart_with_changed_template_is_not_success(tmp_path, cleanup):
 
 
 def test_restart_stops_before_delete_when_service_does_not_select_pod(tmp_path, cleanup):
+    """Service 未选中目标 Pod 属于适用性不成立：准备阶段就拒绝，不落提案。"""
     adapter = FakeRestartAdapter(pod_plan(), service_selects=False)
 
-    _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))
+    with pytest.raises(ActionError) as info:
+        asyncio.run(run_restart(adapter, tmp_path, cleanup))
 
-    assert attempt is None
-    assert saved.status is ProposalStatus.FAILED
+    assert info.value.code == "service_not_selecting"
     assert adapter.calls == []
 
 
@@ -480,7 +523,7 @@ def test_restart_with_service_that_stops_selecting_new_pod_is_not_success(tmp_pa
         pod_plan(),
         service_selects=True,
         service_selects_after=False,
-        service_selects_after_call=3,
+        service_selects_after_call=4,
     )
 
     _, _, attempt, saved = asyncio.run(run_restart(adapter, tmp_path, cleanup))

@@ -1,6 +1,6 @@
 # 文档导航
 
-完整 MVP（MS01–MS08）已完成，V01–V10 在真实实验上满足；评估与证据见 [demos/ms08](../demos/ms08/README.md)、[env](../env/README.md) 与各里程碑 `demos/`。文档仍区分已实现能力与后续里程碑的目标设计，不能用文档存在代替功能证据。
+完整 MVP（MS01–MS08）已完成，V01–V10 在真实实验上满足；评估与证据见 [demos/ms08](../demos/ms08/README.md)、[env](../env/README.md) 与各里程碑 `demos/`。2026-11-11 调查主循环已切换到 LangChain 单 Agent，真实运行与失败记录见 [demos/langchain-loop](../demos/langchain-loop/README.md)。文档仍区分已实现能力与后续里程碑的目标设计，不能用文档存在代替功能证据。
 
 | 想了解什么 | 阅读入口 | 作用与边界 |
 |---|---|---|
@@ -24,9 +24,11 @@
 - [ADR-0002：保留 LangGraph 编排](adr/0002-langgraph-orchestration.md)
 - [ADR-0003：PostgreSQL 与 pgvector](adr/0003-postgres-pgvector.md)
 - [ADR-0004：限制受控处置的动作范围](adr/0004-controlled-resource-actions.md)
+- [ADR-0005：LangChain 单 Agent 调查主循环](adr/0005-langchain-single-agent-loop.md)
+- [ADR-0006：调查状态与任务结果分离](adr/0006-task-outcome-separation.md)
 
 ## 阅读与实施顺序
 
 先读决策、词汇表与 MVP，了解已选边界；通过里程碑文档确认阶段方向、目标能力及依赖，再通过迭代计划找到当前切片，结合架构和契约实施。阶段是分组，里程碑是可独立验收的完整能力，迭代是到达该能力的近期工作。验收同时参考 MVP 与评估约定。MVP 维护范围和验收，里程碑文档维护能力与依赖，迭代计划维护近期顺序，GitHub Issues 维护执行任务和状态；彼此链接，不重复维护同一份清单。
 
-实现过程中只补齐当前切片需要的详细设计。功能范围和机制已确认，版本、阈值和窗口等实验参数在 F01–F03 与 A01 各自的版本化脚本中冻结，尚未做成通用配置；运行前固定并记录依据，不能用猜测或事后移动标准填补。当前环境已建立，业务功能、正式故障脚本与 Agent 链路已交付，已知缺口见 [`demos/ms08/README.md`](../demos/ms08/README.md)。
+实现过程中只补齐当前切片需要的详细设计。功能范围和机制已确认，版本、阈值和窗口等实验参数在 F01–F03 与 A01 各自的版本化脚本中冻结，尚未做成通用配置；运行前固定并记录依据，不能用猜测或事后移动标准填补。当前环境已建立，业务功能、正式故障脚本与 Agent 链路已交付；主循环重构后的真实运行、失败与假阴性记录见 [`demos/langchain-loop/README.md`](../demos/langchain-loop/README.md)，旧 MVP 已知缺口见 [`demos/ms08/README.md`](../demos/ms08/README.md)。

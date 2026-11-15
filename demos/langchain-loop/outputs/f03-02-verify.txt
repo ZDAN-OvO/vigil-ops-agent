@@ -1,0 +1,3 @@
+2026-11-11T11:44:54Z OBSERVE probe_duration_2m=1.102837838 probe_success=0 home_s=1.056364 cart=200:1.502208 cartservice_restarts=0 redis_restarts=0
+2026-11-11T11:45:07Z OBSERVE probe_duration_2m=1.2564329775 probe_success=1 home_s=1.013038 cart=200:1.045464 cartservice_restarts=0 redis_restarts=0
+2026-11-11T11:45:07Z VERIFIED latency_ms=1256 probe_success=1 selector=redis-access-proxy cleanup_pending=1

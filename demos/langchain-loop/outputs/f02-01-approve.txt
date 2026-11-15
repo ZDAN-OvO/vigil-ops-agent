@@ -1,0 +1,11 @@
+调查 inv-5f3d078e2391：inconclusive
+任务阶段 terminal，结果 recovered，停止原因 business_recovered
+有效运行：调查 86.7s、动作 134.3s，已过日历时间 231.4s
+动作提案：act-e8e24a2c8c44
+终止原因：业务已恢复，但未形成可引用的根因候选
+观测 19 条，工具调用 19 次，关系 13 条
+诊断预测：回滚后新 Pod 内存 limit 恢复 128Mi，容器不再立即 OOMKilled：restart_count 停止增长、Pod Ready=true、Service 有就绪端点；probe_success 由 0 回到 1 并保持，前端页面不再 500。 → 实际 improved（动作后业务与资源检查均通过）
+模型总结未完成；报告使用确定性结果保存真实状态。
+  - [supported] currencyservice 容器内存上限被调低（或新 revision 引入高内存占用变更），导致进程持续 OOMKilled 并频繁重启。 rev4
+  - [pending] currencyservice 存在内存泄漏或异常放大（如请求量激增/汇率数据缓存无界增长），在现有 limit 下被 OOMKill。 rev3
+  - [supported] 前端 500 与结账货币换算失败是 currencyservice 不可用（Pod 反复重启导致无就绪后端）的下游后果，而非独立故障。 rev2

@@ -1,0 +1,17 @@
+2026-11-11T12:00:14Z CLEANUP start selector=redis-access-proxy probe_duration=1.141861593875
+2026-11-11T12:00:18Z RECOVER probe_duration_2m=1.141861593875 probe_success=1 home_s=1.010629 cart=200:1.008627
+2026-11-11T12:00:31Z RECOVER probe_duration_2m=1.17678182525 probe_success=1 home_s=1.337035 cart=200:1.496079
+2026-11-11T12:00:44Z RECOVER probe_duration_2m=1.196941704125 probe_success=1 home_s=1.011836 cart=200:1.008694
+2026-11-11T12:00:54Z RECOVER probe_duration_2m=1.196941704125 probe_success=1 home_s=0.006429 cart=200:0.006341
+2026-11-11T12:01:04Z RECOVER probe_duration_2m=1.0603864425 probe_success=1 home_s=0.009428 cart=200:0.006220
+2026-11-11T12:01:15Z RECOVER probe_duration_2m=0.914423075875 probe_success=1 home_s=0.006962 cart=200:0.006095
+2026-11-11T12:01:25Z RECOVER probe_duration_2m=0.914423075875 probe_success=1 home_s=0.008393 cart=200:0.006419
+2026-11-11T12:01:36Z RECOVER probe_duration_2m=0.79083267175 probe_success=1 home_s=0.006823 cart=200:0.054474
+2026-11-11T12:01:46Z RECOVER probe_duration_2m=0.660266986 probe_success=1 home_s=0.009312 cart=200:0.007188
+2026-11-11T12:01:57Z RECOVER probe_duration_2m=0.50452081775 probe_success=1 home_s=0.009146 cart=200:0.006626
+2026-11-11T12:02:08Z RECOVER probe_duration_2m=0.50452081775 probe_success=1 home_s=0.008511 cart=200:0.006426
+2026-11-11T12:02:18Z RECOVER probe_duration_2m=0.35545241462500005 probe_success=1 home_s=0.008815 cart=200:0.009149
+2026-11-11T12:02:28Z RECOVER probe_duration_2m=0.195062855375 probe_success=1 home_s=0.007977 cart=200:0.006095
+2026-11-11T12:02:39Z RECOVER probe_duration_2m=0.195062855375 probe_success=1 home_s=0.008397 cart=200:0.006591
+2026-11-11T12:02:49Z RECOVER probe_duration_2m=0.0184524955 probe_success=1 home_s=0.009119 cart=200:0.057422
+2026-11-11T12:02:49Z CLEANED selector=redis-cart probe_duration_ms=18 redis_restarts=0

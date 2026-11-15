@@ -6,13 +6,15 @@ Kubernetes 故障调查与受控处置。真实告警进来，模型在有界预
 
 完整 MVP（MS01–MS08）已交付：三个核心场景、两类真实动作、审批跨进程恢复、幂等与评估门槛 V01–V10。
 
+2026-11-11 主循环已切换到 LangChain 单 Agent：`create_agent` 负责取证、假设、证据关系、主动写诊断与报告，预算/动作批次/无进展由中间件约束；每次工具与模型调用都写入 PostgreSQL 账本，审批等待跨进程恢复，重放同一调用不重复写。真实运行与失败记录见 [demos/langchain-loop](demos/langchain-loop/README.md)。
+
 ## 评估结果和它盖不住的事
 
 `aiops eval` 在 2026-11-10 复核 V01–V10 全部通过。这是功能门槛，不是稳定性证明：
 
 - 场景运行次数：f01 坏发布 13 次、f02 OOM 5 次、f03 Redis 延迟 4 次、a01 Pod 重建 3 次。
 - 最弱的一处：f03 在旧预算下一次都没对（1/4），预算按实测重定并改提示词后连续 3 次都对；旧的失败记录保留在清单里。
-- a01 只验证重建动作，不参与调查评分；`restart_pod` 的提案来自操作者或规则判定，没有 Agent 自主提案的闭环证据。
+- a01 原先只验证重建动作、不参与调查评分；2026-11-11 的单 Agent 运行已由模型自主提出 `restart_pod` 并恢复业务，但调查结论仍是竞争假设（未形成唯一根因），该次运行作为补充证据，不追溯改写旧的 a01 评分。
 - 门槛是「每个核心场景至少 3 次有效运行、至少 1 次正确」。
 - 历史 76 个调查的原始观测已丢失，只有清单登记的那次有仓库内副本。
 
@@ -21,7 +23,7 @@ Kubernetes 故障调查与受控处置。真实告警进来，模型在有界预
 ## 自己核对
 
 ```sh
-uv sync --frozen && make check-all   # 离线可跑：231 passed, 116 skipped（需要数据库的跳过）
+uv sync --frozen && make check-all   # 本机含实验数据库：386 passed；无数据库时相关用例跳过
 uv run aiops db migrate && uv run aiops eval   # 需要实验 PostgreSQL，输出 V01–V10
 ```
 
@@ -44,6 +46,7 @@ uv run --frozen aiops investigate --service frontend --symptoms "首页 500" --m
 配置变量使用 `VIGIL_` 前缀；可将 [.env.example](.env.example) 复制为根目录 `.env`。配置文件与相对运行路径始终以仓库根目录为基准，不随启动目录改变。业务记录与审计依赖 PostgreSQL；Agent 调查与 Explain 另需模型网关，规则基线评估与直接执行不需要。配置项见 `.env.example`。
 
 - [文档导航](docs/README.md)
+- [LangChain 主循环真实运行](demos/langchain-loop/README.md)
 - [已有决策与待确认事项](docs/decisions.md)
 - [领域词汇表](GLOSSARY.md)
 - [总体架构](docs/architecture.md)
@@ -54,4 +57,4 @@ uv run --frozen aiops investigate --service frontend --symptoms "首页 500" --m
 - [评估约定](docs/eval.md)
 - [归档校验与迁移说明](docs/migration.md)
 
-LangGraph、PostgreSQL checkpoint、模型客户端与 Kubernetes、HTTP 依赖已锁定；pgvector 与向量检索按后续里程碑接入。旧锁文件和旧 `.env` 保留在归档目录，新项目不读取归档配置。旧 `.env` 在迁移前已被 Git 跟踪，本次没有清理 Git 历史；其中三个值（`POSTGRES_PASSWORD`、`JWT_SECRET_KEY`、`INITIAL_ADMIN_PASSWORD`）经确认已不在任何环境使用，也不需要轮换。
+LangGraph、LangChain `create_agent`、PostgreSQL checkpoint、模型客户端与 Kubernetes、HTTP 依赖已锁定；pgvector 与向量检索按后续里程碑接入。旧锁文件和旧 `.env` 保留在归档目录，新项目不读取归档配置。旧 `.env` 在迁移前已被 Git 跟踪，本次没有清理 Git 历史；其中三个值（`POSTGRES_PASSWORD`、`JWT_SECRET_KEY`、`INITIAL_ADMIN_PASSWORD`）经确认已不在任何环境使用，也不需要轮换。

@@ -32,6 +32,21 @@
 
 Hypothesis 状态为 pending/supported/refuted/inconclusive。`supported` 表示当前证据支持，不能称为已证明。树用 parent_id；多个假设引用同一观测应共享 tool_call_id/raw_ref，避免重复统计。
 
+### 调查任务、观测与账本（2026-11-11）
+
+单 Agent 循环新增四类记录，与旧 Evidence 并存；旧调查没有 task 行时按旧语义读取。
+
+| 实体 | 核心字段与语义 |
+|---|---|
+| Observation | id、investigation_id、tool_call_id、source、independence_key、summary、raw_ref、status（ok/empty/error）、truncated、time_range；一个工具调用最多一条，唯一约束 `(investigation_id, tool_call_id)` |
+| HypothesisEvidence | id、investigation_id、hypothesis_id、observation_id、relation（supporting/refuting/neutral）、rationale；唯一约束 `(hypothesis_id, observation_id)`；只有 status=ok 的观测可标 supporting/refuting，知识记录不能作为证据 |
+| ToolRequest | `(investigation_id, tool_call_id)` 主键、tool、arguments、state（running/observed/failed/action_pending/action_executed/rejected）、attempt、result、proposal_id、action_attempt_id、error_code、started_at/finished_at；工具执行前先写 running，重放命中终态直接返回保存结果 |
+| InvestigationTask | investigation_id 主键、phase（running/waiting_approval/terminal）、outcome、termination_code、proposal_id、runtime_version、used_model_calls/used_tool_calls、investigation_seconds/action_seconds、calendar_started_at、paused_at、finished_at、cancel_requested_at、no_progress_rounds、recovered_at、lease_owner/lease_expires_at |
+
+`investigations.status` 继续表示诊断结果，不表示运行状态；运行状态只放在 task 与 `data.task`。终态必须有 outcome 与 termination_code，等待审批必须有 proposal_id，非终态不得有 outcome。稳定终止代码：business_recovered、no_applicable_action、insufficient_evidence、no_progress、no_differentiating_test、action_no_improvement、action_worsened、action_unknown、policy_denied、budget_exhausted、cancelled、model_failure、store_failure、invalid_report、interrupted、runtime_error。
+
+工具调用 ID 由运行时生成 `"<investigation_id>:<tool_call_id>"` 再交给适配器；业务表的观测、账本和关系使用后者，避免不同调查的模型调用 ID 冲突。预算分调查与动作两段：工具/模型调用与调查秒数在请求前扣减，动作执行与观察计入动作秒数；写动作前必须预留完整适配器时间上界和至少一次反馈模型调用，不足则不开始写。
+
 ## 工具面（实现阶段）
 
 异步函数接受显式运行上下文（cluster、namespace、deadline、取消信号），返回 [ToolResult](../src/aiops/contracts.py)。同步 SDK 放在线程执行，不阻塞事件循环。
@@ -50,7 +65,7 @@ Hypothesis 状态为 pending/supported/refuted/inconclusive。`supported` 表示
 
 统一任务入口接受 Incident，webhook/CLI/定时器只负责转换和鉴权边界。相同告警指纹需去重；同一 incident 可有多次有版本的 investigation，不把所有任务都塞入 default 会话。
 
-调查循环共享一份状态，按安全检查点保存并消费 hint；工具并发有上限，写入结果按 tool_call_id 去重。Hint 为后续能力，MVP 先交付初始 Context 与只读 Explain，MS01 先支持 Context。checkpoint 表采用官方 saver 的内置连接管理，禁止用 SQLAlchemy AsyncEngine 代替 psycopg connection。
+调查循环共享一份状态，按安全检查点保存并消费 hint。本期同一任务的工具按批次顺序串行执行，不新增并行调度；写入结果按 `(investigation_id, tool_call_id)` 去重。审批在 `request_action` 工具内用 `interrupt()` 暂停，恢复时 LangGraph 从工具开头重跑，工具必须先读账本再执行。Hint 为后续能力，MVP 先交付初始 Context 与只读 Explain，MS01 先支持 Context。checkpoint 表采用官方 saver 的内置连接管理，禁止用 SQLAlchemy AsyncEngine 代替 psycopg connection。
 
 `explain` 接受 investigation_id/question，回答引用可见 evidence id，知识不足就说明。`context` 在启动时入库；`hint` 在运行中追加，记录提交者/时刻/采纳位置。追问需要新查询时显式创建续查任务，不静默变更已有结论。
 
@@ -59,6 +74,8 @@ Hypothesis 状态为 pending/supported/refuted/inconclusive。`supported` 表示
 先做硬约束，再评分：环境/namespace 白名单、动作注册表、证据有效性、无并发冲突、资源身份和版本、操作适用性；不满足则拒绝或升级。风险维度草案为动作、工作负载重要性、影响面、可补偿性、诊断证据质量。加权与阈值未确认，不能把 LLM 自报 0.8 当成自动执行凭证。
 
 ActionAdapter 接口：`preconditions / dry_run / execute / verify / undo`，并显式声明 `reversibility`、前置快照和补偿条件。不可逆动作的 undo 返回 unsupported；不能用空实现报告恢复成功。snapshot 是资源字段快照，和 LangGraph checkpoint 分开。
+
+Agent 的 `request_action` 只接受 `restart_pod` 与 `rollout_undo`：`purpose=diagnostic` 必须同时给出 prediction、absence_meaning 和 business_target；观察窗由服务端上限约束，模型不能缩短到低于配置；restart_pod 在持续 OOM（历史模板内存与当前不同且已 OOMKilled，或 OOMKilled 且重启次数 ≥2）时判为不适用，不通过改内存规格来“修复”。
 
 执行链：提案 → 前置检查/准备快照 → dry-run → 风险决策 → 自动或持久化待审 → 执行前再次检查/快照 → 执行 → 观察 → 成功、无改善或恶化 → 必要时补偿 → 再验证 → 完成或人工升级。
 
@@ -88,7 +105,7 @@ PostgreSQL 的业务表与官方 checkpoint 表分开迁移；向量库是 pgvec
 
 ## CLI 与运行模式
 
-当前实现 `status`、`investigate`、`incidents`、`report`、`serve`、`eval`、`explain`、`knowledge`、`act`、`approvals`、`approve`、`resume`、`proposal`、`reject`、`db`、`followups`、`followup`。下列为目标命令组，未实现的组不提供占位实现：
+当前实现 `status`、`investigate`、`incidents`、`report`、`serve`、`eval`、`explain`、`knowledge`、`act`、`approvals`、`approve`、`resume`、`proposal`、`reject`、`cancel`、`db`、`followups`、`followup`。下列为目标命令组，未实现的组不提供占位实现：
 
 | 命令组 | 行为 |
 |---|---|
@@ -96,9 +113,10 @@ PostgreSQL 的业务表与官方 checkpoint 表分开迁移；向量库是 pgvec
 | explain | 只读带引用追问 |
 | hint | 向指定调查提交提示 |
 | act | 提交动作；自动、待审或拒绝，不由命令绕过风险 |
-| approve/reject | 针对具体提案审批并恢复 |
+| approve/reject | 针对具体提案审批并恢复；单 Agent 任务由 approve/resume/reject 驱动原图继续 |
+| cancel | 请求取消运行中的调查；等待审批时直接终止，运行中在当前检查点消费 |
 | serve | webhook、任务消费、定时巡检与恢复；独立于交互 CLI |
 | knowledge | 导入/更新/查询 runbook、事故与 PDF |
 | demo/eval | 专用实验环境注入、运行、评分与复位 |
 
-目标 JSON envelope：schema_version、status、incident_id、investigation_id、action_id、data、error。退出码草案：0 请求成功（包括异步 accepted）、1 运行失败、2 参数/用法错误、3 等待人工、4 策略拒绝、5 信息不足。异步 accepted 不代表调查或修复成功。Typer 保留 2 表示参数错误，避免旧建议冲突。
+目标 JSON envelope：schema_version、status、incident_id、investigation_id、action_id、data、error。`data.task` 只在单 Agent 调查出现，包含 phase/outcome/termination_code/runtime_version/proposal_id/用量与停留时间。退出码：0 恢复或仅诊断成功（包括异步 accepted）、1 运行失败、2 参数/用法错误、3 等待人工或需人工跟进、4 策略拒绝、5 信息不足。异步 accepted 不代表调查或修复成功。Typer 保留 2 表示参数错误，避免旧建议冲突。

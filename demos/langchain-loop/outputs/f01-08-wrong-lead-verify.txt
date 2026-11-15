@@ -1,0 +1,23 @@
+2026-11-11T11:08:45Z PRE image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none
+2026-11-11T11:08:46Z BASELINE image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none home=200
+2026-11-11T11:08:46Z INJECT start
+2026-11-11T11:08:48Z ROLLOUT_DONE elapsed=2s
+2026-11-11T11:08:48Z NEW_POD productcatalogservice-57f9df78f8-d29ct uid=d3f08938-871d-471f-8c30-67f801cd0c22 image=vigil/productcatalogservice:canary-20261104
+2026-11-11T11:08:48Z HOME_500 elapsed=2s
+2026-11-11T11:08:54Z PROBE_0 elapsed=8s
+2026-11-11T11:10:19Z ALERT_FIRING elapsed=93s state=firing
+2026-11-11T11:10:19Z ROLLBACK start
+Warning: resource deployments/productcatalogservice was previously managed with 'kubectl apply'. Rolling back will not update the kubectl.kubernetes.io/last-applied-configuration annotation, which may cause unexpected behavior on future 'kubectl apply' operations. Consider using 'kubectl apply' with your previous configuration file instead.
+2026-11-11T11:10:21Z ROLLBACK_DONE elapsed=2s image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef
+2026-11-11T11:10:21Z HEALTHY_POD productcatalogservice-7b58b447f7-kxw8f uid=c7c3ecd9-0384-4775-a80e-c790ba0ed40b
+2026-11-11T11:10:58Z RECOVERY_FIRST probe=1 home=200
+2026-11-11T11:12:00Z RECOVERY_WINDOW_DONE elapsed_since_rollback=99s
+2026-11-11T11:12:00Z ALERT_CLEARED elapsed_since_rollback=99s
+2026-11-11T11:12:00Z FINAL image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef generation=77 bad_rs_replicas=0 probe=1 alerts=none
+2026-11-11T11:12:00Z TOTAL elapsed=194s
+NAME                                     UID                                    IMAGE                                                                                                                                    READY
+productcatalogservice-7b58b447f7-kxw8f   c7c3ecd9-0384-4775-a80e-c790ba0ed40b   gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef   true
+POST     /setCurrency                                                                    5880   578(9.83%) |     65       1   19300      9 |    0.20        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                     68104  2793(4.10%) |     78       0   20372      6 |    2.60        0.00
+

@@ -41,8 +41,12 @@ class Settings(BaseSettings):
     # 成功运行的工具调用最多 21、模型调用最多 7、墙钟最多 453 秒，
     # 各留约三成余量后取整。改动数值要先重测，不能因为某次失败就调。
     investigation_budget_tool_calls: int = 28
-    investigation_budget_model_calls: int = 10
+    investigation_budget_model_calls: int = 20
     investigation_budget_seconds: int = 600
+    investigation_budget_action_seconds: int = 450
+    # 动作开始前为“至少一次反馈模型调用”预留的调查预算。
+    # 取当前单次模型超时的一半以内：这是给反馈预留的下限，不是单次超时上限。
+    investigation_action_model_reserve_seconds: float = 60.0
     investigation_max_observation_chars: int = 8000
 
     # 告警入口。token 未配置时服务拒绝启动，避免裸奔的 webhook。
@@ -55,7 +59,7 @@ class Settings(BaseSettings):
 
     # 受控执行的时间窗，同样是临时默认值。
     action_rollout_timeout_seconds: float = 180.0
-    action_verify_seconds: int = 90
+    action_verify_seconds: int = 135
     action_sample_seconds: int = 15
     # 审批有效期：跨进程等待超过该时长后批准仍不执行，需重新提案。
     action_approval_ttl_seconds: int = 900

@@ -8,12 +8,12 @@
 
 | 项目 | 当前约定 |
 |---|---|
-| 最近检查点 | I01 环境关卡已于 2026-11-04 执行；两周展示的 MS01 坏发布回退切片已完成并留证；完整 MVP 于 2026-11-08 通过 V01–V10 |
+| 最近检查点 | I01 环境关卡已于 2026-11-04 执行；两周展示的 MS01 坏发布回退切片已完成并留证；完整 MVP 于 2026-11-08 通过 V01–V10；2026-11-11 完成 I03 LangChain 单 Agent 主循环重构与真实复验 |
 | 投入 | 用户未来两周可投入超过 40 小时；不等于整个栈已可在此时间内交付 |
 | 模型 | 使用现有接口和额度，不新增付费服务；额度不足登记阻塞 |
 | 实现基线 | CLI status、配置、值对象与本地测试；实验 PostgreSQL 16.15 与业务表迁移已建立；环境、监控和 F01 实验驱动已建立，完整 MVP 业务链路已实现并通过 V01–V10 |
 | 业务与部署 | 宿主机 AIOps + k3d；浏览、加购、购物车路径；实验资源与已有服务隔离 |
-| 当前里程碑 | MS01–MS08 已完成，完整 MVP 边界已满足；下一里程碑为 MS09 执行中断后核实结果 |
+| 当前里程碑 | MS01–MS08 已完成，完整 MVP 边界已满足；I03 主循环重构已完成并留证；下一里程碑为 MS09 执行中断后核实结果 |
 
 环境核查已由 I01 实测替代：k3d v5.9.0、kubectl v1.37.2、k3s v1.35.5，业务与监控栈已部署，版本、清单和资源见 [env](../env/README.md)。该结果是一次本机快照，不保证其他机器或后续运行。
 
@@ -162,3 +162,26 @@ MS08 不负责首次补上前面功能本该具备的授权、幂等或失败停
 | 工单、实施／核验人、绝对日期 | 尚未登记或发布 |
 | 功能运行证据 | I01 环境与 F01 证据已入库；MS01 端到端证据在 `demos/ms01/`，报告第 6 节列出全部缺口 |
 | I02 首步 | 业务表迁移、只读工具、模型客户端、调查循环、告警 webhook 和受控回退已实现；告警链路可自动产出绑定证据的模型提案，执行仍需人工审批；证据见 `demos/ms01/` |
+
+## 8. 切片 I03（已完成）：LangChain 单 Agent 主循环重构
+
+2026-11-11 完成。目标是把 `src/aiops/investigation/runtime.py` 的手写 plan→collect→assess→propose 状态机替换为 LangChain 1.x `create_agent`，同时保留既有 LangGraph checkpoint、PostgreSQL 业务记录、动作执行器、风险策略和 CLI/webhook 入口。设计取舍见 [ADR-0005](adr/0005-langchain-single-agent-loop.md) 与 [ADR-0006](adr/0006-task-outcome-separation.md)。
+
+| 交付 | 结果 |
+|---|---|
+| 主循环 | `src/aiops/agent/engine.py` 使用 `create_agent` + `ToolStrategy(ReportDraft)`；旧 `investigation/runtime.py`、`prompts.py`、`schemas.py` 删除 |
+| 工具与账本 | 8 个只读取证工具、假设管理、证据评估、动作请求；每次调用按 `(investigation_id, tool_call_id)` 落 `tool_requests`，重放不重复扣预算或写动作 |
+| 中间件 | 模型预算/超时/退避、动作单独成批、无进展 3 轮、报告结构纠错 1 次；本期同一模型批次的工具串行执行 |
+| 任务状态 | `investigation_tasks` 保存 phase/outcome/termination_code/租约/用量；`investigations.status` 仍只表示诊断结论，二者在报告 `data.task` 同时给出 |
+| 动作反馈 | 诊断动作要求预测、缺失含义、业务目标与观察窗；持续 OOM 不适用；审批前预留反馈模型与动作时间；恢复后禁止继续写 |
+| 兼容层 | CLI `investigate/report/approve/resume/reject/cancel`、webhook、Explain、eval 均接新账本；旧证据迁移回填 observations/relations，Explain 与报告优先读新记录 |
+
+真实验收（详见 [`demos/langchain-loop/`](../demos/langchain-loop/README.md)）：
+
+- F01 坏发布：有效运行 8 次，业务恢复 5 次（3 次标准成功、1 次错误初始线索、1 次动作已恢复但预算中止）；审批预算中止、duplicate、invalid_report 三次失败保留在分母；人工审批跨进程恢复。
+- F02 持续 OOM：有效运行 5 次，业务恢复 3 次（其中 1 次真实拒绝 `restart_pod`），2 次 `no_improvement` 失败记录保留；90 秒观察窗假阴性与 135 秒修订均有原始探针。
+- F03 Redis 延迟：有效运行 5 次，均正确停止、无写；其中 2 次形成 selector/代理插入关系，3 次未形成结论；cleanup 单独执行且 `recovered_at=None`。
+- A01 Pod 重建：模型自主提出诊断性 `restart_pod`，Pod UID 变化、模板不变、业务恢复；调查结论仍为竞争假设，未过度确认根因。
+- 重放同一已执行提案：第二次 approve 返回 `not_pending`，attempt 数不变；`budget_exhausted`、`invalid_report`、`duplicate` 等失败运行均保留。
+
+本轮不改变 MS01–MS08 的历史评分，也不把重构后的运行追溯计入旧 V 矩阵；它证明主循环可替换、真实链路可运行，并为 MS09 的执行中断核实留下账本与任务状态基础。

@@ -1,6 +1,7 @@
 """受控回退：执行前校验、未知结果不重放。"""
 
 import asyncio
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -9,17 +10,19 @@ from actions_support import (
     FakeAdapter,
     FakePrometheus,
     build_executor,
+    make_proposal,
     propose_and_approve,
     read_followup,
     rollout_plan,
 )
 
+from aiops.actions.policy import decide
 from aiops.actions.rollout_undo import ActionError, RolloutPlan
 from aiops.contracts import (
     ProposalStatus,
     RiskDisposition,
 )
-from aiops.db import Store
+from aiops.db import DuplicateProposal, Store
 
 pytestmark = pytest.mark.skipif(not DSN, reason="未配置 VIGIL_DATABASE_URL，跳过真实库测试")
 
@@ -562,3 +565,33 @@ def test_proposal_binds_memory_limits(tmp_path, cleanup):
     assert saved is not None
     assert saved.parameters["from_memory_limit"] == "16Mi"
     assert saved.parameters["to_memory_limit"] == "128Mi"
+
+
+def test_abandoned_proposal_releases_the_idempotency_key(tmp_path, cleanup):
+    async def run():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store, FakeAdapter(rollout_plan()), FakePrometheus([]), tmp_path
+            )
+            first = make_proposal(id=f"act-{uuid4().hex[:12]}")
+            decision = decide(first, target_busy=False)
+            cleanup.append(first.id)
+            await store.save_proposal(first, decision)
+            second = make_proposal(id=f"act-{uuid4().hex[:12]}")
+            cleanup.append(second.id)
+            duplicate = False
+            try:
+                await store.save_proposal(second, decision)
+            except DuplicateProposal:
+                duplicate = True
+            await executor.abandon(first.id, actor="budget-guard", reason="预算不足")
+            saved = await store.get_proposal(first.id)
+            await store.save_proposal(second, decision)
+            saved_second = await store.get_proposal(second.id)
+            return duplicate, saved, saved_second
+
+    duplicate, saved, saved_second = asyncio.run(run())
+    assert duplicate is True
+    assert saved is not None and saved.status is ProposalStatus.REJECTED
+    assert saved_second is not None and saved_second.status is ProposalStatus.PENDING_APPROVAL

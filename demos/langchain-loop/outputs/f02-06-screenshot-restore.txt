@@ -1,0 +1,5 @@
+2026-11-11T12:10:29Z RESTORE start revision=42 limit=16Mi restarts=2
+2026-11-11T12:10:32Z RECOVER home=500 probe=0 alert=none restarts=0
+2026-11-11T12:10:42Z RECOVER home=200 probe=1 alert=pending restarts=0
+2026-11-11T12:10:52Z RECOVER home=200 probe=1 alert=none restarts=0
+2026-11-11T12:10:52Z RESTORED revision=43 limit=128Mi restarts=0 | currencyservice-567db8cb65-qjtf8 restarts=0 ready=true last=/ state=

@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Literal, Protocol
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from aiops.contracts import TimeRange, ToolError, ToolResult
-from aiops.investigation.schemas import QueryRequest
 from aiops.tools.base import ToolContext
 from aiops.tools.kubernetes import KubernetesRead
 from aiops.tools.prometheus import PrometheusClient
@@ -19,6 +20,30 @@ MIN_STEP_SECONDS = 5
 MAX_STEP_SECONDS = 300
 MAX_SELECTOR_LENGTH = 200
 MAX_RUNBOOK_ITEMS = 3
+
+
+class QueryRequest(BaseModel):
+    """一次只读查询请求；由工具参数构造，不接受越界值。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    hypothesis: int = Field(default=0, ge=0, description="旧循环的假设下标，新循环不使用")
+    tool: Literal[
+        "prometheus.query_range",
+        "kubernetes.list_deployments",
+        "kubernetes.list_pods",
+        "kubernetes.list_events",
+        "kubernetes.list_services",
+        "kubernetes.list_logs",
+        "knowledge.list_runbooks",
+        "knowledge.get_runbook",
+    ]
+    purpose: str = ""
+    expression: str = ""
+    lookback_seconds: int = 0
+    step_seconds: int = 0
+    selector: str = ""
+    involved_name: str = ""
 
 
 class ToolboxProtocol(Protocol):

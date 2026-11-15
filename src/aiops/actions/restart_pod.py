@@ -178,6 +178,35 @@ class PodRestartAdapter:
             workload_uid=workload_uid,
         )
 
+    def applicability(self, namespace: str, name: str) -> dict[str, Any]:
+        """删除前的只读事实：内存规格、最近终止原因、重启次数和就绪状态。
+
+        判断重建是否适用需要“重建不会沿用同一个故障规格”的依据；这里只给事实，
+        由执行器按固定规则判定，不让模型自报适用性。
+        """
+        core = self._api()
+        try:
+            pod = core.read_namespaced_pod(name, namespace)
+        except ApiException as exc:
+            code = "not_found" if exc.status == 404 else "api_error"
+            raise ActionError(code, f"读取 Pod 失败：HTTP {exc.status}") from exc
+        statuses = pod.status.container_statuses or []
+        last = statuses[0].last_state.terminated if statuses and statuses[0].last_state else None
+        container = pod.spec.containers[0] if pod.spec.containers else None
+        limits = (container.resources.limits or {}) if container and container.resources else {}
+        requests = (container.resources.requests or {}) if container and container.resources else {}
+        return {
+            "uid": pod.metadata.uid,
+            "phase": pod.status.phase,
+            "ready": bool(statuses) and all(bool(status.ready) for status in statuses),
+            "restart_count": sum(int(status.restart_count or 0) for status in statuses),
+            "last_terminated_reason": last.reason if last else None,
+            "last_terminated_exit_code": last.exit_code if last else None,
+            "memory_limit": limits.get("memory"),
+            "memory_request": requests.get("memory"),
+            "image": container.image if container else None,
+        }
+
     def _delete_options(self, plan: PodPlan) -> k8s_client.V1DeleteOptions:
         """只用 UID 作前置条件。Pod 的 resourceVersion 随状态更新不断变化，
         绑定它会让删除在读取后几毫秒内就 409，无法用于正常运行的 Pod。"""

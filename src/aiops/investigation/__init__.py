@@ -1,5 +1,8 @@
-"""调查循环：假设、取证、评估与结论。"""
+"""调查能力：只读工具分发、固定规则基线与装配。
 
-from aiops.investigation.runtime import InvestigationRuntime, Report
+单 Agent 循环位于 `aiops.agent`；这里保留共用的工具箱基线与知识工具。
+"""
 
-__all__ = ["InvestigationRuntime", "Report"]
+from aiops.investigation.toolbox import QueryRequest, Toolbox, ToolboxProtocol
+
+__all__ = ["QueryRequest", "Toolbox", "ToolboxProtocol"]

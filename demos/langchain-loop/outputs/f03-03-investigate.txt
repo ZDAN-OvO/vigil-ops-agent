@@ -1,0 +1,11 @@
+调查 inv-acf954a8d14b：inconclusive
+任务阶段 terminal，结果 inconclusive，停止原因 insufficient_evidence
+有效运行：调查 291.7s、动作 0.0s，已过日历时间 291.9s
+终止原因：证据不足，未形成根因候选
+观测 23 条，工具调用 23 次，关系 16 条
+人工待办：人工确认并（按变更流程）修正 Service `redis-cart` 的 selector：要么恢复为 `app=redis-cart` 直连真实 Redis，要么显式保留代理但确认这是有意变更并评估其延迟/容量（CPU limit 100m、memory 64Mi）。；查清 docker.io/vigil/redis-access-proxy:20261105 的来源与责任人（非官方样例镜像，命名疑似内部/演练组件），确认是否为人为延迟注入实验；若是演练，需在演练结束后移除代理与 redis-cart-direct 临时服务。；排查 cartservice Pod 在 11:44:23、11:54:07 被反复 Killing 的外部驱动者（是否存在删除 Pod 的控制器/脚本），避免与故障处置相互干扰。；为 Redis 与 redis-access-proxy 侧补充可观测性（cAdvisor CPU/throttle、代理耗时/错误日志、Redis 命令延迟），以便对“代理跳”做定量闭环。；在 selector 修正后以 probe_duration_seconds 与 cartservice GetCart 时延回归验证是否回到约 10ms 量级。
+  - [refuted] cartservice Deployment 发生了新 revision（镜像/配置/资源规格变更），新版本自身变慢，而非 Pod 重启导致。 rev3
+  - [inconclusive] cartservice 对 Redis 的访问路径出现客户端侧退化（连接池耗尽/重试/超时配置或代码级慢路径），使 Redis 访问耗时约 1.2 秒。 rev2
+  - [inconclusive] Redis 服务端或所在节点资源竞争（CPU/内存/网络饱和）导致访问延迟升高，cartservice 只是受害者。 rev2
+  - [supported] Service selector 与端点不匹配导致流量打到非预期 Pod 或经过异常代理路径，造成整体变慢。 rev3
+  - [supported] Redis 访问路径被插入 redis-access-proxy：redis-cart Service 的 selector 从 app=redis-cart 改为 app=redis-access-proxy，cartservice 的所有 Redis 流量经该代理转发，代理成为 ~1.2s 延迟来源。（父 hyp-41183d423586） rev3

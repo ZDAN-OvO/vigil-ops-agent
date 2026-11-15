@@ -1,0 +1,9 @@
+调查 inv-18f3d92d1d77：running
+任务阶段 waiting_approval
+有效运行：调查 51.2s、动作 0.0s，已过日历时间 51.4s
+动作提案：act-2b1286909a50
+观测 9 条，工具调用 9 次，关系 8 条
+诊断预测：回滚到 revision 37 后，新 ReplicaSet 的容器 memory limit 恢复为 128Mi，新 Pod 不再 OOMKilled/137，restart_count 不再增长并转入 Ready；frontend-probe 的 probe_success 从 0 恢复为 1 并保持，首页不再返回 500。 → 实际 None（None）
+  - [supported] 最近的内存规格调整把 currencyservice 容器的 memory limit 降到低于实际工作集，导致容器被 OOMKilled(137) 并 CrashLoopBackOff，首页 500；重启 Pod 无法修复。 rev2
+  - [refuted] currencyservice 的内存泄漏/流量激增使工作集超过限额，OOM 是应用侧行为问题而非规格调整本身。 rev2
+  - [refuted] 首页 500 与 currencyservice 无关（例如 Service selector 失配或前端探针失败另有原因），OOM 只是并行现象。 rev2

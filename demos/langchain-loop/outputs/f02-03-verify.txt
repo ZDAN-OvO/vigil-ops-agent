@@ -1,0 +1,12 @@
+2026-11-11T10:15:25Z OBSERVE restarts=0 last= home=500 probe=1 alert=none | currencyservice-f6d9b8f46-jzf7g restarts=0 ready=false last=/ state=
+2026-11-11T10:15:36Z OBSERVE restarts=1 last=OOMKilled home=500 probe=1 alert=none | currencyservice-f6d9b8f46-jzf7g restarts=1 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T10:15:46Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=none | currencyservice-f6d9b8f46-jzf7g restarts=2 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T10:15:56Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=none | currencyservice-f6d9b8f46-jzf7g restarts=2 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T10:16:06Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-jzf7g restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T10:16:17Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-jzf7g restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T10:16:28Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-jzf7g restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T10:16:38Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-jzf7g restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T10:16:48Z OBSERVE restarts=4 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-jzf7g restarts=4 ready=false last=OOMKilled/137 state=
+2026-11-11T10:16:59Z OBSERVE restarts=4 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-jzf7g restarts=4 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T10:17:09Z OBSERVE restarts=4 last=OOMKilled home=500 probe=0 alert=firing | currencyservice-f6d9b8f46-jzf7g restarts=4 ready=false last=OOMKilled/137 state=CrashLoopBackOff
+2026-11-11T10:17:09Z VERIFIED sustained_oom=1 business_failure=1 alert_firing=1 revision=36 limit=16Mi

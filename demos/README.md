@@ -14,4 +14,7 @@ MS04 的 Redis 链路延迟证据在 [`ms04/`](ms04/README.md)：实验代理让
 
 I01 的环境与坏发布实验证据在 [env](../env/README.md) 和 [`faults/f01-bad-release/`](../faults/f01-bad-release/README.md)，它们是实验关卡，不含告警入口、模型调查、提案、授权和 CLI 报告。具体步骤与断言以 [MVP 展示链路](../docs/mvp.md#4-两周展示链路)为准。
 
+
+2026-11-11 的 LangChain 单 Agent 主循环证据单独放在 [`langchain-loop/`](langchain-loop/README.md)：F01 三次成功回退与一次错误初始线索、F02 三次成功与两次 `no_improvement` 假阴性、F03 三次停止与独立 cleanup、A01 模型自主诊断性重启，以及预算耗尽、`invalid_report`、重复审批重放等失败记录。该目录不追溯改写 `ms01`–`ms08` 的旧评分。
+
 调查不足、动作不适用、拒绝或恢复失败时保留真实状态；Kubernetes 自恢复、操作者修复与清理工具复位不能冒充 Agent 恢复。展示时只宣称证据支持的阶段，不把 MS01 称为完整 MVP。

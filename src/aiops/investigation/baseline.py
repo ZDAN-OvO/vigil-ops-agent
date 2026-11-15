@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 from aiops.actions.executor import AutoExecutionError
 from aiops.actions.policy import ALLOWED_KINDS, POLICY_VERSION
+from aiops.actions.proposer import ActionProposer
 from aiops.actions.rollout_undo import ActionError
 from aiops.contracts import (
     ActionOrigin,
@@ -27,9 +28,8 @@ from aiops.contracts import (
     ToolError,
     ToolResult,
 )
-from aiops.investigation.runtime import ActionProposer, Report
-from aiops.investigation.schemas import QueryRequest
-from aiops.investigation.toolbox import ToolboxProtocol, observation
+from aiops.investigation.toolbox import QueryRequest, ToolboxProtocol, observation
+from aiops.report import Report
 from aiops.tools.base import ToolContext
 
 RULES_VERSION = "rules-1"

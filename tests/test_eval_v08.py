@@ -19,7 +19,29 @@ from eval_fakes import (
     write_evidence,
 )
 
-from aiops.investigation.snapshot import state_snapshot
+from aiops.contracts import Hypothesis
+from aiops.investigation.snapshot import _digest, _hypothesis_digest, state_snapshot
+
+
+def test_legacy_hypothesis_digest_ignores_new_revision_fields():
+    """旧调查的 v2 快照不能因为新增字段而全部失配。"""
+    item = Hypothesis(
+        id="hyp-legacy",
+        investigation_id="inv-legacy",
+        statement="节点磁盘写满",
+        expected_observations=["磁盘可用空间接近 0"],
+        refutation_criteria=["磁盘指标正常"],
+        revision=4,
+    )
+    legacy = _digest(
+        {
+            "statement": "节点磁盘写满",
+            "status": "pending",
+            "expected_observations": ["磁盘可用空间接近 0"],
+        }
+    )
+    assert _hypothesis_digest(item) == legacy
+    assert _hypothesis_digest(item, modern=True) != legacy
 
 
 def v08_entries(evidence):

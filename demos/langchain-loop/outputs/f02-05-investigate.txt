@@ -1,0 +1,9 @@
+调查 inv-2141db2fe0d9：running
+任务阶段 waiting_approval
+有效运行：调查 104.8s、动作 0.0s，已过日历时间 104.9s
+动作提案：act-14ff80e771a4
+观测 7 条，工具调用 7 次，关系 9 条
+诊断预测：回退到 revision 39 后 Deployment 模板 memory limit 由 16Mi 恢复为 128Mi、request 64Mi，新 Pod 不再 OOMKilled（last_terminated 不再是 OOMKilled、restart_count 停止增长、Ready=True），frontend-probe probe_success 在观察窗口内回到 1。 → 实际 None（None）
+  - [supported] Deployment 当前 revision 40 的容器内存 limit 被压到 16Mi（request 8Mi），低于 currencyservice 正常运行所需，因此容器持续被 OOMKilled；重启 Pod 不能改变 limit，无法恢复。 rev5
+  - [refuted] 16Mi 只是症状表现，真实问题是镜像/应用版本本身的缺陷（例如内存泄漏或启动即高占用），因此回退到旧 revision 的 128Mi 模板才是有效处置路径。 rev2
+  - [supported] Service/端口配置正确，readiness 失败只是容器被 OOMKill 之后的次生现象，不是独立的连接/选择器错误。 rev2

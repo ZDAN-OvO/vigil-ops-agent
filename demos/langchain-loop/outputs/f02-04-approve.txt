@@ -1,0 +1,11 @@
+调查 inv-18f3d92d1d77：completed
+任务阶段 terminal，结果 needs_human，停止原因 action_no_improvement
+有效运行：调查 113.2s、动作 179.3s，已过日历时间 308.0s
+动作提案：act-2b1286909a50
+根因候选：根因候选（已确认）：Deployment currencyservice 的容器内存规格被下调——revision 38 将 server 容器 memory limit 由 128Mi/64Mi 降为 16Mi/8Mi（镜像未变），进程启动后即超出 16Mi 上限被内核 OOMKilled(exitCode 137)，容器进入 CrashLoopBackOff、始终无法 Ready，gRPC 7000 不可达，导致首页返回 500。重启 Pod 无法修复（PodTemplate 仍是 16Mi），回滚 Deployment 至 128Mi 后 Pod 转为 Ready、restart_count=0，frontend-probe 从连续 0 恢复为持续 1，业务恢复。
+观测 15 条，工具调用 15 次，关系 13 条
+诊断预测：回滚到 revision 37 后，新 ReplicaSet 的容器 memory limit 恢复为 128Mi，新 Pod 不再 OOMKilled/137，restart_count 不再增长并转入 Ready；frontend-probe 的 probe_success 从 0 恢复为 1 并保持，首页不再返回 500。 → 实际 no_improvement（动作后仍有失败，失败率没有明显下降）
+人工待办：核查 act-c5659c03ac57 这次 rollback 的触发来源与模板选择逻辑：它把 memory limit 从 128Mi 改成 16Mi，属于把服务回滚到不可用配置，建议在回滚流程中增加资源规格合理性校验或变更评审。；补齐 currencyservice 的内存指标采集（cAdvisor/container_memory_working_set_bytes 当前为空），并按实测工作集重新设定 request/limit（不要停留在 16Mi，也不建议盲用 128Mi）。；确认 frontend 首页早期 0/1 抖动是否另有依赖问题，避免把间歇性 500 全部归因于本次 OOM。；act-2b1286909a50: 执行结果 no_improvement
+  - [supported] 最近的内存规格调整把 currencyservice 容器的 memory limit 降到低于实际工作集，导致容器被 OOMKilled(137) 并 CrashLoopBackOff，首页 500；重启 Pod 无法修复。 rev4
+  - [refuted] currencyservice 的内存泄漏/流量激增使工作集超过限额，OOM 是应用侧行为问题而非规格调整本身。 rev2
+  - [refuted] 首页 500 与 currencyservice 无关（例如 Service selector 失配或前端探针失败另有原因），OOM 只是并行现象。 rev2

@@ -1,0 +1,9 @@
+调查 inv-1a7b82fae9ef：running
+任务阶段 waiting_approval
+有效运行：调查 91.2s、动作 0.0s，已过日历时间 91.4s
+动作提案：act-c5659c03ac57
+观测 18 条，工具调用 18 次，关系 12 条
+诊断预测：回滚后 Deployment 生成新的 Pod，容器 memory limit 恢复为 128Mi（request 64Mi）；新 Pod 不再在数十秒内被杀，restart_count 不再增长，Ready=True，last_terminated 不再出现 OOMKilled；frontend-probe 的 probe_success 恢复为 1，首页 500 与结账货币换算失败消失。 → 实际 None（None）
+  - [supported] currencyservice 容器内存 limit 被下调到 16Mi（revision 36，change_cause 为一次 vigil rollback），进程工作集超过 16Mi 即被 OOMKilled，导致 CrashLoopBackOff 与前端 500。 rev2
+  - [inconclusive] currencyservice 存在应用侧内存泄漏或异常流量/大请求导致自然内存超限，配置下调只是放大了问题，根因在应用行为。 rev2
+  - [refuted] 节点内存压力或其他同节点容器挤占导致 currencyservice 被 OOMKilled，而非自身 limit。 rev2

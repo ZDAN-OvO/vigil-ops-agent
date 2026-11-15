@@ -5,6 +5,9 @@ from typing import Any, Literal, Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
+# 新调查运行时的版本标识；用于区分“旧调查循环”与“单 Agent 工具循环”的任务记录。
+AGENT_RUNTIME_VERSION = "langchain-agent-1"
+
 
 class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -51,15 +54,27 @@ class InvestigationStatus(StrEnum):
 
 
 class Budget(Contract):
+    """分阶段预算：调查与动作各自累计，暂停和进程未运行时间不计入。
+
+    `max_wall_clock_seconds` 是调查阶段的有效运行时间上限，不是任务日历时长；
+    动作阶段另有 `max_action_seconds`，两者共同受总有效时间约束。
+    """
+
     max_tool_calls: int = Field(gt=0)
     max_model_calls: int = Field(gt=0)
     max_wall_clock_seconds: int = Field(gt=0)
+    max_action_seconds: int = Field(default=450, gt=0)
+
+    @property
+    def max_total_seconds(self) -> int:
+        return self.max_wall_clock_seconds + self.max_action_seconds
 
 
 class BudgetUsage(Contract):
     tool_calls: int = Field(default=0, ge=0)
     model_calls: int = Field(default=0, ge=0)
     elapsed_seconds: float = Field(default=0, ge=0)
+    action_seconds: float = Field(default=0, ge=0)
 
     def exhausted(self, budget: Budget) -> str | None:
         """返回最先耗尽的预算项；未耗尽返回 None。"""
@@ -69,6 +84,8 @@ class BudgetUsage(Contract):
             return "model_calls"
         if self.elapsed_seconds >= budget.max_wall_clock_seconds:
             return "wall_clock"
+        if self.action_seconds >= budget.max_action_seconds:
+            return "action_seconds"
         return None
 
 
@@ -112,6 +129,10 @@ class Hypothesis(Contract):
     expected_observations: list[str]
     origin: Literal["model", "runbook", "human"] = "model"
     status: HypothesisStatus = HypothesisStatus.PENDING
+    # 反驳条件与修订信息：假设不能删除，被反驳后可由新证据重新打开。
+    refutation_criteria: list[str] = Field(default_factory=list)
+    revision: int = Field(default=1, ge=1)
+    update_reason: str = ""
 
 
 class ToolError(Contract):
@@ -159,6 +180,8 @@ class ToolCall(Contract):
 
 
 class Evidence(Contract):
+    """旧版证据记录：一条记录绑定一个假设；保留读取兼容，新循环写观测与关系。"""
+
     id: str
     investigation_id: str
     hypothesis_id: str
@@ -169,6 +192,72 @@ class Evidence(Contract):
     relation: Literal["supporting", "refuting", "neutral"]
     raw_ref: str
     time_range: TimeRange
+
+
+class ObservationStatus(StrEnum):
+    OK = "ok"
+    EMPTY = "empty"
+    ERROR = "error"
+
+
+class Observation(Contract):
+    """一次工具调用的观测记录；原始结果只存一份，可关联多个假设。
+
+    `empty` 表示没有取到数据，不是反证；`error` 表示查询失败，不构成任何证据。
+    """
+
+    id: str
+    investigation_id: str
+    tool_call_id: str
+    source: str
+    independence_key: str
+    summary: str
+    raw_ref: str = ""
+    status: ObservationStatus = ObservationStatus.OK
+    truncated: bool = False
+    time_range: TimeRange
+    created_at: AwareDatetime | None = None
+
+
+class HypothesisEvidence(Contract):
+    """观测与假设的支持/反驳关系；同一条观测可同时支持一个假设、反驳另一个。"""
+
+    id: str
+    investigation_id: str
+    hypothesis_id: str
+    observation_id: str
+    relation: Literal["supporting", "refuting", "neutral"]
+    rationale: str
+    created_at: AwareDatetime | None = None
+
+
+class ToolRequestState(StrEnum):
+    RUNNING = "running"
+    OBSERVED = "observed"
+    FAILED = "failed"
+    ACTION_PENDING = "action_pending"
+    ACTION_EXECUTED = "action_executed"
+    REJECTED = "rejected"
+
+
+class ToolRequest(Contract):
+    """工具请求账本：`(investigation_id, tool_call_id)` 唯一，用于重放与审批恢复。
+
+    业务记录记录真实副作用，checkpoint 只记录 Agent 进度；同一请求重放时先读这里。
+    """
+
+    investigation_id: str
+    tool_call_id: str
+    tool: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    state: ToolRequestState
+    attempt: int = Field(default=1, ge=1)
+    result: Any = None
+    proposal_id: str | None = None
+    action_attempt_id: str | None = None
+    error_code: str | None = None
+    started_at: AwareDatetime
+    finished_at: AwareDatetime | None = None
 
 
 class AuditEvent(Contract):
@@ -235,6 +324,14 @@ class ApprovalDecision(StrEnum):
     REJECTED = "rejected"
 
 
+class ActionPurpose(StrEnum):
+    """动作目的；目的不改变权限，只决定必须提供的依据和允许的适用范围。"""
+
+    DIAGNOSTIC = "diagnostic"
+    MITIGATION = "mitigation"
+    REMEDIATION = "remediation"
+
+
 class ActionProposal(Contract):
     id: str
     kind: ActionKind
@@ -247,6 +344,11 @@ class ActionProposal(Contract):
     investigation_id: str | None = None
     evidence_ids: list[str] = Field(default_factory=list)
     status: ProposalStatus = ProposalStatus.PENDING_APPROVAL
+    purpose: ActionPurpose = ActionPurpose.REMEDIATION
+    hypothesis_id: str | None = None
+    prediction: str = ""
+    observation_conditions: dict[str, Any] = Field(default_factory=dict)
+    observation_window_seconds: int | None = None
 
     @model_validator(mode="after")
     def automatic_proposal_needs_evidence(self) -> Self:
@@ -316,3 +418,75 @@ class RiskDecision(Contract):
     policy_version: str
     reasons: list[str] = Field(min_length=1)
     requires_compensation: bool
+
+
+class TaskPhase(StrEnum):
+    RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    TERMINAL = "terminal"
+
+
+class TaskOutcome(StrEnum):
+    """业务与任务结果；与 InvestigationStatus 的诊断语义分开记录。"""
+
+    RECOVERED = "recovered"
+    DIAGNOSIS_ONLY = "diagnosis_only"
+    INCONCLUSIVE = "inconclusive"
+    NEEDS_HUMAN = "needs_human"
+    ABORTED = "aborted"
+
+
+class TerminationCode(StrEnum):
+    """稳定的停止原因代码；报告用代码，不靠中文错误文本判断。"""
+
+    BUSINESS_RECOVERED = "business_recovered"
+    NO_APPLICABLE_ACTION = "no_applicable_action"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    NO_PROGRESS = "no_progress"
+    NO_DIFFERENTIATING_TEST = "no_differentiating_test"
+    ACTION_NO_IMPROVEMENT = "action_no_improvement"
+    ACTION_WORSENED = "action_worsened"
+    ACTION_UNKNOWN = "action_unknown"
+    POLICY_DENIED = "policy_denied"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    CANCELLED = "cancelled"
+    MODEL_FAILURE = "model_failure"
+    STORE_FAILURE = "store_failure"
+    INVALID_REPORT = "invalid_report"
+    INTERRUPTED = "interrupted"
+    RUNTIME_ERROR = "runtime_error"
+    WAITING_APPROVAL = "waiting_approval"
+
+
+class InvestigationTask(Contract):
+    """与 Investigation 一对一的任务运行记录；业务结果与诊断状态分开。"""
+
+    investigation_id: str
+    phase: TaskPhase
+    outcome: TaskOutcome | None = None
+    termination_code: str | None = None
+    proposal_id: str | None = None
+    runtime_version: str = AGENT_RUNTIME_VERSION
+    used_model_calls: int = Field(default=0, ge=0)
+    used_tool_calls: int = Field(default=0, ge=0)
+    investigation_seconds: float = Field(default=0, ge=0)
+    action_seconds: float = Field(default=0, ge=0)
+    calendar_started_at: AwareDatetime
+    paused_at: AwareDatetime | None = None
+    finished_at: AwareDatetime | None = None
+    cancel_requested_at: AwareDatetime | None = None
+    no_progress_rounds: int = Field(default=0, ge=0)
+    recovered_at: AwareDatetime | None = None
+    lease_owner: str | None = None
+    lease_expires_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def terminal_requires_outcome(self) -> Self:
+        if self.phase is TaskPhase.TERMINAL and self.outcome is None:
+            raise ValueError("terminal 任务必须有 outcome")
+        if self.phase is not TaskPhase.TERMINAL and self.outcome is not None:
+            raise ValueError("运行中的任务不能有 outcome")
+        if self.phase is TaskPhase.TERMINAL and not self.termination_code:
+            raise ValueError("terminal 任务必须有 termination_code")
+        return self
