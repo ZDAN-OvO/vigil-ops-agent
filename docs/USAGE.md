@@ -84,6 +84,8 @@ uv run --frozen aiops db status   # 期望列出 0001_init … 0011_skills_and_d
 uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 ```
 
+升级限制：应用 `0011_skills_and_delegations` 会删除旧 `evidence` 表，包括迁移到 0010 后新增的记录，且不回填到新证据关系；升级前请备份，旧调查与旧报告不保证可读。
+
 ## 4. 命令手册
 
 | 命令 | 作用 | 写集群 |
