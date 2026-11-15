@@ -120,7 +120,7 @@ uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 | 4 | 策略拒绝 | 策略拒绝，未执行 |
 | 5 | 信息不足，未形成根因候选 | — |
 
-调查任务状态看 `report` 与 `data.task`（phase/outcome/termination_code）；`investigations.status` 只表示诊断结论。`data.skills` 记录本轮加载的 Skill 与内容哈希，`data.delegations` 记录只读委派。
+调查任务状态看 `report` 与 `data.task`（phase/outcome/termination_code）；`investigations.status` 只表示诊断结论。`data.skills` 记录本轮加载的 Skill 与内容哈希，`data.delegations` 记录只读委派，每条包含委派 ID、子任务 Skill 和 `observation_ids`（该委派返回的观测）。
 
 ## 5. 一条完整演练（坏发布，约 6 分钟）
 

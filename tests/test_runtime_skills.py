@@ -112,6 +112,9 @@ def test_delegation_is_read_only_and_attributes_observations(ids):
     assert "hypothesis-driven-investigation" in delegations[0].skills
     assert observations[0].delegation_id == delegations[0].id
     assert report.delegations[0]["id"] == delegations[0].id
+    assert report.delegations[0]["observation_ids"] == [
+        item.id for item in observations if item.delegation_id == delegations[0].id
+    ]
     assert task is not None and task.used_tool_calls >= 2
     assert task.used_model_calls >= 4
 

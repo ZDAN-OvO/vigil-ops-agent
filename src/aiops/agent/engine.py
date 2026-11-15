@@ -72,7 +72,7 @@ from aiops.contracts import (
 )
 from aiops.db import Store
 from aiops.investigation.toolbox import Toolbox
-from aiops.report import Report
+from aiops.report import Report, delegation_payloads
 from aiops.skills import (
     SkillLoadError,
     SkillSpec,
@@ -863,18 +863,7 @@ class LangChainInvestigation:
                 for item in observations
             ],
             skills=[item.model_dump(mode="json") for item in saved.skills],
-            delegations=[
-                {
-                    "id": item.id,
-                    "objective": item.objective,
-                    "status": item.status.value,
-                    "result_summary": item.result_summary,
-                    "skills": item.skills,
-                    "started_at": item.started_at.isoformat(),
-                    "finished_at": item.finished_at.isoformat() if item.finished_at else None,
-                }
-                for item in delegations
-            ],
+            delegations=delegation_payloads(delegations, observations),
             remaining_budget=context.budget.remaining(),
             needs_human=needs_human,
             prediction=prediction,

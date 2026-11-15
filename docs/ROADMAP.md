@@ -4,7 +4,7 @@
 
 ## 当前阶段：Skill、工具与委派调查运行时
 
-设计见 [ADR-0007](adr/0007-skill-tool-subagent-runtime.md)。状态：**待补齐委派调查验收**；其他验收结果见下表。
+设计见 [ADR-0007](adr/0007-skill-tool-subagent-runtime.md)。状态：**验收通过**；各项结果见下表。
 
 | 验收项 | 门槛 | 结果 | 记录 |
 |---|---|---|---|
@@ -14,7 +14,7 @@
 | Pod 重建 | 至少 1 次由 Agent 自主执行 `restart_pod`，Pod UID 改变、模板不变 | 5 次尝试中成功 1 次 | [运行记录](../faults/a01-pod-rebuild/runs/2026-11-13.md) |
 | 审批跨进程恢复 | 至少 1 条真实记录 | 4 个提案在新进程中从 checkpoint 恢复并执行 | 见下文“跨场景验收” |
 | 重放不重复写入 | 至少 1 条真实记录 | 对已成功提案再次批准，返回 `not_pending`，执行计数仍为 1 | 见下文“跨场景验收” |
-| 委派调查 | 至少 1 次运行使用委派，能查到目标、所用 Skill 和返回的观测 | 未核实（完整验收未满足）：原报告可证实 1 次委派成功，缺少完整委派 ID、子任务 Skill 和观测归属明细 | [运行记录](../faults/f01-bad-release/runs/2026-11-13-delegation.md) |
+| 委派调查 | 至少 1 次运行使用委派，能查到目标、所用 Skill 和返回的观测 | 委派 `dlg-cb09062b5f63` 成功，子任务 Skill 与 22 条返回观测均可按委派 ID 回查，没有写操作 | [运行记录](../faults/f01-bad-release/runs/2026-11-13-delegation.md) |
 | 追踪平台 | 默认关闭时业务行为不变，启用后能接入 | 自动化测试覆盖；按用户决定，免除真实 trace 验证 | `tests/test_tracing.py` |
 | 自动化检查 | `make check-all` 通过 | PR-B：120 passed、160 skipped（未配置数据库），CI 通过 | [PR-B #8](https://github.com/ZDAN-OvO/vigil-ops-agent/pull/8) · [checks](https://github.com/ZDAN-OvO/vigil-ops-agent/actions/runs/43678390320/job/132703462697) |
 
@@ -22,7 +22,7 @@
 
 - **审批跨进程恢复**：`aiops investigate` 停在 `waiting_approval` 后退出，再由新进程执行 `aiops approve <提案 ID>`，从 PostgreSQL checkpoint 恢复并执行。坏发布的 `act-dd85c844dc42`、`act-212852a7432f` 和持续 OOM 的 `act-a9899a135653`、`act-774d7502d9be` 都走了这条路径。
 - **重放不重复写入**：对已成功的 `act-212852a7432f` 再次执行 `aiops approve`，返回 `not_pending`（提案状态 `succeeded`），`action_attempts` 计数仍为 1。
-- **委派调查**：`inv-dd6dd82fc47d` 的原报告可证实主调查未收敛、共 26 条观测及 1 次委派成功。完整委派 ID、子任务 Skill 和 22 条观测归属明细缺失，**未核实（完整验收未满足）**。详见[运行记录](../faults/f01-bad-release/runs/2026-11-13-delegation.md)。
+- **委派调查**：`inv-dd6dd82fc47d` 委派 `dlg-cb09062b5f63`，子任务 Skill 为 `hypothesis-driven-investigation`，26 条观测中 22 条带该委派 ID，且都来自只读工具调用；提案与执行记录均为 0。主调查本身未收敛。详见[运行记录](../faults/f01-bad-release/runs/2026-11-13-delegation.md)。
 
 ### 遗留问题
 
