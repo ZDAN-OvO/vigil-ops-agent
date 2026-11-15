@@ -189,7 +189,7 @@ class LangChainInvestigation:
             max_observation_chars=self._settings.investigation_max_observation_chars,
             tool_timeout_seconds=self._settings.tool_timeout_seconds,
             model_reserve_seconds=float(self._settings.investigation_action_model_reserve_seconds),
-            progress=Progress(),
+            progress=Progress(recovered=task.recovered_at is not None),
         )
         return task, context
 

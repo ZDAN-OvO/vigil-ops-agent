@@ -98,14 +98,27 @@ class FakeToolbox:
                 collected_at=now,
                 error=ToolError(code="timeout", message=str(spec), retryable=True),
             )
+        data = spec.get("data", default_data(request.tool))
+        raw_ref = spec.get("raw_ref", f"evidence/test/{request.tool}.json")
+        if request.tool.startswith("kubernetes.") and "raw_ref" not in spec:
+            raw_ref = context.persist_raw(
+                uuid4().hex,
+                {
+                    "query": {
+                        "kind": request.tool.removeprefix("kubernetes.list_"),
+                        "namespace": context.namespace,
+                    },
+                    "items": data.get("items", []),
+                },
+            ).ref
         return ToolResult(
             tool_call_id="ignored",
             source=str(spec.get("source", request.tool.split(".")[0])),
             query=request.model_dump(),
             time_range=TimeRange(start=now - timedelta(minutes=2), end=now),
             collected_at=now,
-            data=spec.get("data", default_data(request.tool)),
-            raw_ref=spec.get("raw_ref", f"evidence/test/{request.tool}.json"),
+            data=data,
+            raw_ref=raw_ref,
             truncated=bool(spec.get("truncated", False)),
         )
 
@@ -116,7 +129,7 @@ def default_data(tool: str) -> Any:
     if tool == "kubernetes.list_pods":
         return {"items": [{"name": "target-pod", "ready": True, "restarts": 0}]}
     if tool == "kubernetes.list_logs":
-        return {"lines": ["GET /work 500"]}
+        return {"items": [{"pod": "target-pod", "lines": ["GET /work 500"]}]}
     if tool == "kubernetes.list_deployments":
         return {"items": [{"name": "target-deploy", "revisions": [1, 2]}]}
     if tool == "kubernetes.list_services":
