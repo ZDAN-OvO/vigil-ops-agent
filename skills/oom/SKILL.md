@@ -1,6 +1,6 @@
 ---
 name: oom
-description: 排查内存相关故障：容器显示 OOMKilled、内存接近 limit 或用量持续增长时，区分上限过低、负载增长与泄漏，核对终止原因、重启次数和内存曲线。手动调查没有告警名时也适用。反复重启本身不能证明 OOM；无内存证据、模板和镜像未变的单 Pod 状态异常考虑 pod-rebuild，版本变化相关故障用 bad-release，下游超时用 dependency-latency。持续 OOM 不靠重建 Pod 解决。
+description: 排查持续 OOM：区分内存上限过低、实际用量增长和泄漏，核对重启次数、容器状态与内存曲线后再决定是否重建 Pod。
 metadata:
   vigil-auto-load-sources: alert
   vigil-auto-load-alertnames: PodOOMKilled ContainerOOMKilled

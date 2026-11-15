@@ -26,7 +26,7 @@
 
 ### 遗留问题
 
-- **Pod 重建的手动调查稳定性仍需验证**：用户决定采用 description 方案，已在 [PR #10](https://github.com/ZDAN-OvO/vigil-ops-agent/pull/10) 重写 Skill description。2026-11-15 三次手动调查均按描述选中 `pod-rebuild`，自主恢复 2/3，正式确认根因且恢复 1/3。第三次发生时序误判，选中率 3/3 不等于调查成功率，详见[运行记录](../faults/a01-pod-rebuild/runs/2026-11-15.md)。
+- **Pod 重建的手动调查成功率低**：手动入口不会自动加载 `pod-rebuild` Skill，因为它只按 `PodCrashLooping`、`PodNotReady` 告警名触发。修复方案是新增 `metadata.vigil-auto-load-services` 按服务名自动加载，**待用户确认**。根因分析见[运行记录](../faults/a01-pod-rebuild/runs/2026-11-13.md#连续失败的根因)。
 - **相对规则基线和通用 Agent 的收益**：尚未证明，在对照评估重建后验证（[ADR-0008](adr/0008-product-scope-and-lab.md)）。
 
 ## 验收规则

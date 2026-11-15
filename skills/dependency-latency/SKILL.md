@@ -1,6 +1,6 @@
 ---
 name: dependency-latency
-description: 排查依赖链路延迟：下游调用耗时、连接超时、重试或连接池等待增加时，区分本服务、下游依赖与入口流量，尤其关注多个 Pod 同时变慢。手动调查没有告警名时也适用；只读定位，不执行写操作。若异常随发布或版本变化出现，结合 bad-release 核实；OOMKilled 或内存逼近上限用 oom；依赖侧证据不能解释、模板和镜像未变的单 Pod 异常考虑 pod-rebuild，不用重建替代依赖诊断。
+description: 排查依赖链路延迟：判断延迟来自本服务、下游依赖还是入口流量，优先只读定位，不执行写操作。
 metadata:
   vigil-auto-load-sources: alert
   vigil-auto-load-alertnames: RedisLatencyHigh DependencyLatencyHigh
