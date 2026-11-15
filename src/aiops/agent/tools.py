@@ -40,6 +40,7 @@ from aiops.contracts import (
     ActionProposal,
     ActionPurpose,
     AttemptOutcome,
+    AttemptStatus,
     Hypothesis,
     HypothesisEvidence,
     Observation,
@@ -922,6 +923,47 @@ async def _execute_and_feedback(
     return message, True
 
 
+def _observation_targets_pod(ctx: AgentContext, item: Observation, tool: str, target: str) -> bool:
+    kinds = {
+        "kubernetes.list_pods": "pods",
+        "kubernetes.list_logs": "logs",
+        "kubernetes.list_events": "events",
+    }
+    if tool not in kinds or not target or not item.raw_ref:
+        return False
+    # 只读本次调查的原始结果；模型摘要、查询参数和越界引用不能证明资源身份。
+    root = ctx.runtime_path.resolve()
+    path = (root / item.raw_ref).resolve()
+    if not path.is_relative_to(root / "evidence" / ctx.investigation_id):
+        return False
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+    query = raw.get("query")
+    items = raw.get("items")
+    if (
+        not isinstance(query, dict)
+        or query.get("namespace") != ctx.namespace
+        or query.get("kind") != kinds[tool]
+        or not isinstance(items, list)
+    ):
+        return False
+    for resource in items:
+        if not isinstance(resource, dict):
+            continue
+        if tool == "kubernetes.list_events":
+            involved = resource.get("involved")
+            if isinstance(involved, dict) and involved.get("kind") == "Pod":
+                if involved.get("name") == target:
+                    return True
+        elif resource.get("pod" if tool == "kubernetes.list_logs" else "name") == target:
+            return True
+    return False
+
+
 async def _validate_action_references(ctx: AgentContext, args: RequestActionArgs) -> str | None:
     """动作必须绑定同一调查内实际存在的非知识观测，并指向目标异常。"""
     hypothesis = await ctx.store.get_hypothesis(args.hypothesis_id)
@@ -964,18 +1006,12 @@ async def _validate_action_references(ctx: AgentContext, args: RequestActionArgs
         tool = str(params.get("tool") or (call.tool if call else ""))
         if tool.startswith("kubernetes."):
             has_platform = True
-            selector = str(params.get("selector") or "")
-            involved = str(params.get("involved_name") or "")
-            if target and (target in selector or involved == target):
+            if _observation_targets_pod(ctx, item, tool, target):
                 target_scoped = True
         if tool == "prometheus.query_range":
             has_business = True
-        if tool == "kubernetes.list_logs":
+        if tool == "kubernetes.list_logs" and _observation_targets_pod(ctx, item, tool, target):
             has_business = True
-            selector = str(params.get("selector") or "")
-            involved = str(params.get("involved_name") or "")
-            if target and (target in selector or involved == target):
-                target_scoped = True
     if not has_platform:
         return "动作依据至少需要一条 Kubernetes 平台观测"
     if not has_business:
@@ -1241,6 +1277,12 @@ async def _resume_pending_action(ctx: AgentContext, call_id: str, request: ToolR
         return message
     attempt = await _attempt_for(ctx, proposal.id)
     if attempt is not None:
+        if (
+            attempt.status is AttemptStatus.VERIFIED
+            and (attempt.verification or {}).get("outcome") == AttemptOutcome.IMPROVED.value
+        ):
+            ctx.progress.recovered = True
+            await ctx.store.record_recovery(ctx.investigation_id, at=datetime.now(UTC))
         feedback = _action_feedback(
             ctx,
             proposal,

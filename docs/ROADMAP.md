@@ -16,7 +16,7 @@
 | 重放不重复写入 | 至少 1 条真实记录 | 对已成功提案再次批准，返回 `not_pending`，执行计数仍为 1 | 见下文“跨场景验收” |
 | 委派调查 | 至少 1 次运行使用委派，能查到目标、所用 Skill 和返回的观测 | `inv-dd6dd82fc47d` 的委派 `dlg-cb09062b5f63` 成功，返回 22 条带 `delegation_id` 的观测 | 见下文“跨场景验收” |
 | 追踪平台 | 默认关闭时业务行为不变，启用后能接入 | 自动化测试覆盖；按用户决定，免除真实 trace 验证 | `tests/test_tracing.py` |
-| 自动化检查 | `make check-all` 通过 | PR-B：75 passed、160 skipped（未配置数据库），CI 通过 | [PR-B #8](https://github.com/ZDAN-OvO/vigil-ops-agent/pull/8) · [checks](https://github.com/ZDAN-OvO/vigil-ops-agent/actions/runs/43673798874/job/132689409411) |
+| 自动化检查 | `make check-all` 通过 | PR-B：91 passed、160 skipped（未配置数据库），CI 通过 | [PR-B #8](https://github.com/ZDAN-OvO/vigil-ops-agent/pull/8) · [checks](https://github.com/ZDAN-OvO/vigil-ops-agent/actions/runs/43675597662/job/132694924401) |
 
 ### 跨场景验收
 
