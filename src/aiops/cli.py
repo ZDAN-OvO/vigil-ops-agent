@@ -32,7 +32,7 @@ from aiops.contracts import (
 from aiops.db import Store, StoreUnavailable
 from aiops.investigation.factory import open_agent, open_executor
 from aiops.knowledge import load_runbooks
-from aiops.report import Report
+from aiops.report import Report, delegation_payloads
 from aiops.webhook import build_app
 
 app = typer.Typer(
@@ -176,7 +176,13 @@ def _print_report(report: Report, output: OutputFormat) -> None:
     if report.delegations:
         typer.echo(f"委派调查 {len(report.delegations)} 次")
         for item in report.delegations:
-            typer.echo(f"  - [{item['status']}] {item['objective'][:80]}")
+            skills = "、".join(item.get("skills") or []) or "未记录"
+            observation_ids = item.get("observation_ids") or []
+            typer.echo(
+                f"  - {item['id']} [{item['status']}] Skill：{skills}；"
+                f"返回观测 {len(observation_ids)} 条"
+            )
+            typer.echo(f"    目标：{item['objective'][:80]}")
     if report.prediction:
         typer.echo(
             "诊断预测："
@@ -381,18 +387,7 @@ def report(investigation_id: str, output: OutputFormat = OutputFormat.TEXT) -> N
                 for item in relations
             ],
             skills=[item.model_dump(mode="json") for item in saved.skills],
-            delegations=[
-                {
-                    "id": item.id,
-                    "objective": item.objective,
-                    "status": item.status.value,
-                    "result_summary": item.result_summary,
-                    "skills": item.skills,
-                    "started_at": item.started_at.isoformat(),
-                    "finished_at": item.finished_at.isoformat() if item.finished_at else None,
-                }
-                for item in delegations
-            ],
+            delegations=delegation_payloads(delegations, observations),
         )
 
     try:

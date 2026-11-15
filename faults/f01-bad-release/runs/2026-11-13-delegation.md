@@ -1,24 +1,22 @@
 # 坏发布委派调查记录：2026-11-13
 
-调查：`inv-dd6dd82fc47d`。本条用于核对委派调查能力，不计入坏发布场景的独立有效运行次数。验收规则见[路线图](../../../docs/ROADMAP.md#验收规则)。
+调查：`inv-dd6dd82fc47d`；委派：`dlg-cb09062b5f63`。本条用于核对委派调查能力，不计入坏发布场景的独立有效运行次数。验收规则见[路线图](../../../docs/ROADMAP.md#验收规则)。
 
-## 已核实的报告内容
+## 结果
 
-原始本地报告为 `.evidence/skill-runtime/outputs/delegation-report.txt`，SHA-256：`32033ee2a0e8a6fb0bcfa1790b93fe11bed2848dce36b26ecfe0a7219404e19c`。
+**通过**：本次调查实际使用了 1 次委派。委派目标、子任务所用 Skill 和返回观测都能按委派 ID 从业务库回查，委派期间没有写操作。
 
-| 项目 | 报告内容 |
+| 验收内容 | 业务库记录 |
 |---|---|
-| 主调查结果 | `inconclusive` / `insufficient_evidence`，任务阶段 `terminal` |
-| 主调查结论 | 证据不足，未形成根因候选 |
-| 观测与调用 | 总观测 26 条，工具调用 30 次，关系 0 条 |
-| 主调查 Skill | `hypothesis-driven-investigation`，信号触发 |
-| 委派 | 1 次，状态 `succeeded` |
-| 委派目标 | 只读调查 Kubernetes 集群 `local/vigil-lab`、命名空间 `vigil-shop` 中的故障；报告中的目标文本在 `productc` 处截断 |
+| 委派 | `dlg-cb09062b5f63`，状态 `succeeded`，2026-11-13 15:10:59 至 15:12:59（UTC） |
+| 委派目标 | 只读核对 `vigil-shop` 中 `productcatalogservice` 的发布、Pod、事件、日志和 Service 选择关系，完整文本保存在 `delegations.objective` |
+| 子任务 Skill | `hypothesis-driven-investigation`，记录在 `delegations.skills` |
+| 返回观测 | 22 条带该 `delegation_id`；主 Agent 自己产生 4 条，合计 26 条 |
+| 观测来源 | 22 条都对应工具账本中状态为 `observed` 的只读调用：Prometheus 查询 11 次，Kubernetes Pod 3 次、事件 3 次、Deployment 2 次、Service 1 次、日志 1 次，runbook 列表 1 次 |
+| 只读边界 | 动作提案 0 个，执行记录 0 条，`delegation.*` 审计事件 0 条 |
 
-主调查耗时 184.5 秒，动作耗时 0.0 秒。报告列出的四个根因假设均为 `pending`；委派成功不代表主调查正确定位或业务恢复。
+`aiops report inv-dd6dd82fc47d` 会列出委派 ID、子任务 Skill 和返回观测条数；`--output json` 的 `data.delegations[].observation_ids` 给出全部 22 个观测 ID。
 
-## 验收边界
+## 调查本身
 
-**未核实（完整验收未满足）**：原报告未给出完整委派 ID、子任务实际使用的 Skill，以及此前声称的 22 条带 `delegation_id` 的观测明细。主调查的 Skill 记录不能替代子任务 Skill 记录，总观测数 26 也不能证明其中 22 条归属该委派。
-
-完成验收还需同一调查的委派记录与观测明细，能够将完整委派 ID、目标、子任务 Skill 和返回观测逐项关联。当前只保留上述报告直接支持的结果。
+主调查结果为 `inconclusive` / `insufficient_evidence`，四个根因假设均为 `pending`，主调查耗时 184.5 秒，没有提出动作。委派验收只检验委派能否运行并可追溯，不代表这次调查定位正确或业务恢复。

@@ -5,7 +5,36 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from aiops.contracts import InvestigationStatus, TaskOutcome, TerminationCode
+from aiops.contracts import (
+    Delegation,
+    InvestigationStatus,
+    Observation,
+    TaskOutcome,
+    TerminationCode,
+)
+
+
+def delegation_payloads(
+    delegations: list[Delegation], observations: list[Observation]
+) -> list[dict[str, Any]]:
+    """委派记录连同其返回的观测 ID，便于按委派回查观测归属。"""
+    return [
+        {
+            "id": item.id,
+            "objective": item.objective,
+            "status": item.status.value,
+            "result_summary": item.result_summary,
+            "skills": item.skills,
+            "observation_ids": [
+                observation.id
+                for observation in observations
+                if observation.delegation_id == item.id
+            ],
+            "started_at": item.started_at.isoformat(),
+            "finished_at": item.finished_at.isoformat() if item.finished_at else None,
+        }
+        for item in delegations
+    ]
 
 
 @dataclass(frozen=True)
