@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgentMiddleware
 from langchain.agents import create_agent
@@ -213,7 +214,7 @@ class LangChainInvestigation:
         )
 
     def _build_subagent_app(self, catalog: Sequence[SkillSpec]):
-        allowed = read_only_names(build_registry())
+        allowed = read_only_names(build_registry()) | {"read_file"}
         leaked = [
             name for name in (tool_name(tool) for tool in READ_ONLY_TOOLS) if name not in allowed
         ]
@@ -229,6 +230,13 @@ class LangChainInvestigation:
                 BudgetMiddleware(
                     configured_timeout=self._settings.model_timeout_seconds,
                     max_retries=self._settings.model_max_retries,
+                ),
+                FilesystemMiddleware(
+                    backend=backend,
+                    tools=["read_file"],
+                    tool_token_limit_before_evict=None,
+                    human_message_token_limit_before_evict=None,
+                    offload_binary_content=False,
                 ),
                 SkillsMiddleware(backend=backend, sources=["/"]),
             ],
@@ -271,6 +279,13 @@ class LangChainInvestigation:
                     max_retries=self._settings.model_max_retries,
                 ),
                 ProgressMiddleware(),
+                FilesystemMiddleware(
+                    backend=backend,
+                    tools=["read_file"],
+                    tool_token_limit_before_evict=None,
+                    human_message_token_limit_before_evict=None,
+                    offload_binary_content=False,
+                ),
                 SkillsMiddleware(backend=backend, sources=["/"]),
                 subagent,
             ],
