@@ -1,6 +1,6 @@
 ---
 name: bad-release
-description: 排查发布回归：错误率或延迟在发布后上升、滚动更新停滞时，核对版本、副本与就绪状态，判断是否需要回滚。
+description: 排查发布回归：错误率或延迟随发布、镜像或 Pod 模板变化而上升，滚动更新停滞，或只有新版本 Pod 重启、不就绪时，核对版本、副本与发布前后证据，判断是否需要回滚。手动调查没有告警名时也适用。模板和镜像未变、故障只集中在单个 Pod 时考虑 pod-rebuild；OOMKilled 或内存逼近上限先用 oom 核实，依赖变慢用 dependency-latency，不因重启或 500 就认定发布回归。
 metadata:
   vigil-auto-load-sources: alert
   vigil-auto-load-alertnames: HighErrorRate DeploymentRolloutStalled
