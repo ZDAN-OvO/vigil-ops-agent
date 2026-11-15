@@ -5,8 +5,8 @@ from typing import Any, Literal, Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-# 新调查运行时的版本标识；用于区分“旧调查循环”与“单 Agent 工具循环”的任务记录。
-AGENT_RUNTIME_VERSION = "langchain-agent-1"
+# 新调查运行时的版本标识；用于区分旧循环与 Skill/委派调查运行时。
+AGENT_RUNTIME_VERSION = "langchain-skill-tool-2"
 
 
 class Contract(BaseModel):
@@ -34,6 +34,7 @@ class Incident(Contract):
     symptoms: str
     time_range: TimeRange
     alert_ids: list[str] = Field(default_factory=list)
+    alert_names: list[str] = Field(default_factory=list)
     context: list[str] = Field(default_factory=list)
 
 
@@ -98,6 +99,7 @@ class Investigation(Contract):
     budget: Budget
     usage: BudgetUsage = Field(default_factory=BudgetUsage)
     parent_run_id: str | None = None
+    skills: list["SkillUsage"] = Field(default_factory=list)
     conclusion: str | None = None
     termination_reason: str | None = None
     started_at: AwareDatetime
@@ -126,12 +128,8 @@ class Hypothesis(Contract):
     investigation_id: str
     parent_id: str | None = None
     statement: str
-    expected_observations: list[str]
     origin: Literal["model", "runbook", "human"] = "model"
     status: HypothesisStatus = HypothesisStatus.PENDING
-    # 反驳条件与修订信息：假设不能删除，被反驳后可由新证据重新打开。
-    refutation_criteria: list[str] = Field(default_factory=list)
-    revision: int = Field(default=1, ge=1)
     update_reason: str = ""
 
 
@@ -159,41 +157,6 @@ class ToolResult(Contract):
         return self
 
 
-class ToolCall(Contract):
-    id: str
-    investigation_id: str
-    tool: str
-    parameters: dict[str, Any]
-    time_range: TimeRange
-    started_at: AwareDatetime
-    finished_at: AwareDatetime | None = None
-    error_code: str | None = None
-    retry_count: int = Field(default=0, ge=0)
-    truncated: bool = False
-    raw_ref: str | None = None
-
-    @model_validator(mode="after")
-    def require_finish_after_start(self) -> Self:
-        if self.finished_at is not None and self.finished_at < self.started_at:
-            raise ValueError("调用结束时间不能早于开始时间")
-        return self
-
-
-class Evidence(Contract):
-    """旧版证据记录：一条记录绑定一个假设；保留读取兼容，新循环写观测与关系。"""
-
-    id: str
-    investigation_id: str
-    hypothesis_id: str
-    tool_call_id: str
-    source: str
-    independence_key: str
-    observation: str
-    relation: Literal["supporting", "refuting", "neutral"]
-    raw_ref: str
-    time_range: TimeRange
-
-
 class ObservationStatus(StrEnum):
     OK = "ok"
     EMPTY = "empty"
@@ -215,7 +178,44 @@ class Observation(Contract):
     raw_ref: str = ""
     status: ObservationStatus = ObservationStatus.OK
     truncated: bool = False
+    delegation_id: str | None = None
     time_range: TimeRange
+    created_at: AwareDatetime | None = None
+
+
+class SkillTrigger(StrEnum):
+    """Skill 进入调查上下文的两种方式。"""
+
+    DESCRIPTION = "description"
+    SIGNAL = "signal"
+
+
+class SkillUsage(Contract):
+    """一次调查实际加载过的 Skill 及其内容版本。"""
+
+    name: str
+    content_hash: str
+    trigger: SkillTrigger
+
+
+class DelegationStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class Delegation(Contract):
+    """一次只读委派调查；与主 Agent 共享预算和权限边界。"""
+
+    id: str
+    investigation_id: str
+    objective: str
+    status: DelegationStatus = DelegationStatus.PENDING
+    result_summary: str = ""
+    skills: list[str] = Field(default_factory=list)
+    started_at: AwareDatetime
+    finished_at: AwareDatetime | None = None
     created_at: AwareDatetime | None = None
 
 
@@ -456,6 +456,10 @@ class TerminationCode(StrEnum):
     INTERRUPTED = "interrupted"
     RUNTIME_ERROR = "runtime_error"
     WAITING_APPROVAL = "waiting_approval"
+    SKILL_LOAD_FAILED = "skill_load_failed"
+    DELEGATION_FAILED = "delegation_failed"
+    READ_ONLY_VIOLATION = "read_only_violation"
+    UNGROUNDED_ACTION = "ungrounded_action"
 
 
 class InvestigationTask(Contract):
@@ -490,3 +494,6 @@ class InvestigationTask(Contract):
         if self.phase is TaskPhase.TERMINAL and not self.termination_code:
             raise ValueError("terminal 任务必须有 termination_code")
         return self
+
+
+Investigation.model_rebuild()

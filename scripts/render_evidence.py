@@ -3,10 +3,10 @@
 输入是真实运行留下的输出文件，脚本只做排版和截图，不改写内容。
 用法示例：
     python3 scripts/render_evidence.py \
-        --title "A01 故障持续" \
+        --title "Pod 重建：故障持续" \
         --command "bash faults/a01-pod-rebuild/repeat.sh verify" \
         --source faults/a01-pod-rebuild/runs/02-verify.txt \
-        --out demos/ms05/screenshots/02-fault-sustained.png
+        --out .evidence/pod-rebuild/02-fault-sustained.png
 """
 
 from __future__ import annotations
@@ -45,7 +45,10 @@ PAGE = """<!doctype html>
   .dot { width: 11px; height: 11px; border-radius: 50%; }
   .red { background: #ff5f57; } .yellow { background: #febc2e; } .green { background: #28c840; }
   .title { margin-left: 10px; color: #c9d1d9; font-size: 14px; font-weight: 600; }
-  .cmd { padding: 12px 18px 0; color: #7ee787; font: 13px/1.5 "JetBrains Mono", "DejaVu Sans Mono", monospace; }
+  .cmd {
+    padding: 12px 18px 0; color: #7ee787;
+    font: 13px/1.5 "JetBrains Mono", "DejaVu Sans Mono", monospace;
+  }
   pre {
     margin: 0; padding: 10px 18px 18px;
     color: #d6dee8; font: 13px/1.55 "JetBrains Mono", "DejaVu Sans Mono", monospace;
@@ -122,9 +125,13 @@ def main() -> None:
 
     rendered_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     foot = html.escape(
-        "来源 " + "、".join(str(path) for path in sources) + f" · 原始输出按终端样式渲染 · {rendered_at}"
+        "来源 "
+        + "、".join(str(path) for path in sources)
+        + f" · 原始输出按终端样式渲染 · {rendered_at}"
     )
-    command_line = "" if args.no_command else f"<div class=\"cmd\">$ {html.escape(args.command)}</div>"
+    command_line = (
+        "" if args.no_command else f'<div class="cmd">$ {html.escape(args.command)}</div>'
+    )
     page = (
         PAGE.replace("__TITLE__", html.escape(args.title))
         .replace('<div class="cmd">$ __COMMAND__</div>', command_line)

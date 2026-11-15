@@ -117,6 +117,7 @@ class BudgetMiddleware(AgentMiddleware):
                 raise
             except Exception as exc:  # noqa: BLE001 - 只对可重试的瞬态错误重试
                 if not _retryable(exc):
+                    logger.warning("模型调用失败且不可重试：{} {}", exc.__class__.__name__, exc)
                     raise ModelFailure(
                         "model_request_failed",
                         f"模型调用失败且不可重试：{exc.__class__.__name__}",

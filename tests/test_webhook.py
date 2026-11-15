@@ -96,10 +96,21 @@ def cleanup(fingerprint):
                     "DELETE FROM audit_events WHERE correlation_id = %s", (investigation_id,)
                 )
                 conn.execute(
-                    "DELETE FROM evidence WHERE investigation_id = %s", (investigation_id,)
+                    "DELETE FROM hypothesis_evidence WHERE investigation_id = %s",
+                    (investigation_id,),
                 )
                 conn.execute(
-                    "DELETE FROM tool_calls WHERE investigation_id = %s", (investigation_id,)
+                    "DELETE FROM observations WHERE investigation_id = %s", (investigation_id,)
+                )
+                conn.execute(
+                    "DELETE FROM delegations WHERE investigation_id = %s", (investigation_id,)
+                )
+                conn.execute(
+                    "DELETE FROM tool_requests WHERE investigation_id = %s", (investigation_id,)
+                )
+                conn.execute(
+                    "DELETE FROM investigation_tasks WHERE investigation_id = %s",
+                    (investigation_id,),
                 )
                 conn.execute(
                     "DELETE FROM hypotheses WHERE investigation_id = %s", (investigation_id,)

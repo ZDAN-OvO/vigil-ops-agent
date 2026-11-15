@@ -26,7 +26,8 @@ from aiops.contracts import (
     AuditEvent,
     Budget,
     BudgetUsage,
-    Evidence,
+    Delegation,
+    DelegationStatus,
     FollowupStatus,
     Hypothesis,
     HypothesisEvidence,
@@ -37,9 +38,9 @@ from aiops.contracts import (
     Observation,
     ProposalStatus,
     RiskDecision,
+    SkillUsage,
     TaskPhase,
     TimeRange,
-    ToolCall,
     ToolRequest,
     ToolRequestState,
 )
@@ -122,8 +123,8 @@ class Store:
                 """
                 INSERT INTO incidents (
                     id, environment, cluster, namespace, service, trigger, symptoms,
-                    time_start, time_end, alert_ids, context
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    time_start, time_end, alert_ids, alert_names, context
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     incident.id,
@@ -136,6 +137,7 @@ class Store:
                     incident.time_range.start,
                     incident.time_range.end,
                     incident.alert_ids,
+                    incident.alert_names,
                     incident.context,
                 ),
             )
@@ -156,6 +158,7 @@ class Store:
             symptoms=row["symptoms"],
             time_range=TimeRange(start=row["time_start"], end=row["time_end"]),
             alert_ids=row["alert_ids"],
+            alert_names=row.get("alert_names") or [],
             context=row["context"],
         )
 
@@ -167,8 +170,8 @@ class Store:
                     id, incident_id, parent_run_id, status, model, policy_version,
                     budget_tool_calls, budget_model_calls, budget_wall_clock_seconds,
                     budget_action_seconds, used_tool_calls, used_model_calls, conclusion,
-                    termination_reason, started_at, finished_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    termination_reason, started_at, finished_at, skills
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     investigation.id,
@@ -187,6 +190,7 @@ class Store:
                     investigation.termination_reason,
                     investigation.started_at,
                     investigation.finished_at,
+                    Jsonb([item.model_dump(mode="json") for item in investigation.skills]),
                 ),
             )
 
@@ -289,6 +293,7 @@ class Store:
                     tool_calls=row["used_tool_calls"],
                     model_calls=row["used_model_calls"],
                 ),
+                skills=[SkillUsage.model_validate(item) for item in (row.get("skills") or [])],
                 conclusion=row["conclusion"],
                 termination_reason=row["termination_reason"],
                 started_at=row["started_at"],
@@ -331,6 +336,7 @@ class Store:
                 tool_calls=row["used_tool_calls"],
                 model_calls=row["used_model_calls"],
             ),
+            skills=[SkillUsage.model_validate(item) for item in (row.get("skills") or [])],
             conclusion=row["conclusion"],
             termination_reason=row["termination_reason"],
             started_at=row["started_at"],
@@ -379,28 +385,23 @@ class Store:
 
     async def save_hypothesis(self, hypothesis: Hypothesis) -> None:
         async with self._pool.connection() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    """
-                    INSERT INTO hypotheses (
-                        id, investigation_id, parent_id, statement, expected_observations,
-                        origin, status, refutation_criteria, revision, update_reason
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        hypothesis.id,
-                        hypothesis.investigation_id,
-                        hypothesis.parent_id,
-                        hypothesis.statement,
-                        hypothesis.expected_observations,
-                        hypothesis.origin,
-                        hypothesis.status.value,
-                        hypothesis.refutation_criteria,
-                        hypothesis.revision,
-                        hypothesis.update_reason,
-                    ),
-                )
-                await self._insert_hypothesis_revision(conn, hypothesis, actor="agent")
+            await conn.execute(
+                """
+                INSERT INTO hypotheses (
+                    id, investigation_id, parent_id, statement,
+                    origin, status, update_reason
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    hypothesis.id,
+                    hypothesis.investigation_id,
+                    hypothesis.parent_id,
+                    hypothesis.statement,
+                    hypothesis.origin,
+                    hypothesis.status.value,
+                    hypothesis.update_reason,
+                ),
+            )
 
     async def get_hypothesis(self, hypothesis_id: str) -> Hypothesis | None:
         async with self._pool.connection() as conn:
@@ -413,84 +414,36 @@ class Store:
         hypothesis_id: str,
         *,
         statement: str,
-        expected_observations: list[str],
-        refutation_criteria: list[str],
         status: str,
         update_reason: str,
-        actor: str,
         parent_id: str | None = None,
         update_parent: bool = False,
     ) -> Hypothesis:
-        """改假设内容或状态：版本加一，同时追加不可变的历史记录。"""
-        async with self._pool.connection() as conn:
-            async with conn.transaction():
-                cursor = await conn.execute(
-                    """
-                    UPDATE hypotheses
-                       SET statement = %s,
-                           expected_observations = %s,
-                           refutation_criteria = %s,
-                           status = %s,
-                           update_reason = %s,
-                           parent_id = CASE WHEN %s THEN %s ELSE parent_id END,
-                           revision = revision + 1
-                     WHERE id = %s
-                 RETURNING *
-                    """,
-                    (
-                        statement,
-                        expected_observations,
-                        refutation_criteria,
-                        status,
-                        update_reason,
-                        update_parent,
-                        parent_id,
-                        hypothesis_id,
-                    ),
-                )
-                row = await cursor.fetchone()
-                if row is None:
-                    raise LookupError(f"假设不存在：{hypothesis_id}")
-                await self._insert_hypothesis_revision(conn, _hypothesis_from_row(row), actor=actor)
-        return _hypothesis_from_row(row)
-
-    async def _insert_hypothesis_revision(
-        self, conn: psycopg.AsyncConnection, hypothesis: Hypothesis, *, actor: str
-    ) -> None:
-        await conn.execute(
-            """
-            INSERT INTO hypothesis_revisions (
-                id, hypothesis_id, revision, statement, expected_observations,
-                refutation_criteria, status, update_reason, actor
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (hypothesis_id, revision) DO NOTHING
-            """,
-            (
-                f"hrev-{uuid.uuid4().hex[:12]}",
-                hypothesis.id,
-                hypothesis.revision,
-                hypothesis.statement,
-                hypothesis.expected_observations,
-                hypothesis.refutation_criteria,
-                hypothesis.status.value,
-                hypothesis.update_reason,
-                actor,
-            ),
-        )
-
-    async def list_hypothesis_revisions(self, investigation_id: str) -> list[dict]:
+        """改假设内容或状态；不保留修订历史，变更理由写在 update_reason。"""
         async with self._pool.connection() as conn:
             cursor = await conn.execute(
                 """
-                SELECT r.*
-                  FROM hypothesis_revisions r
-                  JOIN hypotheses h ON h.id = r.hypothesis_id
-                 WHERE h.investigation_id = %s
-                 ORDER BY r.hypothesis_id, r.revision
+                UPDATE hypotheses
+                   SET statement = %s,
+                       status = %s,
+                       update_reason = %s,
+                       parent_id = CASE WHEN %s THEN %s ELSE parent_id END
+                 WHERE id = %s
+             RETURNING *
                 """,
-                (investigation_id,),
+                (
+                    statement,
+                    status,
+                    update_reason,
+                    update_parent,
+                    parent_id,
+                    hypothesis_id,
+                ),
             )
-            return list(await cursor.fetchall())
+            row = await cursor.fetchone()
+            if row is None:
+                raise LookupError(f"假设不存在：{hypothesis_id}")
+        return _hypothesis_from_row(row)
 
     async def list_hypotheses(self, investigation_id: str) -> list[Hypothesis]:
         async with self._pool.connection() as conn:
@@ -508,130 +461,6 @@ class Store:
             )
             if cursor.rowcount != 1:
                 raise LookupError(f"假设不存在：{hypothesis_id}")
-
-    async def set_evidence_relation(self, evidence_id: str, relation: str) -> None:
-        async with self._pool.connection() as conn:
-            cursor = await conn.execute(
-                "UPDATE evidence SET relation = %s WHERE id = %s", (relation, evidence_id)
-            )
-            if cursor.rowcount != 1:
-                raise LookupError(f"证据不存在：{evidence_id}")
-
-    async def save_tool_call(self, call: ToolCall) -> None:
-        async with self._pool.connection() as conn:
-            await conn.execute(
-                """
-                INSERT INTO tool_calls (
-                    id, investigation_id, tool, parameters, time_start, time_end,
-                    started_at, finished_at, error_code, retry_count, truncated, raw_ref
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    call.id,
-                    call.investigation_id,
-                    call.tool,
-                    Jsonb(call.parameters),
-                    call.time_range.start,
-                    call.time_range.end,
-                    call.started_at,
-                    call.finished_at,
-                    call.error_code,
-                    call.retry_count,
-                    call.truncated,
-                    call.raw_ref,
-                ),
-            )
-
-    async def list_tool_calls(self, investigation_id: str) -> list[ToolCall]:
-        async with self._pool.connection() as conn:
-            cursor = await conn.execute(
-                "SELECT * FROM tool_calls WHERE investigation_id = %s ORDER BY started_at, id",
-                (investigation_id,),
-            )
-            rows = await cursor.fetchall()
-        return [
-            ToolCall(
-                id=row["id"],
-                investigation_id=row["investigation_id"],
-                tool=row["tool"],
-                parameters=row["parameters"],
-                time_range=TimeRange(start=row["time_start"], end=row["time_end"]),
-                started_at=row["started_at"],
-                finished_at=row["finished_at"],
-                error_code=row["error_code"],
-                retry_count=row["retry_count"],
-                truncated=row["truncated"],
-                raw_ref=row["raw_ref"],
-            )
-            for row in rows
-        ]
-
-    async def get_tool_call(self, tool_call_id: str) -> ToolCall | None:
-        async with self._pool.connection() as conn:
-            cursor = await conn.execute("SELECT * FROM tool_calls WHERE id = %s", (tool_call_id,))
-            row = await cursor.fetchone()
-        if row is None:
-            return None
-        return ToolCall(
-            id=row["id"],
-            investigation_id=row["investigation_id"],
-            tool=row["tool"],
-            parameters=row["parameters"],
-            time_range=TimeRange(start=row["time_start"], end=row["time_end"]),
-            started_at=row["started_at"],
-            finished_at=row["finished_at"],
-            error_code=row["error_code"],
-            retry_count=row["retry_count"],
-            truncated=row["truncated"],
-            raw_ref=row["raw_ref"],
-        )
-
-    async def save_evidence(self, evidence: Evidence) -> None:
-        async with self._pool.connection() as conn:
-            await conn.execute(
-                """
-                INSERT INTO evidence (
-                    id, investigation_id, hypothesis_id, tool_call_id, source,
-                    independence_key, observation, relation, raw_ref, time_start, time_end
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    evidence.id,
-                    evidence.investigation_id,
-                    evidence.hypothesis_id,
-                    evidence.tool_call_id,
-                    evidence.source,
-                    evidence.independence_key,
-                    evidence.observation,
-                    evidence.relation,
-                    evidence.raw_ref,
-                    evidence.time_range.start,
-                    evidence.time_range.end,
-                ),
-            )
-
-    async def list_evidence(self, investigation_id: str) -> list[Evidence]:
-        async with self._pool.connection() as conn:
-            cursor = await conn.execute(
-                "SELECT * FROM evidence WHERE investigation_id = %s ORDER BY created_at, id",
-                (investigation_id,),
-            )
-            rows = await cursor.fetchall()
-        return [
-            Evidence(
-                id=row["id"],
-                investigation_id=row["investigation_id"],
-                hypothesis_id=row["hypothesis_id"],
-                tool_call_id=row["tool_call_id"],
-                source=row["source"],
-                independence_key=row["independence_key"],
-                observation=row["observation"],
-                relation=row["relation"],
-                raw_ref=row["raw_ref"],
-                time_range=TimeRange(start=row["time_start"], end=row["time_end"]),
-            )
-            for row in rows
-        ]
 
     async def upsert_runbook(self, runbook: Runbook) -> None:
         async with self._pool.connection() as conn:
@@ -1442,8 +1271,8 @@ class Store:
                 """
                 INSERT INTO observations (
                     id, investigation_id, tool_call_id, source, independence_key,
-                    summary, raw_ref, status, truncated, time_start, time_end
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    summary, raw_ref, status, truncated, delegation_id, time_start, time_end
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (investigation_id, tool_call_id) DO NOTHING
                 """,
                 (
@@ -1456,6 +1285,7 @@ class Store:
                     observation.raw_ref,
                     observation.status.value,
                     observation.truncated,
+                    observation.delegation_id,
                     observation.time_range.start,
                     observation.time_range.end,
                 ),
@@ -1539,6 +1369,80 @@ class Store:
             )
             for row in rows
         ]
+
+    # ---- 技能与委派调查 ----
+
+    async def set_investigation_skills(
+        self, investigation_id: str, skills: Sequence[SkillUsage]
+    ) -> None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "UPDATE investigations SET skills = %s WHERE id = %s",
+                (Jsonb([item.model_dump(mode="json") for item in skills]), investigation_id),
+            )
+            if cursor.rowcount != 1:
+                raise LookupError(f"调查不存在：{investigation_id}")
+
+    async def create_delegation(self, delegation: Delegation) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO delegations (
+                    id, investigation_id, objective, status, result_summary,
+                    skills, started_at, finished_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    delegation.id,
+                    delegation.investigation_id,
+                    delegation.objective,
+                    delegation.status.value,
+                    delegation.result_summary,
+                    delegation.skills,
+                    delegation.started_at,
+                    delegation.finished_at,
+                ),
+            )
+
+    async def finish_delegation(
+        self,
+        delegation_id: str,
+        *,
+        status: DelegationStatus,
+        result_summary: str,
+        skills: Sequence[str],
+        finished_at: datetime,
+    ) -> None:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE delegations
+                   SET status = %s, result_summary = %s, skills = %s, finished_at = %s
+                 WHERE id = %s
+                """,
+                (status.value, result_summary[:2000], list(skills), finished_at, delegation_id),
+            )
+            if cursor.rowcount != 1:
+                raise LookupError(f"委派调查不存在：{delegation_id}")
+
+    async def list_delegations(self, investigation_id: str) -> list[Delegation]:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM delegations WHERE investigation_id = %s ORDER BY started_at, id",
+                (investigation_id,),
+            )
+            rows = await cursor.fetchall()
+        return [_delegation_from_row(row) for row in rows]
+
+    async def count_failed_delegations(self, investigation_id: str) -> int:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT count(*) AS failed_count FROM delegations "
+                "WHERE investigation_id = %s AND status = %s",
+                (investigation_id, DelegationStatus.FAILED.value),
+            )
+            row = await cursor.fetchone()
+        return int(row["failed_count"]) if row else 0
 
     # ---- 工具请求账本 ----
 
@@ -1687,11 +1591,8 @@ def _hypothesis_from_row(row: dict) -> Hypothesis:
         investigation_id=row["investigation_id"],
         parent_id=row["parent_id"],
         statement=row["statement"],
-        expected_observations=row["expected_observations"],
         origin=row["origin"],
         status=row["status"],
-        refutation_criteria=row.get("refutation_criteria") or [],
-        revision=int(row.get("revision") or 1),
         update_reason=row.get("update_reason") or "",
     )
 
@@ -1707,7 +1608,22 @@ def _observation_from_row(row: dict) -> Observation:
         raw_ref=row["raw_ref"] or "",
         status=row["status"],
         truncated=bool(row["truncated"]),
+        delegation_id=row.get("delegation_id"),
         time_range=TimeRange(start=row["time_start"], end=row["time_end"]),
+        created_at=row.get("created_at"),
+    )
+
+
+def _delegation_from_row(row: dict) -> Delegation:
+    return Delegation(
+        id=row["id"],
+        investigation_id=row["investigation_id"],
+        objective=row["objective"],
+        status=DelegationStatus(row["status"]),
+        result_summary=row["result_summary"] or "",
+        skills=list(row["skills"] or []),
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
         created_at=row.get("created_at"),
     )
 

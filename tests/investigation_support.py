@@ -552,6 +552,7 @@ def report_call(
     conclusion: str = "测试结论",
     confirmed: bool = True,
     supporting: list[str] | None = None,
+    candidates: list[str] | None = None,
     call_id: str = "call-report",
     boundary: str = "测试证据边界",
 ) -> AIMessage:
@@ -562,6 +563,7 @@ def report_call(
             "root_cause_confirmed": confirmed,
             "supporting_observation_ids": supporting or [],
             "contradictory_observation_ids": [],
+            "candidate_hypothesis_ids": candidates or [],
             "evidence_boundary": boundary,
             "known_contradictions": [],
             "remaining_unknowns": [],
@@ -608,8 +610,6 @@ def create_hypothesis(call_id: str = "call-hyp", temp_id: str = "h1") -> AIMessa
                     "op": "create",
                     "temp_id": temp_id,
                     "statement": "目标 Pod 的临时状态损坏",
-                    "expected_observations": ["/work 持续 500 且 Pod 就绪"],
-                    "refutation_criteria": ["重建后仍然 500"],
                     "reason": "日志显示 500 但 Pod 就绪",
                 }
             ]

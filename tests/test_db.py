@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import psycopg
 import pytest
+from psycopg.conninfo import make_conninfo
 
 from aiops.config import Settings
 from aiops.contracts import (
@@ -17,7 +18,8 @@ from aiops.contracts import (
     AttemptStatus,
     AuditEvent,
     Budget,
-    Evidence,
+    Delegation,
+    DelegationStatus,
     Hypothesis,
     HypothesisEvidence,
     Incident,
@@ -29,9 +31,10 @@ from aiops.contracts import (
     ProposalStatus,
     RiskDecision,
     RiskDisposition,
+    SkillTrigger,
+    SkillUsage,
     TaskPhase,
     TimeRange,
-    ToolCall,
     ToolRequest,
     ToolRequestState,
 )
@@ -58,6 +61,7 @@ def ids():
         "hypothesis": f"hyp-{tag}",
         "tool_call": f"call-{tag}",
         "evidence": f"ev-{tag}",
+        "delegation": f"dlg-{tag}",
         "correlation": f"corr-{tag}",
         "audit": f"audit-{tag}",
     }
@@ -72,15 +76,6 @@ def ids():
         )
         conn.execute(
             "DELETE FROM observations WHERE investigation_id = %s", (values["investigation"],)
-        )
-        conn.execute(
-            """
-            DELETE FROM hypothesis_revisions
-             WHERE hypothesis_id IN (
-                SELECT id FROM hypotheses WHERE investigation_id = %s
-             )
-            """,
-            (values["investigation"],),
         )
         for proposal_id in [
             row[0]
@@ -100,9 +95,8 @@ def ids():
             (values["investigation"],),
         )
         conn.execute("DELETE FROM audit_events WHERE correlation_id = %s", (values["correlation"],))
-        conn.execute("DELETE FROM evidence WHERE investigation_id = %s", (values["investigation"],))
         conn.execute(
-            "DELETE FROM tool_calls WHERE investigation_id = %s", (values["investigation"],)
+            "DELETE FROM delegations WHERE investigation_id = %s", (values["investigation"],)
         )
         conn.execute(
             "DELETE FROM hypotheses WHERE investigation_id = %s", (values["investigation"],)
@@ -145,6 +139,41 @@ def test_migrations_can_run_repeatedly():
     assert run(scenario()) == []
 
 
+def test_migrations_apply_to_empty_schema():
+    """空库从 0001 跑到 0011；用独立 schema 模拟全新实例，结束后删除。"""
+    schema = f"mig_{uuid4().hex[:8]}"
+    admin = psycopg.connect(DSN, autocommit=True)
+    admin.execute(f"CREATE SCHEMA {schema}")
+    admin.close()
+    dsn = make_conninfo(DSN, options=f"-csearch_path={schema}")
+
+    async def scenario():
+        async with Store.open(dsn) as store:
+            applied = await store.migrate()
+            async with store._pool.connection() as conn:
+                cursor = await conn.execute(
+                    """
+                    SELECT table_name FROM information_schema.tables
+                     WHERE table_schema = %s
+                    """,
+                    (schema,),
+                )
+                tables = {row["table_name"] for row in await cursor.fetchall()}
+        return applied, tables
+
+    try:
+        applied, tables = run(scenario())
+    finally:
+        admin = psycopg.connect(DSN, autocommit=True)
+        admin.execute(f"DROP SCHEMA {schema} CASCADE")
+        admin.close()
+    assert "0011_skills_and_delegations" in applied
+    assert {"investigations", "delegations", "observations", "tool_requests"} <= tables
+    assert "hypothesis_revisions" not in tables
+    assert "evidence" not in tables
+    assert "tool_calls" not in tables
+
+
 def test_investigation_records_round_trip(ids):
     async def scenario():
         async with Store.open(DSN) as store:
@@ -156,31 +185,18 @@ def test_investigation_records_round_trip(ids):
                     id=ids["hypothesis"],
                     investigation_id=ids["investigation"],
                     statement="坏发布导致首页失败",
-                    expected_observations=["probe_success=0"],
                 )
             )
-            await store.save_tool_call(
-                ToolCall(
-                    id=ids["tool_call"],
-                    investigation_id=ids["investigation"],
-                    tool="prometheus.query",
-                    parameters={"expression": "probe_success"},
-                    time_range=TimeRange(start=START, end=START + timedelta(minutes=5)),
-                    started_at=START,
-                    finished_at=START + timedelta(seconds=1),
-                )
-            )
-            await store.save_evidence(
-                Evidence(
+            await store.save_observation(
+                Observation(
                     id=ids["evidence"],
                     investigation_id=ids["investigation"],
-                    hypothesis_id=ids["hypothesis"],
                     tool_call_id=ids["tool_call"],
                     source="prometheus",
                     independence_key="frontend-probe",
-                    observation="probe_success 在故障窗口内为 0",
-                    relation="supporting",
+                    summary="probe_success 在故障窗口内为 0",
                     raw_ref="runtime/test/probe.json",
+                    status=ObservationStatus.OK,
                     time_range=TimeRange(start=START, end=START + timedelta(minutes=5)),
                 )
             )
@@ -201,20 +217,18 @@ def test_investigation_records_round_trip(ids):
             saved_incident = await store.get_incident(ids["incident"])
             saved = await store.get_investigation(ids["investigation"])
             hypotheses = await store.list_hypotheses(ids["investigation"])
-            calls = await store.list_tool_calls(ids["investigation"])
-            evidence = await store.list_evidence(ids["investigation"])
+            observations = await store.list_observations(ids["investigation"])
             audit = await store.list_audit(ids["correlation"])
-        return saved_incident, saved, hypotheses, calls, evidence, audit
+        return saved_incident, saved, hypotheses, observations, audit
 
-    saved_incident, saved, hypotheses, calls, evidence, audit = run(scenario())
+    saved_incident, saved, hypotheses, observations, audit = run(scenario())
     assert saved_incident is not None
     assert saved_incident.time_range == incident(ids).time_range
     assert saved is not None
     assert saved.status is InvestigationStatus.RUNNING
     assert saved.usage.tool_calls == 1
     assert [h.statement for h in hypotheses] == ["坏发布导致首页失败"]
-    assert calls[0].parameters == {"expression": "probe_success"}
-    assert evidence[0].relation == "supporting"
+    assert observations[0].summary == "probe_success 在故障窗口内为 0"
     assert audit[0].payload == {"model": "test-model"}
 
 
@@ -472,7 +486,7 @@ def test_task_phase_constraints_hold_in_database(ids):
     assert run(scenario()) == ["check", "check", "check"]
 
 
-def test_observation_relation_and_hypothesis_revisions(ids):
+def test_observation_relation_and_hypothesis_update(ids):
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
@@ -483,19 +497,6 @@ def test_observation_relation_and_hypothesis_revisions(ids):
                     id=ids["hypothesis"],
                     investigation_id=ids["investigation"],
                     statement="初始假设",
-                    expected_observations=["a"],
-                    refutation_criteria=["b"],
-                )
-            )
-            await store.save_tool_call(
-                ToolCall(
-                    id=ids["tool_call"],
-                    investigation_id=ids["investigation"],
-                    tool="kubernetes.list_pods",
-                    parameters={"selector": "app=x"},
-                    time_range=TimeRange(start=START, end=START + timedelta(minutes=5)),
-                    started_at=START,
-                    finished_at=START + timedelta(seconds=1),
                 )
             )
             await store.save_observation(
@@ -534,24 +535,19 @@ def test_observation_relation_and_hypothesis_revisions(ids):
             updated = await store.update_hypothesis(
                 ids["hypothesis"],
                 statement="细化后的假设",
-                expected_observations=["c"],
-                refutation_criteria=["d"],
                 status="supported",
                 update_reason="新证据支持",
-                actor="test",
             )
             relations = await store.list_hypothesis_evidence(ids["investigation"])
             observations = await store.list_observations(ids["investigation"])
-            revisions = await store.list_hypothesis_revisions(ids["investigation"])
-        return updated, relations, observations, revisions
+        return updated, relations, observations
 
-    updated, relations, observations, revisions = run(scenario())
-    assert updated.revision == 2
+    updated, relations, observations = run(scenario())
+    assert updated.statement == "细化后的假设"
     assert updated.status.value == "supported"
+    assert updated.update_reason == "新证据支持"
     assert len(relations) == 1 and relations[0].relation == "supporting"
     assert [item.summary for item in observations] == ["Pod 就绪但 /work 500"]
-    assert [row["revision"] for row in revisions] == [1, 2]
-    assert revisions[-1]["update_reason"] == "新证据支持"
 
 
 def test_one_observation_can_support_multiple_hypotheses(ids):
@@ -568,21 +564,8 @@ def test_one_observation_can_support_multiple_hypotheses(ids):
                         id=hid,
                         investigation_id=ids["investigation"],
                         statement=statement,
-                        expected_observations=["a"],
-                        refutation_criteria=["b"],
                     )
                 )
-            await store.save_tool_call(
-                ToolCall(
-                    id=ids["tool_call"],
-                    investigation_id=ids["investigation"],
-                    tool="kubernetes.list_pods",
-                    parameters={"selector": "app=x"},
-                    time_range=TimeRange(start=START, end=START + timedelta(minutes=5)),
-                    started_at=START,
-                    finished_at=START + timedelta(seconds=1),
-                )
-            )
             await store.save_observation(
                 Observation(
                     id=ids["evidence"],
@@ -667,3 +650,61 @@ def test_investigation_without_task_is_readable(ids):
     assert task is None
     assert saved.budget.max_action_seconds == 450
     assert [item.id for item in listed] == [saved.id]
+
+
+def test_skills_and_delegations_round_trip(ids):
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            await store.save_incident(incident(ids))
+            await store.create_investigation(investigation(ids))
+            await store.set_investigation_skills(
+                ids["investigation"],
+                [
+                    SkillUsage(
+                        name="oom",
+                        content_hash="a" * 64,
+                        trigger=SkillTrigger.SIGNAL,
+                    )
+                ],
+            )
+            await store.create_delegation(
+                Delegation(
+                    id=ids["delegation"],
+                    investigation_id=ids["investigation"],
+                    objective="核对最近的发布",
+                    status=DelegationStatus.RUNNING,
+                    started_at=START,
+                )
+            )
+            await store.save_observation(
+                Observation(
+                    id=f"obs-{ids['delegation']}",
+                    investigation_id=ids["investigation"],
+                    tool_call_id=ids["tool_call"],
+                    source="kubernetes",
+                    independence_key="kubernetes:pods",
+                    summary="委派返回的观测",
+                    status=ObservationStatus.OK,
+                    delegation_id=ids["delegation"],
+                    time_range=TimeRange(start=START, end=START + timedelta(minutes=5)),
+                )
+            )
+            await store.finish_delegation(
+                ids["delegation"],
+                status=DelegationStatus.SUCCEEDED,
+                result_summary="发布未变化",
+                skills=["bad-release"],
+                finished_at=START + timedelta(minutes=1),
+            )
+            saved = await store.get_investigation(ids["investigation"])
+            delegations = await store.list_delegations(ids["investigation"])
+            observations = await store.list_observations(ids["investigation"])
+        return saved, delegations, observations
+
+    saved, delegations, observations = run(scenario())
+    assert [item.name for item in saved.skills] == ["oom"]
+    assert saved.skills[0].trigger is SkillTrigger.SIGNAL
+    assert delegations[0].status is DelegationStatus.SUCCEEDED
+    assert delegations[0].skills == ["bad-release"]
+    assert observations[0].delegation_id == ids["delegation"]

@@ -83,11 +83,17 @@ def reference_store(tmp_path, *, selector="app=cartservice", name=None, namespac
         SimpleNamespace(observation_id=oid, hypothesis_id="h1", relation="supporting")
         for oid in ARGS["evidence_ids"]
     ]
-    store.list_tool_calls.return_value = [
+    store.list_tool_requests.return_value = [
         SimpleNamespace(
-            id="inv1:pods", tool="kubernetes.list_pods", parameters={"selector": selector}
+            tool_call_id="pods",
+            tool="kubernetes_list_pods",
+            arguments={"tool": "kubernetes.list_pods", "selector": selector},
         ),
-        SimpleNamespace(id="inv1:metric", tool="prometheus.query_range", parameters={}),
+        SimpleNamespace(
+            tool_call_id="metric",
+            tool="prometheus_query_range",
+            arguments={"tool": "prometheus.query_range"},
+        ),
     ]
     return store
 

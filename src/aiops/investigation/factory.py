@@ -12,9 +12,7 @@ from aiops.agent.engine import LangChainInvestigation
 from aiops.config import Settings
 from aiops.contracts import Incident, Investigation
 from aiops.db import Store
-from aiops.investigation.baseline import RulesBaseline
 from aiops.investigation.toolbox import Toolbox
-from aiops.model import ModelClient
 from aiops.tools.kubernetes import KubernetesRead
 from aiops.tools.prometheus import PrometheusClient
 
@@ -100,32 +98,8 @@ async def open_agent(
         )
 
 
-@asynccontextmanager
-async def open_baseline(
-    *,
-    settings: Settings,
-    store: Store,
-    incident: Incident,
-    investigation: Investigation,
-) -> AsyncIterator[RulesBaseline]:
-    async with _open_io(settings, store=store) as (toolbox, executor):
-        yield RulesBaseline(
-            store=store,
-            toolbox=toolbox,
-            incident=incident,
-            investigation=investigation,
-            observation_window=incident.time_range,
-            runtime_path=settings.runtime_path,
-            proposer=executor,
-            tool_timeout_seconds=settings.tool_timeout_seconds,
-            max_observation_chars=settings.investigation_max_observation_chars,
-        )
-
-
 __all__ = [
-    "ModelClient",
     "build_executor",
     "open_agent",
-    "open_baseline",
     "open_executor",
 ]

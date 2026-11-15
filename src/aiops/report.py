@@ -25,6 +25,8 @@ class Report:
     action_ids: list[str] = field(default_factory=list)
     relations: list[dict[str, Any]] = field(default_factory=list)
     observations: list[dict[str, Any]] = field(default_factory=list)
+    skills: list[dict[str, Any]] = field(default_factory=list)
+    delegations: list[dict[str, Any]] = field(default_factory=list)
     remaining_budget: dict[str, Any] = field(default_factory=dict)
     needs_human: list[str] = field(default_factory=list)
     prediction: dict[str, Any] | None = None

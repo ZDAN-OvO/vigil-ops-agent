@@ -55,13 +55,7 @@ def ids():
             "DELETE FROM observations WHERE investigation_id = %s", (values["investigation"],)
         )
         conn.execute(
-            """
-            DELETE FROM hypothesis_revisions
-             WHERE hypothesis_id IN (
-                SELECT id FROM hypotheses WHERE investigation_id = %s
-             )
-            """,
-            (values["investigation"],),
+            "DELETE FROM delegations WHERE investigation_id = %s", (values["investigation"],)
         )
         for proposal_id in [
             row[0]
@@ -84,10 +78,6 @@ def ids():
         conn.execute("DELETE FROM audit_events WHERE correlation_id = %s", (values["correlation"],))
         conn.execute(
             "DELETE FROM audit_events WHERE correlation_id = %s", (values["investigation"],)
-        )
-        conn.execute("DELETE FROM evidence WHERE investigation_id = %s", (values["investigation"],))
-        conn.execute(
-            "DELETE FROM tool_calls WHERE investigation_id = %s", (values["investigation"],)
         )
         conn.execute(
             "DELETE FROM hypotheses WHERE investigation_id = %s", (values["investigation"],)

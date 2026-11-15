@@ -130,6 +130,7 @@ def build_incident(events: list[AlertEvent], settings: Settings, *, now: datetim
         symptoms="；".join(dict.fromkeys(event.symptoms for event in events)),
         time_range=TimeRange(start=start, end=max(now, start + timedelta(minutes=1))),
         alert_ids=list(dict.fromkeys(event.fingerprint for event in events)),
+        alert_names=list(dict.fromkeys(event.alertname for event in events)),
         context=context,
     )
 

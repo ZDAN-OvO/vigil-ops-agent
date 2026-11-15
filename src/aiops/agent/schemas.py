@@ -21,8 +21,6 @@ class HypothesisOperation(Strict):
     hypothesis_id: str = Field(default="", description="refine/update_status 的稳定 ID")
     parent_id: str = Field(default="", description="create 的父假设：已有 ID 或同批临时 ID")
     statement: str = ""
-    expected_observations: list[str] = Field(default_factory=list)
-    refutation_criteria: list[str] = Field(default_factory=list)
     status: Literal["pending", "supported", "refuted", "inconclusive"] | None = None
     reason: str = Field(default="", description="状态或内容变更的依据，必填")
 
@@ -74,6 +72,9 @@ class ReportDraft(Strict):
     root_cause_confirmed: bool
     supporting_observation_ids: list[str] = Field(default_factory=list)
     contradictory_observation_ids: list[str] = Field(default_factory=list)
+    candidate_hypothesis_ids: list[str] = Field(
+        default_factory=list, description="根因未确认时仍需保留的候选假设 ID"
+    )
     evidence_boundary: str = Field(default="", description="证据能覆盖到什么、不能覆盖什么")
     known_contradictions: list[str] = Field(default_factory=list)
     remaining_unknowns: list[str] = Field(default_factory=list)

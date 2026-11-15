@@ -30,8 +30,12 @@ class Progress:
     needs_human: list[str] = field(default_factory=list)
     seen_activity: int = -1
     budget_nudged: bool = False
+    ungrounded_actions: int = 0
     # 本期同一任务按批内顺序串行执行工具，不为跨任务或跨批次引入并行调度。
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    # 同一调查同时只允许一个只读委派运行。
+    delegation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    skill_read_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     def record(self, event: str) -> None:
         self.activity += 1
