@@ -16,7 +16,7 @@
 | 重放不重复写入 | 至少 1 条真实记录 | 对已成功提案再次批准，返回 `not_pending`，执行计数仍为 1 | 见下文“跨场景验收” |
 | 委派调查 | 至少 1 次运行使用委派，能查到目标、所用 Skill 和返回的观测 | 未核实（完整验收未满足）：原报告可证实 1 次委派成功，缺少完整委派 ID、子任务 Skill 和观测归属明细 | [运行记录](../faults/f01-bad-release/runs/2026-11-13-delegation.md) |
 | 追踪平台 | 默认关闭时业务行为不变，启用后能接入 | 自动化测试覆盖；按用户决定，免除真实 trace 验证 | `tests/test_tracing.py` |
-| 自动化检查 | `make check-all` 通过 | PR-B：107 passed、160 skipped（未配置数据库），CI 通过 | [PR-B #8](https://github.com/ZDAN-OvO/vigil-ops-agent/pull/8) · [checks](https://github.com/ZDAN-OvO/vigil-ops-agent/actions/runs/43676706148/job/132698323394) |
+| 自动化检查 | `make check-all` 通过 | PR-B：120 passed、160 skipped（未配置数据库），CI 通过 | [PR-B #8](https://github.com/ZDAN-OvO/vigil-ops-agent/pull/8) · [checks](https://github.com/ZDAN-OvO/vigil-ops-agent/actions/runs/43678390320/job/132703462697) |
 
 ### 跨场景验收
 
