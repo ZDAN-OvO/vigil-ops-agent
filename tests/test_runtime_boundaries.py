@@ -79,6 +79,26 @@ def runtime_case(tmp_path, responses):
     store.count_failed_delegations.side_effect = lambda _: sum(
         row.status is DelegationStatus.FAILED for row in rows
     )
+    requests = {}
+    store.list_tool_requests.side_effect = lambda _: list(requests.values())
+    store.get_tool_request.side_effect = lambda _, call_id: requests.get(call_id)
+
+    async def start_request(request):
+        requests[request.tool_call_id] = request
+        return True
+
+    async def finish_request(_, call_id, **values):
+        for key, value in values.items():
+            if hasattr(requests[call_id], key):
+                setattr(requests[call_id], key, value)
+
+    async def update_usage(_, **values):
+        for key, value in values.items():
+            setattr(store.get_task.return_value, key, value)
+
+    store.start_tool_request.side_effect = start_request
+    store.finish_tool_request.side_effect = finish_request
+    store.update_task_usage.side_effect = update_usage
     runtime = LangChainInvestigation(
         settings=settings(skills_dir=tmp_path / "skills"),
         store=store,

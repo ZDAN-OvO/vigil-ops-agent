@@ -35,6 +35,7 @@ class Progress:
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # 同一调查同时只允许一个只读委派运行。
     delegation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    skill_read_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     def record(self, event: str) -> None:
         self.activity += 1
