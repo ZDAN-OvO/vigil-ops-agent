@@ -79,12 +79,12 @@ kubectl -n vigil-monitoring get secret vigil-webhook-token -o jsonpath='{.data.t
 
 连接检查：
 
+升级限制：在 0010 版本上做过的调查，其旧 `evidence` 表记录会在升级到 `0011_skills_and_delegations` 时被丢弃，不会转成 `observations`；需要保留时，升级前先导出，旧调查与旧报告不保证可读。
+
 ```bash
 uv run --frozen aiops db status   # 期望列出 0001_init … 0011_skills_and_delegations
 uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 ```
-
-升级限制：应用 `0011_skills_and_delegations` 会删除旧 `evidence` 表，包括迁移到 0010 后新增的记录，且不回填到新证据关系；升级前请备份，旧调查与旧报告不保证可读。
 
 ## 4. 命令手册
 
