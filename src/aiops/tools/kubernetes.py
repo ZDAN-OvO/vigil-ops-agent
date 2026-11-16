@@ -61,6 +61,7 @@ def trim_pod(pod: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": metadata.get("name"),
         "uid": metadata.get("uid"),
+        "deletion_timestamp": metadata.get("deletion_timestamp"),
         "labels": metadata.get("labels") or {},
         "node": spec.get("node_name"),
         "phase": status.get("phase"),
@@ -174,19 +175,27 @@ def matches_service_selector(selector: str, item: dict[str, Any]) -> bool:
 
 def trim_event(event: dict[str, Any]) -> dict[str, Any]:
     involved = event.get("involved_object") or {}
+    series = event.get("series") or {}
+    count = event.get("count")
+    if count is None:
+        count = series.get("count")
     return {
         "name": (event.get("metadata") or {}).get("name"),
         "type": event.get("type"),
         "reason": event.get("reason"),
         "message": event.get("message"),
-        "count": event.get("count"),
+        "count": count,
         "involved": {
             "kind": involved.get("kind"),
             "name": involved.get("name"),
             "uid": involved.get("uid"),
         },
-        "first_seen": event.get("first_timestamp"),
-        "last_seen": event.get("last_timestamp"),
+        "first_seen": event.get("first_timestamp") or event.get("event_time"),
+        "last_seen": (
+            event.get("last_timestamp")
+            or series.get("last_observed_time")
+            or event.get("event_time")
+        ),
     }
 
 

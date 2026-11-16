@@ -270,6 +270,11 @@ async def _run_read(
         "tool": tool_name,
         "status": status.value,
         "observation": summary,
+        "collected_at": result.collected_at.isoformat(),
+        "time_range": {
+            "start": result.time_range.start.isoformat(),
+            "end": result.time_range.end.isoformat(),
+        },
         "raw_ref": result.raw_ref,
         "truncated": result.truncated,
         "error": result.error.model_dump() if result.error else None,

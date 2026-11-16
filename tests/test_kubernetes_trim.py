@@ -86,6 +86,35 @@ def test_event_trim_points_at_the_involved_object():
     assert trimmed["involved"] == {"kind": "Pod", "name": "frontend-abc", "uid": "uid-abc"}
     assert trimmed["reason"] == "Unhealthy"
     assert trimmed["count"] == 4
+    assert trimmed["first_seen"] == "2026-11-04T09:00:00Z"
+    assert trimmed["last_seen"] == "2026-11-04T09:03:00Z"
+
+
+def test_event_trim_supports_event_time_and_series():
+    event = {
+        "metadata": {"name": "frontend.2"},
+        "type": "Warning",
+        "reason": "Unhealthy",
+        "message": "Readiness probe failed",
+        "involved_object": {"kind": "Pod", "name": "frontend-abc", "uid": "uid-abc"},
+        "event_time": "2026-11-04T09:00:00Z",
+        "series": {"count": 7, "last_observed_time": "2026-11-04T09:05:00Z"},
+    }
+
+    trimmed = trim_event(event)
+
+    assert trimmed["count"] == 7
+    assert trimmed["first_seen"] == "2026-11-04T09:00:00Z"
+    assert trimmed["last_seen"] == "2026-11-04T09:05:00Z"
+
+
+def test_event_trim_keeps_missing_identity_and_time_explicit():
+    trimmed = trim_event({"metadata": {"name": "frontend.3"}, "involved_object": {}})
+
+    assert trimmed["involved"] == {"kind": None, "name": None, "uid": None}
+    assert trimmed["first_seen"] is None
+    assert trimmed["last_seen"] is None
+    assert trimmed["count"] is None
 
 
 def test_pod_trim_keeps_last_termination_and_resources():
@@ -138,6 +167,20 @@ def test_pod_trim_keeps_last_termination_and_resources():
         "requests": {"memory": "8Mi"},
     }
     assert "TOKEN" not in str(container)
+
+
+def test_pod_trim_exposes_deletion_timestamp():
+    trimmed = trim_pod(
+        {
+            "metadata": {
+                "name": "currencyservice-abc",
+                "uid": "uid-3",
+                "deletion_timestamp": "2026-11-17T00:00:00Z",
+            }
+        }
+    )
+
+    assert trimmed["deletion_timestamp"] == "2026-11-17T00:00:00Z"
 
 
 def test_deployment_trim_exposes_resources_and_revision():

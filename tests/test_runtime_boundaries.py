@@ -335,6 +335,9 @@ def test_read_retry_preserves_call_id_and_nontransient_cache(tmp_path, retryable
             )
 
         first = await read("first")
+        assert first["collected_at"]
+        assert first["time_range"]["start"]
+        assert first["time_range"]["end"]
         assert await read("first") == first
         assert ctx.toolbox.run.await_count == 1
         second = await read("retry")
