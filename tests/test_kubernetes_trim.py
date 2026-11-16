@@ -108,6 +108,27 @@ def test_event_trim_supports_event_time_and_series():
     assert trimmed["last_seen"] == "2026-11-04T09:05:00Z"
 
 
+def test_event_trim_prefers_series_over_deprecated_fields():
+    event = {
+        "metadata": {"name": "frontend.4"},
+        "type": "Warning",
+        "reason": "Unhealthy",
+        "message": "Readiness probe failed",
+        "involved_object": {"kind": "Pod", "name": "frontend-abc", "uid": "uid-abc"},
+        "count": 1,
+        "first_timestamp": "2026-11-04T09:00:00Z",
+        "last_timestamp": "2026-11-04T09:01:00Z",
+        "event_time": "2026-11-04T09:00:30Z",
+        "series": {"count": 7, "last_observed_time": "2026-11-04T09:05:00Z"},
+    }
+
+    trimmed = trim_event(event)
+
+    assert trimmed["count"] == 7
+    assert trimmed["first_seen"] == "2026-11-04T09:00:30Z"
+    assert trimmed["last_seen"] == "2026-11-04T09:05:00Z"
+
+
 def test_event_trim_keeps_missing_identity_and_time_explicit():
     trimmed = trim_event({"metadata": {"name": "frontend.3"}, "involved_object": {}})
 

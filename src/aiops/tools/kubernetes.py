@@ -176,9 +176,9 @@ def matches_service_selector(selector: str, item: dict[str, Any]) -> bool:
 def trim_event(event: dict[str, Any]) -> dict[str, Any]:
     involved = event.get("involved_object") or {}
     series = event.get("series") or {}
-    count = event.get("count")
+    count = series.get("count")
     if count is None:
-        count = series.get("count")
+        count = event.get("count")
     return {
         "name": (event.get("metadata") or {}).get("name"),
         "type": event.get("type"),
@@ -190,10 +190,10 @@ def trim_event(event: dict[str, Any]) -> dict[str, Any]:
             "name": involved.get("name"),
             "uid": involved.get("uid"),
         },
-        "first_seen": event.get("first_timestamp") or event.get("event_time"),
+        "first_seen": event.get("event_time") or event.get("first_timestamp"),
         "last_seen": (
-            event.get("last_timestamp")
-            or series.get("last_observed_time")
+            series.get("last_observed_time")
+            or event.get("last_timestamp")
             or event.get("event_time")
         ),
     }
