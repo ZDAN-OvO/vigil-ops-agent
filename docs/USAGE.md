@@ -1,6 +1,6 @@
 # 操作手册：怎样用起来
 
-本文只讲怎么操作、看什么、失败了怎么办。设计见[设计文档](DESIGN.md)，实验环境的搭建见[实验环境](../env/README.md)。
+本文只讲怎么操作、看什么、失败了怎么办。全局结构见[架构](../ARCHITECTURE.md)，实验环境的搭建见[实验环境](../env/README.md)。
 
 ## 1. 这套东西是什么
 
@@ -8,7 +8,7 @@
 
 | 链路 | 入口 | 谁触发 | 产物 |
 |---|---|---|---|
-| 告警 → 调查 | `aiops serve` + AlertManager | Prometheus 真实告警 | 事件、调查、提案（不执行写操作） |
+| 告警 → 调查 | `aiops serve` + AlertManager | Prometheus 真实告警 | 事件、调查、提案；满足自动规则时可执行 Pod 重建 |
 | 手动调查 | `aiops investigate` | 你自己 | 事件、调查、Skill 与委派记录、提案 |
 | 受控处置 | `aiops act` / `approve` / `resume` | 操作者提交与审批 | 提案、审批、执行尝试、验证结果、审计 |
 
@@ -77,9 +77,11 @@ docker inspect vigil-postgres --format '{{range .Config.Env}}{{println .}}{{end}
 kubectl -n vigil-monitoring get secret vigil-webhook-token -o jsonpath='{.data.token}' | base64 -d
 ```
 
-连接检查：
+### 升级限制
 
-升级限制：在 0010 版本上做过的调查，其旧 `evidence` 表记录会在升级到 `0011_skills_and_delegations` 时被丢弃，不会转成 `observations`；需要保留时，升级前先导出，旧调查与旧报告不保证可读。
+在 0010 版本上做过的调查，其旧 `evidence` 表记录会在升级到 `0011_skills_and_delegations` 时被丢弃，不会转成 `observations`；需要保留时，升级前先导出，旧调查与旧报告不保证可读。
+
+迁移同时删除旧 `hypothesis_revisions` 与 `tool_calls` 表，见 [0011 迁移](../src/aiops/migrations/0011_skills_and_delegations.sql)。迁移前的导出应覆盖需要保留的旧记录。
 
 ```bash
 uv run --frozen aiops db status   # 期望列出 0001_init … 0011_skills_and_delegations
@@ -104,12 +106,14 @@ uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 | `aiops reject <act-id>` | 拒绝，不写集群 | 否 |
 | `aiops cancel <inv-id>` | 请求取消运行中的单 Agent 任务；等待审批时直接终止 | 否 |
 | `aiops followups` / `followup <fol-id>` | 异常执行留下的人工待办 | 否 |
-| `aiops knowledge list` / `--import` | 结构化 runbook 查询与登记 | 否 |
+| `aiops knowledge list` / `knowledge import --path <文件或目录>` | 结构化 runbook 查询与登记 | 否 |
 | `aiops serve` | 启动 AlertManager webhook | 否 |
 
-所有命令支持 `--output json`（`serve` 除外），便于脚本消费。
+除 `serve`、`knowledge` 外，表中命令支持 `--output json`，便于脚本消费。
 
 ### 退出码
+
+退出码 0 的异步 `accepted` 只表示请求已接收，不代表调查或修复成功；任务仍需通过报告核实。
 
 | 码 | `investigate`（单 Agent） | `approve` / `resume` / `act` |
 |---|---|---|

@@ -1,7 +1,7 @@
 # ADR-0005：用 LangChain 单 Agent 替换手写假设循环
 
 - 状态：部分被 [ADR-0007](0007-skill-tool-subagent-runtime.md) 取代（2026-11-13）：固定工具集与单一提示词、完整假设树改为按配置装配排查方法、工具与委派调查；`create_agent` 主循环、中间件、审批中断与工具账本仍然有效
-- 相关：[设计文档](../DESIGN.md)、[ADR-0002](0002-langgraph-orchestration.md)
+- 相关：[全局架构](../../ARCHITECTURE.md)、[ADR-0002](0002-langgraph-orchestration.md)
 
 ## 背景
 
