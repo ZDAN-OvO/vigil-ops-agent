@@ -180,7 +180,11 @@ def trim_event(event: dict[str, Any]) -> dict[str, Any]:
         "reason": event.get("reason"),
         "message": event.get("message"),
         "count": event.get("count"),
-        "involved": {"kind": involved.get("kind"), "name": involved.get("name")},
+        "involved": {
+            "kind": involved.get("kind"),
+            "name": involved.get("name"),
+            "uid": involved.get("uid"),
+        },
         "first_seen": event.get("first_timestamp"),
         "last_seen": event.get("last_timestamp"),
     }

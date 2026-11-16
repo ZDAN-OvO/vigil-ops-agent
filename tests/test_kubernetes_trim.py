@@ -76,14 +76,14 @@ def test_event_trim_points_at_the_involved_object():
         "reason": "Unhealthy",
         "message": "Readiness probe failed",
         "count": 4,
-        "involved_object": {"kind": "Pod", "name": "frontend-abc"},
+        "involved_object": {"kind": "Pod", "name": "frontend-abc", "uid": "uid-abc"},
         "first_timestamp": "2026-11-04T09:00:00Z",
         "last_timestamp": "2026-11-04T09:03:00Z",
     }
 
     trimmed = trim_event(event)
 
-    assert trimmed["involved"] == {"kind": "Pod", "name": "frontend-abc"}
+    assert trimmed["involved"] == {"kind": "Pod", "name": "frontend-abc", "uid": "uid-abc"}
     assert trimmed["reason"] == "Unhealthy"
     assert trimmed["count"] == 4
 
