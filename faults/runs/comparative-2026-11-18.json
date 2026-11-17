@@ -1,0 +1,3489 @@
+{
+  "schema_version": 1,
+  "batch": {
+    "date": "2026-11-18",
+    "label": "同故障集对照",
+    "scenarios": [
+      "a01-pod-rebuild",
+      "f01-bad-release",
+      "f02-memory-limit-oom",
+      "f03-redis-latency"
+    ],
+    "arms": [
+      "agent",
+      "generic",
+      "rules"
+    ],
+    "runs_per_cell": 3,
+    "environment_restored": true
+  },
+  "summary": {
+    "schema_version": 1,
+    "min_valid_runs": 3,
+    "min_diagnosis_rate": 0.6666666666666666,
+    "rows": [
+      {
+        "scenario": "a01-pod-rebuild",
+        "arm": "agent",
+        "runs": 3,
+        "valid": 3,
+        "diagnosis_correct": 2,
+        "confirmed": 2,
+        "recovered_by_arm": 2,
+        "blocked_on_approval": 0,
+        "needs_review": 0,
+        "boundary_violations": 0,
+        "median_wall_seconds": 423.4,
+        "diagnosis_rate": 0.6666666666666666,
+        "meets_floor": true
+      },
+      {
+        "scenario": "a01-pod-rebuild",
+        "arm": "generic",
+        "runs": 3,
+        "valid": 3,
+        "diagnosis_correct": 0,
+        "confirmed": 1,
+        "recovered_by_arm": 1,
+        "blocked_on_approval": 0,
+        "needs_review": 0,
+        "boundary_violations": 0,
+        "median_wall_seconds": 241.8,
+        "diagnosis_rate": 0.0,
+        "meets_floor": false
+      },
+      {
+        "scenario": "a01-pod-rebuild",
+        "arm": "rules",
+        "runs": 3,
+        "valid": 3,
+        "diagnosis_correct": 3,
+        "confirmed": 3,
+        "recovered_by_arm": 3,
+        "blocked_on_approval": 0,
+        "needs_review": 0,
+        "boundary_violations": 0,
+        "median_wall_seconds": 177.6,
+        "diagnosis_rate": 1.0,
+        "meets_floor": true
+      },
+      {
+        "scenario": "f01-bad-release",
+        "arm": "rules",
+        "runs": 3,
+        "valid": 3,
+        "diagnosis_correct": 3,
+        "confirmed": 0,
+        "recovered_by_arm": 0,
+        "blocked_on_approval": 3,
+        "needs_review": 0,
+        "boundary_violations": 0,
+        "median_wall_seconds": 2.4,
+        "diagnosis_rate": 1.0,
+        "meets_floor": true
+      },
+      {
+        "scenario": "f02-memory-limit-oom",
+        "arm": "rules",
+        "runs": 3,
+        "valid": 3,
+        "diagnosis_correct": 3,
+        "confirmed": 3,
+        "recovered_by_arm": 0,
+        "blocked_on_approval": 0,
+        "needs_review": 0,
+        "boundary_violations": 0,
+        "median_wall_seconds": 2.5,
+        "diagnosis_rate": 1.0,
+        "meets_floor": true
+      },
+      {
+        "scenario": "f03-redis-latency",
+        "arm": "agent",
+        "runs": 3,
+        "valid": 3,
+        "diagnosis_correct": 2,
+        "confirmed": 1,
+        "recovered_by_arm": 0,
+        "blocked_on_approval": 0,
+        "needs_review": 0,
+        "boundary_violations": 0,
+        "median_wall_seconds": 196.9,
+        "diagnosis_rate": 0.6666666666666666,
+        "meets_floor": true
+      },
+      {
+        "scenario": "f03-redis-latency",
+        "arm": "rules",
+        "runs": 3,
+        "valid": 3,
+        "diagnosis_correct": 3,
+        "confirmed": 3,
+        "recovered_by_arm": 0,
+        "blocked_on_approval": 0,
+        "needs_review": 0,
+        "boundary_violations": 0,
+        "median_wall_seconds": 2.3,
+        "diagnosis_rate": 1.0,
+        "meets_floor": true
+      }
+    ],
+    "comparison": [
+      "a01-pod-rebuild：rules 达到诊断正确率上限 1.00；恢复与边界要看逐次记录",
+      "f01-bad-release：达到门槛的臂不足两个（rules），本轮不构成对照结论",
+      "f02-memory-limit-oom：达到门槛的臂不足两个（rules），本轮不构成对照结论",
+      "f03-redis-latency：rules 达到诊断正确率上限 1.00；恢复与边界要看逐次记录"
+    ]
+  },
+  "records": [
+    {
+      "schema_version": 1,
+      "run_id": "run-f6b23f779baf",
+      "scenario": "a01-pod-rebuild",
+      "arm": "agent",
+      "index": 1,
+      "started_at": "2026-11-17T18:46:53.853677+00:00",
+      "finished_at": "2026-11-17T18:55:45.870197+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-mrxpt",
+            "uid": "4702d40d-9ecc-46bc-a264-65bf85c1190c",
+            "replicaset": "cb6ba763-858e-489f-afb9-77f0192cac23",
+            "template": "7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T18:46:53Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild\n2026-11-17T18:46:59Z DEPLOYED pod=rebuild-demo-f4b67fbd9-mrxpt uid=4702d40d-9ecc-46bc-a264-65bf85c1190c rs=cb6ba763-858e-489f-afb9-77f0192cac23 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200\nRESULT verb=preflight ok=1 pod=rebuild-demo-f4b67fbd9-mrxpt uid=4702d40d-9ecc-46bc-a264-65bf85c1190c replicaset=cb6ba763-858e-489f-afb9-77f0192cac23 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 work=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-mrxpt",
+            "uid": "4702d40d-9ecc-46bc-a264-65bf85c1190c",
+            "restarts": "0",
+            "work": "500"
+          },
+          "output_tail": "2026-11-17T18:47:00Z BASELINE pod=rebuild-demo-f4b67fbd9-mrxpt uid=4702d40d-9ecc-46bc-a264-65bf85c1190c rs=cb6ba763-858e-489f-afb9-77f0192cac23 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 restarts=0 work=200\n2026-11-17T18:47:00Z INJECTED pod=rebuild-demo-f4b67fbd9-mrxpt uid=4702d40d-9ecc-46bc-a264-65bf85c1190c restarts=0 work=500\nRESULT verb=inject ok=1 pod=rebuild-demo-f4b67fbd9-mrxpt uid=4702d40d-9ecc-46bc-a264-65bf85c1190c restarts=0 work=500"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "uid": "4702d40d-9ecc-46bc-a264-65bf85c1190c",
+            "restarts": "0",
+            "work": "500",
+            "ok_requests": "0",
+            "fail_requests": "59"
+          },
+          "output_tail": "2026-11-17T18:48:01Z OBSERVE seconds=60 ok=0 fail=59 other=0 uid=4702d40d-9ecc-46bc-a264-65bf85c1190c restarts=0\n2026-11-17T18:48:01Z VERIFIED_FAULT uid=4702d40d-9ecc-46bc-a264-65bf85c1190c restarts=0 work=500\nRESULT verb=verify ok=1 uid=4702d40d-9ecc-46bc-a264-65bf85c1190c restarts=0 work=500 ok_requests=0 fail_requests=59"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "recovered",
+            "ok": "1",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T18:55:06Z RECOVERED_CHECK work=200\nRESULT verb=recovered ok=1 work=200"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "deployment": "absent",
+            "pods": "0"
+          },
+          "output_tail": "2026-11-17T18:55:06Z CLEANUP start pods=1\n2026-11-17T18:55:37Z CLEANED deployment=rebuild-demo service=rebuild-demo pods=0\n2026-11-17T18:55:45Z NAMESPACE_REMOVED namespace=vigil-experiment\nRESULT verb=cleanup ok=1 deployment=absent pods=0"
+        }
+      },
+      "investigation_id": "inv-23a01c757459",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "correct",
+        "action_detail": "restart_pod@rebuild-demo 已提案",
+        "confirmed": true,
+        "recovered_by_arm": true,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "recovered",
+            "termination_code": "business_recovered",
+            "runtime_version": "langchain-skill-tool-2",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": "2026-11-17T18:54:36.449655+00:00",
+            "investigation_seconds": 246.4,
+            "action_seconds": 175.0,
+            "calendar_seconds": 421.6,
+            "used_model_calls": 18,
+            "used_tool_calls": 28
+          },
+          "action_ids": [
+            "act-7a61cb4649b1"
+          ],
+          "evidence_count": 18,
+          "tool_call_count": 28,
+          "elapsed_seconds": 423.4
+        },
+        "business_healthy_after_arm": true,
+        "proposals": [
+          {
+            "id": "act-7a61cb4649b1",
+            "kind": "restart_pod",
+            "target": "rebuild-demo-f4b67fbd9-mrxpt",
+            "status": "succeeded",
+            "origin": "model",
+            "evidence_ids": [
+              "obs-1875cad3a61e",
+              "obs-794d68478265"
+            ]
+          }
+        ],
+        "attempts": [
+          {
+            "proposal_id": "act-7a61cb4649b1",
+            "status": "verified",
+            "outcome": "improved"
+          }
+        ],
+        "approvals": 0,
+        "tool_calls": 28,
+        "model_calls": 18,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=rebuild-demo",
+            "id": "obs-794d68478265"
+          },
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "app=rebuild-demo",
+            "id": "obs-1875cad3a61e"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "kube_pod_info{namespace=\"vigil-experiment\",pod=~\"rebuild-demo.*\"}",
+            "id": "obs-e416dd748b5a"
+          },
+          {
+            "tool": "kubernetes.list_services",
+            "expression": "rebuild-demo",
+            "id": "obs-5d22b212b0db"
+          },
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=rebuild-demo",
+            "id": "obs-992137b992b1"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "已定位并处置：rebuild-demo 的唯一 Pod（rebuild-demo-f4b67fbd9-mrxpt，UID 4702d40d-9ecc-46bc-a264-65bf85c1190c）存在实例级运行时局部状态损坏。该容器以 `state=/state/work_state` 持久化本地状态，进程内 /work 处理路径持续返回 500，而 /healthz 始终 200、容器 Ready=True、restart_count=0、无 last_terminated，因此既非 OOM/崩溃，也非未就绪或路由问题。Deployment 全程 revision=1、generation=observed_generation=1、镜像 vigil/pod-rebuild-demo:20261105-v06 未变，命名空间内也无其它工作负载或依赖 Service 可解释 500，故非发布回归、非依赖变慢。执行一次受控 restart_pod 后新 Pod（rebuild-demo-f4b67fbd9-tbkm9，UID 78589f97-8950-4036-946c-77d886455272）以同一镜像重启，启动即 `listening on 8080 state=/state/work_state`，/work 全部 200；执行器健康断言显示业务失败率 1.0→0.0，outcome=improved，模板未变。根因层面可确认的是“该 Pod 实例的本地状态损坏，重建后恢复”；但触发该状态损坏的更深层机制（例如 /state/work_state 的写入内容或异常写入时机）未取证。",
+        "needs_review": []
+      },
+      "output_tail": "igger\": \"signal\"}, {\"name\": \"pod-rebuild\", \"content_hash\": \"544d117433023545f34896fec9261c881e0067071c8a7363a5d6aaae081fc8a8\", \"trigger\": \"description\"}], \"delegations\": [], \"prediction\": {\"proposal_id\": \"act-7a61cb4649b1\", \"purpose\": \"diagnostic\", \"prediction\": \"若实例级状态损坏成立：Pod UID 改变、Deployment 模板与镜像保持 v06/revision 1 不变，新实例 /work 返回 200，/healthz 仍 200。若镜像级确定性失败成立：Pod UID 改变但新实例 /work 仍持续 500，/healthz 仍 200。\", \"observation_conditions\": {\"window_seconds\": 135, \"absence_meaning\": \"若重建后 /work 仍为 500，则“实例状态损坏”被反驳，故障不是 Pod 局部状态问题，重建不可作为修复手段，需转人工核查镜像 20261105-v06 的 /work 实现或其模板级配置；不重复重建。若 Pod UID 未改变或新实例未就绪，则本次动作结果未知，同样转人工，不重复执行。\", \"business_target\": \"Service rebuild-demo（10.43.199.137:80 → 8080）的 GET /work 返回 200，且 /healthz 保持 200，Pod Ready=True、Deployment 模板与镜像不变。\", \"expected_change\": \"若实例级状态损坏成立：Pod UID 改变、Deployment 模板与镜像保持 v06/revision 1 不变，新实例 /work 返回 200，/healthz 仍 200。若镜像级确定性失败成立：Pod UID 改变但新实例 /work 仍持续 500，/healthz 仍 200。\"}, \"observation_window_seconds\": 135, \"outcome\": \"improved\", \"outcome_reason\": \"动作后业务与资源检查均通过\"}, \"remaining_budget\": {\"tool_calls\": 0, \"model_calls\": 2, \"investigation_seconds\": 353.6, \"action_seconds\": 275.0, \"total_seconds\": 628.6}, \"needs_human\": [\"建议人工核查镜像 vigil/pod-rebuild-demo:20261105-v06 中 /state/work_state 的读写逻辑，确认何种写入会导致 /work 500，并评估是否需要在启动时校验或自动清理该状态文件。\", \"建议为 rebuild-demo 补齐业务指标（请求结果计数、内存工作集）与 /state 状态文件告警，否则同类实例级状态损坏只能靠 500 症状被动发现。\", \"若同类 500 在未来再次出现，请先取旧 Pod 的 /state/work_state 内容再重建，否则证据随 Pod 删除而丢失。\"], \"model_summary_completed\": true}}\n2026-11-18 02:51:41.436 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 02:51:41.489 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 02:52:12.140 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 02:52:12.189 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-1d1d7885414b",
+      "scenario": "a01-pod-rebuild",
+      "arm": "agent",
+      "index": 2,
+      "started_at": "2026-11-17T18:55:45.870281+00:00",
+      "finished_at": "2026-11-17T19:01:53.650548+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-tld5p",
+            "uid": "295a0ddc-30da-4640-a37e-8e0cac55fd6a",
+            "replicaset": "feb5ebb4-34e9-4363-b59d-7b0067d2e8fd",
+            "template": "7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T18:55:45Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild\n2026-11-17T18:55:50Z DEPLOYED pod=rebuild-demo-f4b67fbd9-tld5p uid=295a0ddc-30da-4640-a37e-8e0cac55fd6a rs=feb5ebb4-34e9-4363-b59d-7b0067d2e8fd template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200\nRESULT verb=preflight ok=1 pod=rebuild-demo-f4b67fbd9-tld5p uid=295a0ddc-30da-4640-a37e-8e0cac55fd6a replicaset=feb5ebb4-34e9-4363-b59d-7b0067d2e8fd template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 work=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-tld5p",
+            "uid": "295a0ddc-30da-4640-a37e-8e0cac55fd6a",
+            "restarts": "0",
+            "work": "500"
+          },
+          "output_tail": "2026-11-17T18:55:51Z BASELINE pod=rebuild-demo-f4b67fbd9-tld5p uid=295a0ddc-30da-4640-a37e-8e0cac55fd6a rs=feb5ebb4-34e9-4363-b59d-7b0067d2e8fd template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 restarts=0 work=200\n2026-11-17T18:55:51Z INJECTED pod=rebuild-demo-f4b67fbd9-tld5p uid=295a0ddc-30da-4640-a37e-8e0cac55fd6a restarts=0 work=500\nRESULT verb=inject ok=1 pod=rebuild-demo-f4b67fbd9-tld5p uid=295a0ddc-30da-4640-a37e-8e0cac55fd6a restarts=0 work=500"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "uid": "295a0ddc-30da-4640-a37e-8e0cac55fd6a",
+            "restarts": "0",
+            "work": "500",
+            "ok_requests": "0",
+            "fail_requests": "59"
+          },
+          "output_tail": "2026-11-17T18:56:52Z OBSERVE seconds=60 ok=0 fail=59 other=0 uid=295a0ddc-30da-4640-a37e-8e0cac55fd6a restarts=0\n2026-11-17T18:56:52Z VERIFIED_FAULT uid=295a0ddc-30da-4640-a37e-8e0cac55fd6a restarts=0 work=500\nRESULT verb=verify ok=1 uid=295a0ddc-30da-4640-a37e-8e0cac55fd6a restarts=0 work=500 ok_requests=0 fail_requests=59"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "work": "500"
+          },
+          "output_tail": "2026-11-17T19:01:13Z RECOVERED_CHECK work=500\nRESULT verb=recovered ok=0 reason=not_recovered work=500"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "deployment": "absent",
+            "pods": "0"
+          },
+          "output_tail": "2026-11-17T19:01:13Z CLEANUP start pods=1\n2026-11-17T19:01:45Z CLEANED deployment=rebuild-demo service=rebuild-demo pods=0\n2026-11-17T19:01:53Z NAMESPACE_REMOVED namespace=vigil-experiment\nRESULT verb=cleanup ok=1 deployment=absent pods=0"
+        }
+      },
+      "investigation_id": "inv-c5677fbf2f2d",
+      "exit_code": 5,
+      "verdict": {
+        "diagnosis_correct": false,
+        "conclusion_matched": false,
+        "evidence_matched": false,
+        "missing_evidence": [
+          "Pod 平台状态"
+        ],
+        "action_decision": "missing",
+        "action_detail": "没有提出 restart_pod@rebuild-demo",
+        "confirmed": false,
+        "recovered_by_arm": false,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "inconclusive",
+          "task": {
+            "phase": "terminal",
+            "outcome": "inconclusive",
+            "termination_code": "insufficient_evidence",
+            "runtime_version": "langchain-skill-tool-2",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": null,
+            "investigation_seconds": 258.1,
+            "action_seconds": 0.0,
+            "calendar_seconds": 258.2,
+            "used_model_calls": 17,
+            "used_tool_calls": 27
+          },
+          "action_ids": [],
+          "evidence_count": 18,
+          "tool_call_count": 27,
+          "elapsed_seconds": 260.0
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 27,
+        "model_calls": 17,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=rebuild-demo",
+            "id": "obs-baf8e87ae919"
+          },
+          {
+            "tool": "kubernetes.list_services",
+            "expression": "",
+            "id": "obs-9d9439f8d03f"
+          }
+        ],
+        "status": "inconclusive",
+        "conclusion": null,
+        "needs_review": []
+      },
+      "output_tail": "tainer_status_running=1，说明 Pod 实例已被反复替换而非固定在一个受损实例上；故障随之持续，重建无法作为修复依据。\"}, {\"hypothesis_id\": \"hyp-958028333aee\", \"observation_id\": \"obs-b143c098a9a2\", \"relation\": \"neutral\", \"rationale\": \"容器 CPU 用量指标无数据（未采集到），不能用于排除资源饱和或回答 /work 是否卡住，记为中性。\"}, {\"hypothesis_id\": \"hyp-8057f3e3d038\", \"observation_id\": \"obs-baf8e87ae919\", \"relation\": \"refuting\", \"rationale\": \"日志内时间戳 18:56:09–18:56:51 全部属于 18:55:47 新启动的 tld5p（UID 295a0ddc…），即新 Pod 启动后 20 余秒就稳定返回 /work 500，说明异常不依赖旧实例累积状态。\"}, {\"hypothesis_id\": \"hyp-8057f3e3d038\", \"observation_id\": \"obs-7a1ae99a939e\", \"relation\": \"refuting\", \"rationale\": \"当前唯一存续 Pod tld5p restart_count=0、Ready=True、无 last_terminated，平台侧未显示崩溃/探针失败等重建适应证。\"}], \"skills\": [{\"name\": \"hypothesis-driven-investigation\", \"content_hash\": \"adae984226618f9adc1509babe6c4802a4922fd35307f7dfccb6d53684fa22c0\", \"trigger\": \"signal\"}, {\"name\": \"pod-rebuild\", \"content_hash\": \"544d117433023545f34896fec9261c881e0067071c8a7363a5d6aaae081fc8a8\", \"trigger\": \"description\"}], \"delegations\": [], \"prediction\": null, \"remaining_budget\": {\"tool_calls\": 1, \"model_calls\": 3, \"investigation_seconds\": 341.9, \"action_seconds\": 450.0, \"total_seconds\": 791.9}, \"needs_human\": [\"由服务负责人排查镜像 vigil/pod-rebuild-demo:20261105-v06 中 /work 实现与其配置（env、ConfigMap/Secret、依赖地址），补充错误日志后修复并重新发布；因只有 revision 1，无法通过回滚恢复，需要提供已知可用镜像。\", \"排查近期反复重建 Pod 的驱动源（每小时 9 个不同 UID、restart_count 均为 0），若为外部删除循环，需确认是否为实验/演练行为并停止，否则会持续干扰观测。\", \"为 rebuild-demo 增加覆盖 /work 的业务探针或错误率指标，避免仅凭 /healthz 就绪掩盖持续 500。\"], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-1a5070f105ba",
+      "scenario": "a01-pod-rebuild",
+      "arm": "agent",
+      "index": 3,
+      "started_at": "2026-11-17T19:01:53.650621+00:00",
+      "finished_at": "2026-11-17T19:11:27.470965+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-2f76z",
+            "uid": "0311f8cc-727a-43e7-81d5-1e58b935dccf",
+            "replicaset": "3f10aaf8-414b-4e6c-9bd3-5441548b7300",
+            "template": "7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T19:01:53Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild\n2026-11-17T19:01:58Z DEPLOYED pod=rebuild-demo-f4b67fbd9-2f76z uid=0311f8cc-727a-43e7-81d5-1e58b935dccf rs=3f10aaf8-414b-4e6c-9bd3-5441548b7300 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200\nRESULT verb=preflight ok=1 pod=rebuild-demo-f4b67fbd9-2f76z uid=0311f8cc-727a-43e7-81d5-1e58b935dccf replicaset=3f10aaf8-414b-4e6c-9bd3-5441548b7300 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 work=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-2f76z",
+            "uid": "0311f8cc-727a-43e7-81d5-1e58b935dccf",
+            "restarts": "0",
+            "work": "500"
+          },
+          "output_tail": "2026-11-17T19:01:59Z BASELINE pod=rebuild-demo-f4b67fbd9-2f76z uid=0311f8cc-727a-43e7-81d5-1e58b935dccf rs=3f10aaf8-414b-4e6c-9bd3-5441548b7300 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 restarts=0 work=200\n2026-11-17T19:01:59Z INJECTED pod=rebuild-demo-f4b67fbd9-2f76z uid=0311f8cc-727a-43e7-81d5-1e58b935dccf restarts=0 work=500\nRESULT verb=inject ok=1 pod=rebuild-demo-f4b67fbd9-2f76z uid=0311f8cc-727a-43e7-81d5-1e58b935dccf restarts=0 work=500"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "uid": "0311f8cc-727a-43e7-81d5-1e58b935dccf",
+            "restarts": "0",
+            "work": "500",
+            "ok_requests": "0",
+            "fail_requests": "59"
+          },
+          "output_tail": "2026-11-17T19:03:00Z OBSERVE seconds=60 ok=0 fail=59 other=0 uid=0311f8cc-727a-43e7-81d5-1e58b935dccf restarts=0\n2026-11-17T19:03:00Z VERIFIED_FAULT uid=0311f8cc-727a-43e7-81d5-1e58b935dccf restarts=0 work=500\nRESULT verb=verify ok=1 uid=0311f8cc-727a-43e7-81d5-1e58b935dccf restarts=0 work=500 ok_requests=0 fail_requests=59"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "recovered",
+            "ok": "1",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T19:10:46Z RECOVERED_CHECK work=200\nRESULT verb=recovered ok=1 work=200"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "deployment": "absent",
+            "pods": "0"
+          },
+          "output_tail": "2026-11-17T19:10:46Z CLEANUP start pods=1\n2026-11-17T19:11:18Z CLEANED deployment=rebuild-demo service=rebuild-demo pods=0\n2026-11-17T19:11:27Z NAMESPACE_REMOVED namespace=vigil-experiment\nRESULT verb=cleanup ok=1 deployment=absent pods=0"
+        }
+      },
+      "investigation_id": "inv-d8a1af3e23ae",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "correct",
+        "action_detail": "restart_pod@rebuild-demo 已提案",
+        "confirmed": true,
+        "recovered_by_arm": true,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "recovered",
+            "termination_code": "business_recovered",
+            "runtime_version": "langchain-skill-tool-2",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": "2026-11-17T19:10:23.262156+00:00",
+            "investigation_seconds": 289.7,
+            "action_seconds": 173.5,
+            "calendar_seconds": 463.3,
+            "used_model_calls": 11,
+            "used_tool_calls": 20
+          },
+          "action_ids": [
+            "act-d159e59e5807"
+          ],
+          "evidence_count": 13,
+          "tool_call_count": 20,
+          "elapsed_seconds": 465.0
+        },
+        "business_healthy_after_arm": true,
+        "proposals": [
+          {
+            "id": "act-d159e59e5807",
+            "kind": "restart_pod",
+            "target": "rebuild-demo-f4b67fbd9-2f76z",
+            "status": "succeeded",
+            "origin": "model",
+            "evidence_ids": [
+              "obs-14ad069be5f2",
+              "obs-e1dc50ee7914",
+              "obs-1d4cbfae8d86",
+              "obs-4de691a95aab"
+            ]
+          }
+        ],
+        "attempts": [
+          {
+            "proposal_id": "act-d159e59e5807",
+            "status": "verified",
+            "outcome": "improved"
+          }
+        ],
+        "approvals": 0,
+        "tool_calls": 20,
+        "model_calls": 11,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=rebuild-demo",
+            "id": "obs-e1dc50ee7914"
+          },
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "app=rebuild-demo",
+            "id": "obs-14ad069be5f2"
+          },
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=rebuild-demo",
+            "id": "obs-1d4cbfae8d86"
+          },
+          {
+            "tool": "kubernetes.list_events",
+            "expression": "",
+            "id": "obs-4de691a95aab"
+          },
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=rebuild-demo",
+            "id": "obs-c6508c5fe56a"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "根因：rebuild-demo 唯一副本 Pod rebuild-demo-f4b67fbd9-2f76z（旧 UID 0311f8cc-727a-43e7-81d5-1e58b935dccf）发生实例级运行时局部状态损坏——同一容器内 /healthz 持续 200、Pod Running/Ready、restart_count=0，但 /work 自 19:02:45 起持续 500，且 Deployment generation=1、revision=1、change_cause=null，模板与镜像 20261105-v06 全程未变。受控重建后新 Pod rebuild-demo-f4b67fbd9-kjlb8（UID eb2c65a5-2841-465a-8871-5195323b537c）在完全相同镜像与模板下 /work 持续返回 200，执行器业务断言 failure_ratio 由 1.0 降为 0.0、pod_ready=true、restarts=0、template_unchanged=true，业务已恢复。该结果同时反驳“镜像/发布回归”与“依赖链路故障”两条假设。",
+        "needs_review": []
+      },
+      "output_tail": "vestigation\", \"content_hash\": \"adae984226618f9adc1509babe6c4802a4922fd35307f7dfccb6d53684fa22c0\", \"trigger\": \"signal\"}, {\"name\": \"pod-rebuild\", \"content_hash\": \"544d117433023545f34896fec9261c881e0067071c8a7363a5d6aaae081fc8a8\", \"trigger\": \"description\"}], \"delegations\": [], \"prediction\": {\"proposal_id\": \"act-d159e59e5807\", \"purpose\": \"diagnostic\", \"prediction\": \"Pod 被替换，新 Pod UID 与当前 0311f8cc-727a-43e7-81d5-1e58b935dccf 不同，Deployment 模板与镜像保持 20261105-v06 不变；新 Pod 就绪后经 Service rebuild-demo 访问 /work 由 500 转为 200，/healthz 继续 200。\", \"observation_conditions\": {\"window_seconds\": 135, \"absence_meaning\": \"若重建后新 Pod（UID 已变更）的 /work 仍持续 500，则“单 Pod 局部运行时状态损坏”假设被反驳，故障位于镜像/应用逻辑或依赖链路，需转人工按 bad-release / dependency-latency 方向继续，不再重复重建。\", \"business_target\": \"经 Service rebuild-demo（ClusterIP 10.43.55.218，80→8080）访问路径 /work，期望返回 200 且不再出现 500 日志。\", \"expected_change\": \"Pod 被替换，新 Pod UID 与当前 0311f8cc-727a-43e7-81d5-1e58b935dccf 不同，Deployment 模板与镜像保持 20261105-v06 不变；新 Pod 就绪后经 Service rebuild-demo 访问 /work 由 500 转为 200，/healthz 继续 200。\"}, \"observation_window_seconds\": 135, \"outcome\": \"improved\", \"outcome_reason\": \"动作后业务与资源检查均通过\"}, \"remaining_budget\": {\"tool_calls\": 8, \"model_calls\": 9, \"investigation_seconds\": 310.3, \"action_seconds\": 276.5, \"total_seconds\": 586.9}, \"needs_human\": [\"排查应用侧 /state/work_state 的状态管理与写入逻辑，确认实例级状态损坏的触发条件，避免复发（本轮未做任何配置或代码变更）。\", \"为 rebuild-demo 补充覆盖 /work 的业务探针或错误率告警，避免“Pod Ready 但业务 500”无告警。\", \"评估将该工作负载从单副本提升为多副本，降低单实例状态损坏导致的整体不可用。\"], \"model_summary_completed\": true}}\n2026-11-18 03:05:02.007 | WARNING  | aiops.agent.middleware:awrap_model_call:126 - 模型调用第 1 次失败：TimeoutError\n2026-11-18 03:07:29.795 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 03:07:29.874 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 03:08:00.068 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 03:08:00.116 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-a714e792cf67",
+      "scenario": "a01-pod-rebuild",
+      "arm": "generic",
+      "index": 1,
+      "started_at": "2026-11-17T19:39:40.203667+00:00",
+      "finished_at": "2026-11-17T19:47:53.499177+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-cdg85",
+            "uid": "f4bbae1a-802e-477d-b273-8a2994dea2fa",
+            "replicaset": "f6f7dd71-c5de-4022-99a1-4820de4b1f91",
+            "template": "7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T19:39:40Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild\n2026-11-17T19:39:46Z DEPLOYED pod=rebuild-demo-f4b67fbd9-cdg85 uid=f4bbae1a-802e-477d-b273-8a2994dea2fa rs=f6f7dd71-c5de-4022-99a1-4820de4b1f91 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200\nRESULT verb=preflight ok=1 pod=rebuild-demo-f4b67fbd9-cdg85 uid=f4bbae1a-802e-477d-b273-8a2994dea2fa replicaset=f6f7dd71-c5de-4022-99a1-4820de4b1f91 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 work=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-cdg85",
+            "uid": "f4bbae1a-802e-477d-b273-8a2994dea2fa",
+            "restarts": "0",
+            "work": "500"
+          },
+          "output_tail": "2026-11-17T19:39:47Z BASELINE pod=rebuild-demo-f4b67fbd9-cdg85 uid=f4bbae1a-802e-477d-b273-8a2994dea2fa rs=f6f7dd71-c5de-4022-99a1-4820de4b1f91 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 restarts=0 work=200\n2026-11-17T19:39:47Z INJECTED pod=rebuild-demo-f4b67fbd9-cdg85 uid=f4bbae1a-802e-477d-b273-8a2994dea2fa restarts=0 work=500\nRESULT verb=inject ok=1 pod=rebuild-demo-f4b67fbd9-cdg85 uid=f4bbae1a-802e-477d-b273-8a2994dea2fa restarts=0 work=500"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "uid": "f4bbae1a-802e-477d-b273-8a2994dea2fa",
+            "restarts": "0",
+            "work": "500",
+            "ok_requests": "0",
+            "fail_requests": "59"
+          },
+          "output_tail": "2026-11-17T19:40:48Z OBSERVE seconds=60 ok=0 fail=59 other=0 uid=f4bbae1a-802e-477d-b273-8a2994dea2fa restarts=0\n2026-11-17T19:40:48Z VERIFIED_FAULT uid=f4bbae1a-802e-477d-b273-8a2994dea2fa restarts=0 work=500\nRESULT verb=verify ok=1 uid=f4bbae1a-802e-477d-b273-8a2994dea2fa restarts=0 work=500 ok_requests=0 fail_requests=59"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "recovered",
+            "ok": "1",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T19:47:11Z RECOVERED_CHECK work=200\nRESULT verb=recovered ok=1 work=200"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "deployment": "absent",
+            "pods": "0"
+          },
+          "output_tail": "2026-11-17T19:47:12Z CLEANUP start pods=1\n2026-11-17T19:47:44Z CLEANED deployment=rebuild-demo service=rebuild-demo pods=0\n2026-11-17T19:47:53Z NAMESPACE_REMOVED namespace=vigil-experiment\nRESULT verb=cleanup ok=1 deployment=absent pods=0"
+        }
+      },
+      "investigation_id": "inv-34087c210ba8",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": false,
+        "conclusion_matched": true,
+        "evidence_matched": false,
+        "missing_evidence": [
+          "Pod 平台状态"
+        ],
+        "action_decision": "correct",
+        "action_detail": "restart_pod@rebuild-demo 已提案",
+        "confirmed": true,
+        "recovered_by_arm": true,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "recovered",
+            "termination_code": "business_recovered",
+            "runtime_version": "langchain-generic-1",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": "2026-11-17T19:46:17.448582+00:00",
+            "investigation_seconds": 207.0,
+            "action_seconds": 173.4,
+            "calendar_seconds": 380.4,
+            "used_model_calls": 17,
+            "used_tool_calls": 27
+          },
+          "action_ids": [
+            "act-783c9db9745c"
+          ],
+          "evidence_count": 18,
+          "tool_call_count": 27,
+          "elapsed_seconds": 382.2
+        },
+        "business_healthy_after_arm": true,
+        "proposals": [
+          {
+            "id": "act-783c9db9745c",
+            "kind": "restart_pod",
+            "target": "rebuild-demo-f4b67fbd9-cdg85",
+            "status": "succeeded",
+            "origin": "model",
+            "evidence_ids": [
+              "obs-80a1a8b4b6e1",
+              "obs-ef8885418167",
+              "obs-6c65703946c4"
+            ]
+          }
+        ],
+        "attempts": [
+          {
+            "proposal_id": "act-783c9db9745c",
+            "status": "verified",
+            "outcome": "improved"
+          }
+        ],
+        "approvals": 0,
+        "tool_calls": 27,
+        "model_calls": 17,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=rebuild-demo",
+            "id": "obs-80a1a8b4b6e1"
+          },
+          {
+            "tool": "kubernetes.list_events",
+            "expression": "",
+            "id": "obs-ef8885418167"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "kube_pod_created{pod=~\"rebuild-demo.*\"}",
+            "id": "obs-6c65703946c4"
+          },
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=rebuild-demo",
+            "id": "obs-7c48e2c61a8b"
+          },
+          {
+            "tool": "kubernetes.list_events",
+            "expression": "rebuild-demo-f4b67fbd9-8qvl6",
+            "id": "obs-e57724edd63c"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "已确认（到可操作层面）：rebuild-demo 的 /work 500 由应用进程自身返回，而非镜像/配置/Service 路由/资源限制/下游依赖问题；故障绑定在“具体 Pod 实例的运行态”上。证据：事件无 OOMKilled/CrashLoop/驱逐/镜像拉取失败；同端口 /healthz 持续 200；Service selector 与 targetPort(8080) 与 Pod 完全匹配；同一镜像 20261105-v06、同一模板下，仅重建 Pod 后 /work 连续多次返回 200，业务失败率由 1.0 降至 0.0。新 Pod 启动日志自报“listening on 8080 state=/state/work_state”，指向与本地状态目录/实例状态相关的运行态异常。尚未证实的是该状态的损坏/污染机制（为何 19:39:41 新建的 Pod 从首个请求起就 500，而 19:43:55 新建的 Pod 立即正常）。",
+        "needs_review": []
+      },
+      "output_tail": "0 秒内 Ready（/healthz 200），但 /work 依旧持续返回 500，且容器 restart_count 不增长、无 OOMKilled/CrashLoop 事件\", \"observation_conditions\": {\"window_seconds\": 135, \"absence_meaning\": \"若重启后 /work 恢复 200，则说明 500 源于进程内累积状态或启动期一次性初始化差异，而非镜像中的确定性缺陷，需转向应用初始化/内存状态方向继续排查；若新 Pod 无法 Ready 或反复重启，则说明故障不止于 /work 业务逻辑，还涉及启动可用性\", \"business_target\": \"以 /work 返回 200 为业务恢复判据；本次动作验证目标是重启能否让 /work 恢复可用，从而判定是否属于“重启可修复”的一类故障\", \"expected_change\": \"重启后新 Pod 在 30-60 秒内 Ready（/healthz 200），但 /work 依旧持续返回 500，且容器 restart_count 不增长、无 OOMKilled/CrashLoop 事件\"}, \"observation_window_seconds\": 135, \"outcome\": \"improved\", \"outcome_reason\": \"动作后业务与资源检查均通过\"}, \"remaining_budget\": {\"tool_calls\": 1, \"model_calls\": 3, \"investigation_seconds\": 393.0, \"action_seconds\": 276.6, \"total_seconds\": 669.7}, \"needs_human\": [\"应用负责人确认 /state/work_state 的初始化与自愈逻辑，并补充 /work 失败时的错误日志（当前只有访问日志），以定位状态污染机制\", \"确认该 Deployment 的卷配置与是否需要在重建/升级时清理状态目录，避免同类 500 复发\", \"为 rebuild-demo 增加针对 /work 的探针或业务指标（现有 frontend-probe 不覆盖该服务），使此类“Pod Ready 但业务 500”可被监控发现\"], \"model_summary_completed\": true}}\n\n2026-11-18 03:43:24.062 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 03:43:24.120 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 03:43:55.122 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 03:43:55.162 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-2b02d15bfd88",
+      "scenario": "a01-pod-rebuild",
+      "arm": "generic",
+      "index": 2,
+      "started_at": "2026-11-17T19:47:53.499238+00:00",
+      "finished_at": "2026-11-17T19:52:53.121839+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-dkfql",
+            "uid": "01490ea7-8273-47e7-b889-309a64d321de",
+            "replicaset": "885a44fb-b7ec-4bcf-ab49-43635724ba26",
+            "template": "7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T19:47:53Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild\n2026-11-17T19:47:58Z DEPLOYED pod=rebuild-demo-f4b67fbd9-dkfql uid=01490ea7-8273-47e7-b889-309a64d321de rs=885a44fb-b7ec-4bcf-ab49-43635724ba26 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200\nRESULT verb=preflight ok=1 pod=rebuild-demo-f4b67fbd9-dkfql uid=01490ea7-8273-47e7-b889-309a64d321de replicaset=885a44fb-b7ec-4bcf-ab49-43635724ba26 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 work=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-dkfql",
+            "uid": "01490ea7-8273-47e7-b889-309a64d321de",
+            "restarts": "0",
+            "work": "500"
+          },
+          "output_tail": "2026-11-17T19:47:59Z BASELINE pod=rebuild-demo-f4b67fbd9-dkfql uid=01490ea7-8273-47e7-b889-309a64d321de rs=885a44fb-b7ec-4bcf-ab49-43635724ba26 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 restarts=0 work=200\n2026-11-17T19:47:59Z INJECTED pod=rebuild-demo-f4b67fbd9-dkfql uid=01490ea7-8273-47e7-b889-309a64d321de restarts=0 work=500\nRESULT verb=inject ok=1 pod=rebuild-demo-f4b67fbd9-dkfql uid=01490ea7-8273-47e7-b889-309a64d321de restarts=0 work=500"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "uid": "01490ea7-8273-47e7-b889-309a64d321de",
+            "restarts": "0",
+            "work": "500",
+            "ok_requests": "0",
+            "fail_requests": "59"
+          },
+          "output_tail": "2026-11-17T19:49:00Z OBSERVE seconds=60 ok=0 fail=59 other=0 uid=01490ea7-8273-47e7-b889-309a64d321de restarts=0\n2026-11-17T19:49:00Z VERIFIED_FAULT uid=01490ea7-8273-47e7-b889-309a64d321de restarts=0 work=500\nRESULT verb=verify ok=1 uid=01490ea7-8273-47e7-b889-309a64d321de restarts=0 work=500 ok_requests=0 fail_requests=59"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "work": "500"
+          },
+          "output_tail": "2026-11-17T19:52:11Z RECOVERED_CHECK work=500\nRESULT verb=recovered ok=0 reason=not_recovered work=500"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "deployment": "absent",
+            "pods": "0"
+          },
+          "output_tail": "2026-11-17T19:52:11Z CLEANUP start pods=1\n2026-11-17T19:52:42Z CLEANED deployment=rebuild-demo service=rebuild-demo pods=0\n2026-11-17T19:52:53Z NAMESPACE_REMOVED namespace=vigil-experiment\nRESULT verb=cleanup ok=1 deployment=absent pods=0"
+        }
+      },
+      "investigation_id": "inv-82a1b1356d32",
+      "exit_code": 1,
+      "verdict": {
+        "diagnosis_correct": false,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "missing",
+        "action_detail": "没有提出 restart_pod@rebuild-demo",
+        "confirmed": false,
+        "recovered_by_arm": false,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "aborted",
+          "task": {
+            "phase": "terminal",
+            "outcome": "aborted",
+            "termination_code": "ungrounded_action",
+            "runtime_version": "langchain-generic-1",
+            "proposal_id": null,
+            "no_progress_rounds": 1,
+            "recovered_at": null,
+            "investigation_seconds": 188.5,
+            "action_seconds": 0.0,
+            "calendar_seconds": 188.6,
+            "used_model_calls": 11,
+            "used_tool_calls": 24
+          },
+          "action_ids": [],
+          "evidence_count": 18,
+          "tool_call_count": 24,
+          "elapsed_seconds": 190.3
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 24,
+        "model_calls": 11,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "",
+            "id": "obs-f3543f9fb8c9"
+          },
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=rebuild-demo",
+            "id": "obs-b6e9dadc1721"
+          },
+          {
+            "tool": "kubernetes.list_events",
+            "expression": "",
+            "id": "obs-bc553ead63f0"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "kube_pod_container_status_restarts_total{namespace=\"vigil-experiment\"}",
+            "id": "obs-4a1cdafbbfdd"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "{__name__=~\"kube_pod_created|kube_pod_deletion_timestamp|kube_pod_status_phase|kube_pod_status_ready\", namespace=\"vigil-experiment\"}",
+            "id": "obs-a825d4e71981"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "{__name__=~\"kube_pod_owner|kube_replicaset_.*|kube_pod_spec_.*|kube_pod_init_container_info\", namespace=\"vigil-experiment\"}",
+            "id": "obs-ba8fe8c265ef"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "count by (pod) (kube_pod_created{namespace=\"vigil-experiment\"})",
+            "id": "obs-39000dde5312"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "count by (pod) (kube_pod_status_phase{namespace=\"vigil-experiment\",phase=\"Running\"})",
+            "id": "obs-c2c650a1f316"
+          }
+        ],
+        "status": "aborted",
+        "conclusion": null,
+        "needs_review": []
+      },
+      "output_tail": "dMount/OOMKilled/BackOff 等容器级异常，排除挂载失败与崩溃循环。\"}, {\"hypothesis_id\": \"hyp-f67a3f1d95d1\", \"observation_id\": \"obs-4a1cdafbbfdd\", \"relation\": \"supporting\", \"rationale\": \"kube_pod_container_status_restarts_total 在 cdg85、8qvl6、dkfql 三个 Pod 上全程为 0，确认无容器内重启。\"}, {\"hypothesis_id\": \"hyp-95669b0f9d61\", \"observation_id\": \"obs-a825d4e71981\", \"relation\": \"supporting\", \"rationale\": \"kube_pod_created 显示同 ReplicaSet 下先后存在 cdg85(19:39:41)、8qvl6(19:43:55)、dkfql(19:47:53)，deletion_timestamp 显示 cdg85 于 19:44:25、8qvl6 于 19:47:42 被删除，替换间隔约 4 分钟，而 Deployment 未变更。\"}, {\"hypothesis_id\": \"hyp-95669b0f9d61\", \"observation_id\": \"obs-ba8fe8c265ef\", \"relation\": \"supporting\", \"rationale\": \"三个 Pod 的 owner 都是同一个 ReplicaSet rebuild-demo-f4b67fbd9（owner Deployment rebuild-demo），kube_replicaset_created 从 19:39:40 跳到 19:47:53，说明 ReplicaSet 本身也被以相同模板重建，属外部周期性重建而非发布。\"}, {\"hypothesis_id\": \"hyp-95669b0f9d61\", \"observation_id\": \"obs-39000dde5312\", \"relation\": \"supporting\", \"rationale\": \"30 分钟内 kube_pod_created 只出现 3 个短生命周期 Pod 序列，各自仅在重叠时段为 1，印证 Pod 生命周期被反复重置、容器可写层状态每次归零。\"}, {\"hypothesis_id\": \"hyp-95669b0f9d61\", \"observation_id\": \"obs-c2c650a1f316\", \"relation\": \"supporting\", \"rationale\": \"Running 相位按 cdg85→8qvl6→dkfql 接力且不重叠，副本数始终为 1，说明是删除旧 Pod 再创建新 Pod 的替换模式，且每次替换后 /work 依旧 500。\"}], \"skills\": [], \"delegations\": [], \"prediction\": null, \"remaining_budget\": {\"tool_calls\": 4, \"model_calls\": 9, \"investigation_seconds\": 411.5, \"action_seconds\": 450.0, \"total_seconds\": 861.5}, \"needs_human\": [], \"model_summary_completed\": false}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-5c871cba2e77",
+      "scenario": "a01-pod-rebuild",
+      "arm": "generic",
+      "index": 3,
+      "started_at": "2026-11-17T19:52:53.121913+00:00",
+      "finished_at": "2026-11-17T19:58:43.027100+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-kf4wp",
+            "uid": "c349e398-a85f-4f8c-86a6-48c41f02f228",
+            "replicaset": "4586a6ec-728d-456d-a1f6-8ef1819322bb",
+            "template": "7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T19:52:53Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild\n2026-11-17T19:52:57Z DEPLOYED pod=rebuild-demo-f4b67fbd9-kf4wp uid=c349e398-a85f-4f8c-86a6-48c41f02f228 rs=4586a6ec-728d-456d-a1f6-8ef1819322bb template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200\nRESULT verb=preflight ok=1 pod=rebuild-demo-f4b67fbd9-kf4wp uid=c349e398-a85f-4f8c-86a6-48c41f02f228 replicaset=4586a6ec-728d-456d-a1f6-8ef1819322bb template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 work=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-kf4wp",
+            "uid": "c349e398-a85f-4f8c-86a6-48c41f02f228",
+            "restarts": "0",
+            "work": "500"
+          },
+          "output_tail": "2026-11-17T19:52:59Z BASELINE pod=rebuild-demo-f4b67fbd9-kf4wp uid=c349e398-a85f-4f8c-86a6-48c41f02f228 rs=4586a6ec-728d-456d-a1f6-8ef1819322bb template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 restarts=0 work=200\n2026-11-17T19:52:59Z INJECTED pod=rebuild-demo-f4b67fbd9-kf4wp uid=c349e398-a85f-4f8c-86a6-48c41f02f228 restarts=0 work=500\nRESULT verb=inject ok=1 pod=rebuild-demo-f4b67fbd9-kf4wp uid=c349e398-a85f-4f8c-86a6-48c41f02f228 restarts=0 work=500"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "uid": "c349e398-a85f-4f8c-86a6-48c41f02f228",
+            "restarts": "0",
+            "work": "500",
+            "ok_requests": "0",
+            "fail_requests": "59"
+          },
+          "output_tail": "2026-11-17T19:54:00Z OBSERVE seconds=60 ok=0 fail=59 other=0 uid=c349e398-a85f-4f8c-86a6-48c41f02f228 restarts=0\n2026-11-17T19:54:00Z VERIFIED_FAULT uid=c349e398-a85f-4f8c-86a6-48c41f02f228 restarts=0 work=500\nRESULT verb=verify ok=1 uid=c349e398-a85f-4f8c-86a6-48c41f02f228 restarts=0 work=500 ok_requests=0 fail_requests=59"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "work": "500"
+          },
+          "output_tail": "2026-11-17T19:58:03Z RECOVERED_CHECK work=500\nRESULT verb=recovered ok=0 reason=not_recovered work=500"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "deployment": "absent",
+            "pods": "0"
+          },
+          "output_tail": "2026-11-17T19:58:03Z CLEANUP start pods=1\n2026-11-17T19:58:34Z CLEANED deployment=rebuild-demo service=rebuild-demo pods=0\n2026-11-17T19:58:43Z NAMESPACE_REMOVED namespace=vigil-experiment\nRESULT verb=cleanup ok=1 deployment=absent pods=0"
+        }
+      },
+      "investigation_id": "inv-e539fe73db78",
+      "exit_code": 5,
+      "verdict": {
+        "diagnosis_correct": false,
+        "conclusion_matched": false,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "missing",
+        "action_detail": "没有提出 restart_pod@rebuild-demo",
+        "confirmed": false,
+        "recovered_by_arm": false,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "inconclusive",
+          "task": {
+            "phase": "terminal",
+            "outcome": "inconclusive",
+            "termination_code": "insufficient_evidence",
+            "runtime_version": "langchain-generic-1",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": null,
+            "investigation_seconds": 240.0,
+            "action_seconds": 0.0,
+            "calendar_seconds": 240.1,
+            "used_model_calls": 13,
+            "used_tool_calls": 27
+          },
+          "action_ids": [],
+          "evidence_count": 21,
+          "tool_call_count": 27,
+          "elapsed_seconds": 241.8
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 27,
+        "model_calls": 13,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=rebuild-demo",
+            "id": "obs-9a67d8b4ab84"
+          },
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "app=rebuild-demo",
+            "id": "obs-e185893d4f76"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "kube_configmap_info{namespace=\"vigil-experiment\"}",
+            "id": "obs-8bdc96e080af"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "kube_configmap_created{namespace=\"vigil-experiment\", configmap=\"rebuild-demo-poison\"}",
+            "id": "obs-6f869d0a95b4"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "kube_pod_created{namespace=\"vigil-experiment\", pod=~\"rebuild-demo.*\"}",
+            "id": "obs-fe18cd01f7e3"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "kube_pod_status_phase{namespace=\"vigil-experiment\"} or kube_pod_container_status_terminated_reason{namespace=\"vigil-experiment\"}",
+            "id": "obs-41c119ea70c6"
+          }
+        ],
+        "status": "inconclusive",
+        "conclusion": null,
+        "needs_review": []
+      },
+      "output_tail": "76\", \"observation_id\": \"obs-6f869d0a95b4\", \"relation\": \"supporting\", \"rationale\": \"kube_configmap_created 时间戳在窗口内三次变化（1794944380→1794944873→1794945173），说明毒化 ConfigMap 被反复删除重建\"}, {\"hypothesis_id\": \"hyp-576b36d9f576\", \"observation_id\": \"obs-fe18cd01f7e3\", \"relation\": \"supporting\", \"rationale\": \"Pod 创建时间戳 1794944381/1794944635/1794944873/1794945174 与 ConfigMap 重建时间戳几乎逐次重合（相差 0-2 秒），说明 Pod 重建与毒化注入同步发生，4 个实例全部 500\"}, {\"hypothesis_id\": \"hyp-576b36d9f576\", \"observation_id\": \"obs-41c119ea70c6\", \"relation\": \"supporting\", \"rationale\": \"同一 ReplicaSet f4b67fbd9 下先后出现 8qvl6、dkfql、kf4wp 多个 Running 实例，证明是 Pod 反复重建而非版本迭代\"}, {\"hypothesis_id\": \"hyp-e5c142dbff03\", \"observation_id\": \"obs-31a07e10efa2\", \"relation\": \"neutral\", \"rationale\": \"probe_success 只覆盖 frontend.vigil-shop 服务，与 rebuild-demo 无关，不能作为本次 500 的证据\"}, {\"hypothesis_id\": \"hyp-d4d557b50192\", \"observation_id\": \"obs-3ac7393e5379\", \"relation\": \"neutral\", \"rationale\": \"CPU throttling 指标空结果，既不能确认也不能排除资源压力，空结果不作反证\"}], \"skills\": [], \"delegations\": [], \"prediction\": null, \"remaining_budget\": {\"tool_calls\": 1, \"model_calls\": 7, \"investigation_seconds\": 360.0, \"action_seconds\": 450.0, \"total_seconds\": 810.0}, \"needs_human\": [\"确认并清理 ConfigMap vigil-experiment/rebuild-demo-poison 的内容与来源（需要读取 ConfigMap/审计日志的权限，超出本助手工具范围）\", \"确认是哪个自动化（脚本/CI/实验控制器）在 Pod 重建后重新注入毒化配置，这是唯一能终止循环的处置点\", \"确认 Pod 反复重建的发起者与时间点（审计日志/控制器日志），判断是否为实验注入行为\", \"在清理注入源后验证 /work 恢复 200；在此之前不建议重启 Pod 或 rollout undo（已有 4 次 Pod 重建都未恢复，且无历史 revision 可回滚）\"], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-61f4cb9d256b",
+      "scenario": "a01-pod-rebuild",
+      "arm": "rules",
+      "index": 1,
+      "started_at": "2026-11-17T18:25:52.762922+00:00",
+      "finished_at": "2026-11-17T18:30:41.566867+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-4rrvw",
+            "uid": "6531d18c-1781-4d0c-8fa7-d732574b03bd",
+            "replicaset": "dbcd60cb-e982-421b-8593-4c159909cdd1",
+            "template": "7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T18:25:52Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild\n2026-11-17T18:25:57Z DEPLOYED pod=rebuild-demo-f4b67fbd9-4rrvw uid=6531d18c-1781-4d0c-8fa7-d732574b03bd rs=dbcd60cb-e982-421b-8593-4c159909cdd1 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200\nRESULT verb=preflight ok=1 pod=rebuild-demo-f4b67fbd9-4rrvw uid=6531d18c-1781-4d0c-8fa7-d732574b03bd replicaset=dbcd60cb-e982-421b-8593-4c159909cdd1 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 work=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-4rrvw",
+            "uid": "6531d18c-1781-4d0c-8fa7-d732574b03bd",
+            "restarts": "0",
+            "work": "500"
+          },
+          "output_tail": "2026-11-17T18:25:58Z BASELINE pod=rebuild-demo-f4b67fbd9-4rrvw uid=6531d18c-1781-4d0c-8fa7-d732574b03bd rs=dbcd60cb-e982-421b-8593-4c159909cdd1 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 restarts=0 work=200\n2026-11-17T18:25:58Z INJECTED pod=rebuild-demo-f4b67fbd9-4rrvw uid=6531d18c-1781-4d0c-8fa7-d732574b03bd restarts=0 work=500\nRESULT verb=inject ok=1 pod=rebuild-demo-f4b67fbd9-4rrvw uid=6531d18c-1781-4d0c-8fa7-d732574b03bd restarts=0 work=500"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "uid": "6531d18c-1781-4d0c-8fa7-d732574b03bd",
+            "restarts": "0",
+            "work": "500",
+            "ok_requests": "0",
+            "fail_requests": "59"
+          },
+          "output_tail": "2026-11-17T18:26:59Z OBSERVE seconds=60 ok=0 fail=59 other=0 uid=6531d18c-1781-4d0c-8fa7-d732574b03bd restarts=0\n2026-11-17T18:26:59Z VERIFIED_FAULT uid=6531d18c-1781-4d0c-8fa7-d732574b03bd restarts=0 work=500\nRESULT verb=verify ok=1 uid=6531d18c-1781-4d0c-8fa7-d732574b03bd restarts=0 work=500 ok_requests=0 fail_requests=59"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "recovered",
+            "ok": "1",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T18:30:02Z RECOVERED_CHECK work=200\nRESULT verb=recovered ok=1 work=200"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "deployment": "absent",
+            "pods": "0"
+          },
+          "output_tail": "2026-11-17T18:30:02Z CLEANUP start pods=1\n2026-11-17T18:30:33Z CLEANED deployment=rebuild-demo service=rebuild-demo pods=0\n2026-11-17T18:30:41Z NAMESPACE_REMOVED namespace=vigil-experiment\nRESULT verb=cleanup ok=1 deployment=absent pods=0"
+        }
+      },
+      "investigation_id": "inv-6f10964578cf",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "correct",
+        "action_detail": "restart_pod@rebuild-demo 已提案",
+        "confirmed": true,
+        "recovered_by_arm": true,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "recovered",
+            "termination_code": "business_recovered",
+            "runtime_version": "rules-1",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": "2026-11-17T18:30:00.439918+00:00",
+            "investigation_seconds": 0.4,
+            "action_seconds": 178.6,
+            "calendar_seconds": 179.1,
+            "used_model_calls": 0,
+            "used_tool_calls": 12
+          },
+          "action_ids": [
+            "act-9dcde44fdcdd"
+          ],
+          "evidence_count": 9,
+          "tool_call_count": 12,
+          "elapsed_seconds": 181.6
+        },
+        "business_healthy_after_arm": true,
+        "proposals": [
+          {
+            "id": "act-9dcde44fdcdd",
+            "kind": "restart_pod",
+            "target": "rebuild-demo-f4b67fbd9-4rrvw",
+            "status": "succeeded",
+            "origin": "rules",
+            "evidence_ids": [
+              "obs-a4b6f3e5661a",
+              "obs-0b2e0807b98b",
+              "obs-783174384c67"
+            ]
+          }
+        ],
+        "attempts": [
+          {
+            "proposal_id": "act-9dcde44fdcdd",
+            "status": "verified",
+            "outcome": "improved"
+          }
+        ],
+        "approvals": 0,
+        "tool_calls": 12,
+        "model_calls": 0,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "app=rebuild-demo",
+            "id": "obs-a4b6f3e5661a"
+          },
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=rebuild-demo",
+            "id": "obs-0b2e0807b98b"
+          },
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=rebuild-demo",
+            "id": "obs-783174384c67"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "rebuild-demo 的 Pod rebuild-demo-f4b67fbd9-4rrvw 就绪且没有重启，镜像、模板和 revision 都没有变化，但业务请求持续返回 5xx；故障在 Pod 自身的运行时状态，重建 Pod 能拿到干净状态。",
+        "needs_review": []
+      },
+      "output_tail": "t\": \"rebuild-demo 的 Pod rebuild-demo-f4b67fbd9-4rrvw 就绪且没有重启，镜像、模板和 revision 都没有变化，但业务请求持续返回 5xx；故障在 Pod 自身的运行时状态，重建 Pod 能拿到干净状态。\", \"status\": \"supported\", \"update_reason\": \"规则所需信号全部成立\"}], \"evidence_count\": 9, \"tool_call_count\": 12, \"action_ids\": [\"act-9dcde44fdcdd\"], \"relations\": [{\"hypothesis_id\": \"hyp-528eeb7ddecb\", \"observation_id\": \"obs-a4b6f3e5661a\", \"relation\": \"supporting\", \"rationale\": \"Pod ready=true、restart_count=0，Deployment 模板未变，日志出现 5xx；服务选择器 {'app': 'rebuild-demo'}。\"}, {\"hypothesis_id\": \"hyp-528eeb7ddecb\", \"observation_id\": \"obs-0b2e0807b98b\", \"relation\": \"supporting\", \"rationale\": \"Pod ready=true、restart_count=0，Deployment 模板未变，日志出现 5xx；服务选择器 {'app': 'rebuild-demo'}。\"}, {\"hypothesis_id\": \"hyp-528eeb7ddecb\", \"observation_id\": \"obs-783174384c67\", \"relation\": \"supporting\", \"rationale\": \"Pod ready=true、restart_count=0，Deployment 模板未变，日志出现 5xx；服务选择器 {'app': 'rebuild-demo'}。\"}], \"skills\": [], \"delegations\": [], \"prediction\": {\"proposal_id\": \"act-9dcde44fdcdd\", \"purpose\": \"remediation\", \"prediction\": \"重建后业务请求恢复 200\", \"observation_conditions\": {\"window_seconds\": 135, \"absence_meaning\": \"没有恢复说明判定或动作都不适用，需要人工核实\", \"business_target\": \"rebuild-demo/work\", \"expected_change\": \"重建后业务请求恢复 200\"}, \"observation_window_seconds\": 135, \"outcome\": \"improved\", \"outcome_reason\": \"动作后业务与资源检查均通过\"}, \"remaining_budget\": {\"tool_calls\": 16, \"model_calls\": 20, \"investigation_seconds\": 599.6, \"action_seconds\": 271.4, \"total_seconds\": 871.0}, \"needs_human\": [], \"model_summary_completed\": true}}\n2026-11-18 02:27:01.839 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 02:27:01.909 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 02:27:32.007 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 02:27:32.057 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-e2ecba18b8dc",
+      "scenario": "a01-pod-rebuild",
+      "arm": "rules",
+      "index": 2,
+      "started_at": "2026-11-17T18:30:41.566944+00:00",
+      "finished_at": "2026-11-17T18:35:32.139808+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-pz8bj",
+            "uid": "186ef498-5f6a-457f-b48c-815034943fce",
+            "replicaset": "2017fb7c-35e8-432d-bc64-474e9b51b7e6",
+            "template": "7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T18:30:41Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild\n2026-11-17T18:30:47Z DEPLOYED pod=rebuild-demo-f4b67fbd9-pz8bj uid=186ef498-5f6a-457f-b48c-815034943fce rs=2017fb7c-35e8-432d-bc64-474e9b51b7e6 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200\nRESULT verb=preflight ok=1 pod=rebuild-demo-f4b67fbd9-pz8bj uid=186ef498-5f6a-457f-b48c-815034943fce replicaset=2017fb7c-35e8-432d-bc64-474e9b51b7e6 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 work=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-pz8bj",
+            "uid": "186ef498-5f6a-457f-b48c-815034943fce",
+            "restarts": "0",
+            "work": "500"
+          },
+          "output_tail": "2026-11-17T18:30:49Z BASELINE pod=rebuild-demo-f4b67fbd9-pz8bj uid=186ef498-5f6a-457f-b48c-815034943fce rs=2017fb7c-35e8-432d-bc64-474e9b51b7e6 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 restarts=0 work=200\n2026-11-17T18:30:49Z INJECTED pod=rebuild-demo-f4b67fbd9-pz8bj uid=186ef498-5f6a-457f-b48c-815034943fce restarts=0 work=500\nRESULT verb=inject ok=1 pod=rebuild-demo-f4b67fbd9-pz8bj uid=186ef498-5f6a-457f-b48c-815034943fce restarts=0 work=500"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "uid": "186ef498-5f6a-457f-b48c-815034943fce",
+            "restarts": "0",
+            "work": "500",
+            "ok_requests": "0",
+            "fail_requests": "60"
+          },
+          "output_tail": "2026-11-17T18:31:51Z OBSERVE seconds=60 ok=0 fail=60 other=0 uid=186ef498-5f6a-457f-b48c-815034943fce restarts=0\n2026-11-17T18:31:51Z VERIFIED_FAULT uid=186ef498-5f6a-457f-b48c-815034943fce restarts=0 work=500\nRESULT verb=verify ok=1 uid=186ef498-5f6a-457f-b48c-815034943fce restarts=0 work=500 ok_requests=0 fail_requests=60"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "recovered",
+            "ok": "1",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T18:34:49Z RECOVERED_CHECK work=200\nRESULT verb=recovered ok=1 work=200"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "deployment": "absent",
+            "pods": "0"
+          },
+          "output_tail": "2026-11-17T18:34:49Z CLEANUP start pods=1\n2026-11-17T18:35:21Z CLEANED deployment=rebuild-demo service=rebuild-demo pods=0\n2026-11-17T18:35:32Z NAMESPACE_REMOVED namespace=vigil-experiment\nRESULT verb=cleanup ok=1 deployment=absent pods=0"
+        }
+      },
+      "investigation_id": "inv-f439d908d518",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "correct",
+        "action_detail": "restart_pod@rebuild-demo 已提案",
+        "confirmed": true,
+        "recovered_by_arm": true,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "recovered",
+            "termination_code": "business_recovered",
+            "runtime_version": "rules-1",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": "2026-11-17T18:34:48.332295+00:00",
+            "investigation_seconds": 0.8,
+            "action_seconds": 174.9,
+            "calendar_seconds": 175.8,
+            "used_model_calls": 0,
+            "used_tool_calls": 11
+          },
+          "action_ids": [
+            "act-db75f6f99f6e"
+          ],
+          "evidence_count": 8,
+          "tool_call_count": 11,
+          "elapsed_seconds": 177.6
+        },
+        "business_healthy_after_arm": true,
+        "proposals": [
+          {
+            "id": "act-db75f6f99f6e",
+            "kind": "restart_pod",
+            "target": "rebuild-demo-f4b67fbd9-pz8bj",
+            "status": "succeeded",
+            "origin": "rules",
+            "evidence_ids": [
+              "obs-2d341ec7e3d0",
+              "obs-b658a3fbffaf",
+              "obs-84237bc09f8a"
+            ]
+          }
+        ],
+        "attempts": [
+          {
+            "proposal_id": "act-db75f6f99f6e",
+            "status": "verified",
+            "outcome": "improved"
+          }
+        ],
+        "approvals": 0,
+        "tool_calls": 11,
+        "model_calls": 0,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "app=rebuild-demo",
+            "id": "obs-2d341ec7e3d0"
+          },
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=rebuild-demo",
+            "id": "obs-b658a3fbffaf"
+          },
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=rebuild-demo",
+            "id": "obs-84237bc09f8a"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "rebuild-demo 的 Pod rebuild-demo-f4b67fbd9-pz8bj 就绪且没有重启，镜像、模板和 revision 都没有变化，但业务请求持续返回 5xx；故障在 Pod 自身的运行时状态，重建 Pod 能拿到干净状态。",
+        "needs_review": []
+      },
+      "output_tail": "t\": \"rebuild-demo 的 Pod rebuild-demo-f4b67fbd9-pz8bj 就绪且没有重启，镜像、模板和 revision 都没有变化，但业务请求持续返回 5xx；故障在 Pod 自身的运行时状态，重建 Pod 能拿到干净状态。\", \"status\": \"supported\", \"update_reason\": \"规则所需信号全部成立\"}], \"evidence_count\": 8, \"tool_call_count\": 11, \"action_ids\": [\"act-db75f6f99f6e\"], \"relations\": [{\"hypothesis_id\": \"hyp-b942ad9db3db\", \"observation_id\": \"obs-2d341ec7e3d0\", \"relation\": \"supporting\", \"rationale\": \"Pod ready=true、restart_count=0，Deployment 模板未变，日志出现 5xx；服务选择器 {'app': 'rebuild-demo'}。\"}, {\"hypothesis_id\": \"hyp-b942ad9db3db\", \"observation_id\": \"obs-b658a3fbffaf\", \"relation\": \"supporting\", \"rationale\": \"Pod ready=true、restart_count=0，Deployment 模板未变，日志出现 5xx；服务选择器 {'app': 'rebuild-demo'}。\"}, {\"hypothesis_id\": \"hyp-b942ad9db3db\", \"observation_id\": \"obs-84237bc09f8a\", \"relation\": \"supporting\", \"rationale\": \"Pod ready=true、restart_count=0，Deployment 模板未变，日志出现 5xx；服务选择器 {'app': 'rebuild-demo'}。\"}], \"skills\": [], \"delegations\": [], \"prediction\": {\"proposal_id\": \"act-db75f6f99f6e\", \"purpose\": \"remediation\", \"prediction\": \"重建后业务请求恢复 200\", \"observation_conditions\": {\"window_seconds\": 135, \"absence_meaning\": \"没有恢复说明判定或动作都不适用，需要人工核实\", \"business_target\": \"rebuild-demo/work\", \"expected_change\": \"重建后业务请求恢复 200\"}, \"observation_window_seconds\": 135, \"outcome\": \"improved\", \"outcome_reason\": \"动作后业务与资源检查均通过\"}, \"remaining_budget\": {\"tool_calls\": 17, \"model_calls\": 20, \"investigation_seconds\": 599.2, \"action_seconds\": 275.1, \"total_seconds\": 874.2}, \"needs_human\": [], \"model_summary_completed\": true}}\n2026-11-18 02:31:53.374 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 02:31:53.419 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 02:32:23.689 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 02:32:23.727 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-1e0b507702e2",
+      "scenario": "a01-pod-rebuild",
+      "arm": "rules",
+      "index": 3,
+      "started_at": "2026-11-17T18:35:32.139870+00:00",
+      "finished_at": "2026-11-17T18:40:17.475443+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-cf6pd",
+            "uid": "3c216366-57ab-4cba-8155-3496874baa0f",
+            "replicaset": "fd028474-16f0-4bce-8e0a-40d979b3fd75",
+            "template": "7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T18:35:32Z NAMESPACE_CREATED namespace=vigil-experiment owner=a01-pod-rebuild\n2026-11-17T18:35:36Z DEPLOYED pod=rebuild-demo-f4b67fbd9-cf6pd uid=3c216366-57ab-4cba-8155-3496874baa0f rs=fd028474-16f0-4bce-8e0a-40d979b3fd75 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 ready=true restarts=0 work=200\nRESULT verb=preflight ok=1 pod=rebuild-demo-f4b67fbd9-cf6pd uid=3c216366-57ab-4cba-8155-3496874baa0f replicaset=fd028474-16f0-4bce-8e0a-40d979b3fd75 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 work=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "pod": "rebuild-demo-f4b67fbd9-cf6pd",
+            "uid": "3c216366-57ab-4cba-8155-3496874baa0f",
+            "restarts": "0",
+            "work": "500"
+          },
+          "output_tail": "2026-11-17T18:35:37Z BASELINE pod=rebuild-demo-f4b67fbd9-cf6pd uid=3c216366-57ab-4cba-8155-3496874baa0f rs=fd028474-16f0-4bce-8e0a-40d979b3fd75 template=7de29fba34f2b2762356d02ec842181bf508be22250eff8db05212243647e000 restarts=0 work=200\n2026-11-17T18:35:37Z INJECTED pod=rebuild-demo-f4b67fbd9-cf6pd uid=3c216366-57ab-4cba-8155-3496874baa0f restarts=0 work=500\nRESULT verb=inject ok=1 pod=rebuild-demo-f4b67fbd9-cf6pd uid=3c216366-57ab-4cba-8155-3496874baa0f restarts=0 work=500"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "uid": "3c216366-57ab-4cba-8155-3496874baa0f",
+            "restarts": "0",
+            "work": "500",
+            "ok_requests": "0",
+            "fail_requests": "59"
+          },
+          "output_tail": "2026-11-17T18:36:39Z OBSERVE seconds=60 ok=0 fail=59 other=0 uid=3c216366-57ab-4cba-8155-3496874baa0f restarts=0\n2026-11-17T18:36:39Z VERIFIED_FAULT uid=3c216366-57ab-4cba-8155-3496874baa0f restarts=0 work=500\nRESULT verb=verify ok=1 uid=3c216366-57ab-4cba-8155-3496874baa0f restarts=0 work=500 ok_requests=0 fail_requests=59"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "recovered",
+            "ok": "1",
+            "work": "200"
+          },
+          "output_tail": "2026-11-17T18:39:37Z RECOVERED_CHECK work=200\nRESULT verb=recovered ok=1 work=200"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "deployment": "absent",
+            "pods": "0"
+          },
+          "output_tail": "2026-11-17T18:39:37Z CLEANUP start pods=1\n2026-11-17T18:40:09Z CLEANED deployment=rebuild-demo service=rebuild-demo pods=0\n2026-11-17T18:40:17Z NAMESPACE_REMOVED namespace=vigil-experiment\nRESULT verb=cleanup ok=1 deployment=absent pods=0"
+        }
+      },
+      "investigation_id": "inv-f20a7a4f93fc",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "correct",
+        "action_detail": "restart_pod@rebuild-demo 已提案",
+        "confirmed": true,
+        "recovered_by_arm": true,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "recovered",
+            "termination_code": "business_recovered",
+            "runtime_version": "rules-1",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": "2026-11-17T18:39:35.737246+00:00",
+            "investigation_seconds": 0.3,
+            "action_seconds": 174.5,
+            "calendar_seconds": 174.9,
+            "used_model_calls": 0,
+            "used_tool_calls": 11
+          },
+          "action_ids": [
+            "act-1776b9e066bf"
+          ],
+          "evidence_count": 8,
+          "tool_call_count": 11,
+          "elapsed_seconds": 176.9
+        },
+        "business_healthy_after_arm": true,
+        "proposals": [
+          {
+            "id": "act-1776b9e066bf",
+            "kind": "restart_pod",
+            "target": "rebuild-demo-f4b67fbd9-cf6pd",
+            "status": "succeeded",
+            "origin": "rules",
+            "evidence_ids": [
+              "obs-8814e299cf5c",
+              "obs-1d45efe2c8ff",
+              "obs-d1d289753036"
+            ]
+          }
+        ],
+        "attempts": [
+          {
+            "proposal_id": "act-1776b9e066bf",
+            "status": "verified",
+            "outcome": "improved"
+          }
+        ],
+        "approvals": 0,
+        "tool_calls": 11,
+        "model_calls": 0,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "app=rebuild-demo",
+            "id": "obs-8814e299cf5c"
+          },
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=rebuild-demo",
+            "id": "obs-1d45efe2c8ff"
+          },
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=rebuild-demo",
+            "id": "obs-d1d289753036"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "rebuild-demo 的 Pod rebuild-demo-f4b67fbd9-cf6pd 就绪且没有重启，镜像、模板和 revision 都没有变化，但业务请求持续返回 5xx；故障在 Pod 自身的运行时状态，重建 Pod 能拿到干净状态。",
+        "needs_review": []
+      },
+      "output_tail": "t\": \"rebuild-demo 的 Pod rebuild-demo-f4b67fbd9-cf6pd 就绪且没有重启，镜像、模板和 revision 都没有变化，但业务请求持续返回 5xx；故障在 Pod 自身的运行时状态，重建 Pod 能拿到干净状态。\", \"status\": \"supported\", \"update_reason\": \"规则所需信号全部成立\"}], \"evidence_count\": 8, \"tool_call_count\": 11, \"action_ids\": [\"act-1776b9e066bf\"], \"relations\": [{\"hypothesis_id\": \"hyp-0acd6ce9c296\", \"observation_id\": \"obs-8814e299cf5c\", \"relation\": \"supporting\", \"rationale\": \"Pod ready=true、restart_count=0，Deployment 模板未变，日志出现 5xx；服务选择器 {'app': 'rebuild-demo'}。\"}, {\"hypothesis_id\": \"hyp-0acd6ce9c296\", \"observation_id\": \"obs-1d45efe2c8ff\", \"relation\": \"supporting\", \"rationale\": \"Pod ready=true、restart_count=0，Deployment 模板未变，日志出现 5xx；服务选择器 {'app': 'rebuild-demo'}。\"}, {\"hypothesis_id\": \"hyp-0acd6ce9c296\", \"observation_id\": \"obs-d1d289753036\", \"relation\": \"supporting\", \"rationale\": \"Pod ready=true、restart_count=0，Deployment 模板未变，日志出现 5xx；服务选择器 {'app': 'rebuild-demo'}。\"}], \"skills\": [], \"delegations\": [], \"prediction\": {\"proposal_id\": \"act-1776b9e066bf\", \"purpose\": \"remediation\", \"prediction\": \"重建后业务请求恢复 200\", \"observation_conditions\": {\"window_seconds\": 135, \"absence_meaning\": \"没有恢复说明判定或动作都不适用，需要人工核实\", \"business_target\": \"rebuild-demo/work\", \"expected_change\": \"重建后业务请求恢复 200\"}, \"observation_window_seconds\": 135, \"outcome\": \"improved\", \"outcome_reason\": \"动作后业务与资源检查均通过\"}, \"remaining_budget\": {\"tool_calls\": 17, \"model_calls\": 20, \"investigation_seconds\": 599.7, \"action_seconds\": 275.5, \"total_seconds\": 875.2}, \"needs_human\": [], \"model_summary_completed\": true}}\n2026-11-18 02:36:41.252 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 02:36:41.301 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 02:37:11.446 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError\n2026-11-18 02:37:11.493 | INFO     | aiops.actions.executor:_restart_applicability:537 - 读取历史模板失败，按无历史规格处理：ActionError"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-43e1d0c837dc",
+      "scenario": "f01-bad-release",
+      "arm": "rules",
+      "index": 1,
+      "started_at": "2026-11-17T17:55:35.560173+00:00",
+      "finished_at": "2026-11-17T17:59:48.187800+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "image": "gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef",
+            "probe": "1",
+            "alerts": "none",
+            "home": "200"
+          },
+          "output_tail": "2026-11-17T17:55:35Z PRE image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none\n2026-11-17T17:55:37Z BASELINE image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none home=200\nRESULT verb=preflight ok=1 image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none home=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "image": "vigil/productcatalogservice:canary-20261104",
+            "pod": "productcatalogservice-57f9df78f8-q6pth",
+            "probe": "0",
+            "alert": "firing",
+            "elapsed_s": "88"
+          },
+          "output_tail": "2026-11-17T17:55:37Z INJECT start\n2026-11-17T17:55:39Z ROLLOUT_DONE elapsed=2s\n2026-11-17T17:55:39Z NEW_POD productcatalogservice-57f9df78f8-q6pth uid=082494e3-7536-4ee8-9694-d60a692a9676 image=vigil/productcatalogservice:canary-20261104\n2026-11-17T17:55:59Z HOME_500 elapsed=22s\n2026-11-17T17:56:00Z PROBE_0 elapsed=23s\n2026-11-17T17:57:05Z ALERT_FIRING elapsed=88s state=firing\nRESULT verb=inject ok=1 image=vigil/productcatalogservice:canary-20261104 pod=productcatalogservice-57f9df78f8-q6pth probe=0 alert=firing elapsed_s=88"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "image": "vigil/productcatalogservice:canary-20261104",
+            "home": "500",
+            "probe": "0",
+            "alert": "firing"
+          },
+          "output_tail": "2026-11-17T17:57:06Z OBSERVE image=vigil/productcatalogservice:canary-20261104 home=500 probe=0 alert=firing\nRESULT verb=verify ok=1 image=vigil/productcatalogservice:canary-20261104 home=500 probe=0 alert=firing"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "image": "vigil/productcatalogservice:canary-20261104",
+            "home": "500",
+            "probe": "0",
+            "alert": "firing"
+          },
+          "output_tail": "2026-11-17T17:58:09Z RECOVERED_CHECK image=vigil/productcatalogservice:canary-20261104 home=500 probe=0 alert=firing\nRESULT verb=recovered ok=0 reason=not_recovered image=vigil/productcatalogservice:canary-20261104 home=500 probe=0 alert=firing"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "image": "gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef",
+            "probe": "1",
+            "alerts": "none",
+            "recovery_s": "97"
+          },
+          "output_tail": "1-17T17:58:10Z HEALTHY_POD productcatalogservice-7b58b447f7-pfdxg uid=b20d5dd3-881f-42eb-9d8d-b9d9aae1d9b2\n2026-11-17T17:58:46Z RECOVERY_FIRST probe=1 home=200\n2026-11-17T17:59:47Z RECOVERY_WINDOW_DONE elapsed_since_rollback=97s\n2026-11-17T17:59:47Z ALERT_CLEARED elapsed_since_rollback=97s\n2026-11-17T17:59:48Z FINAL image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef generation=103 bad_rs_replicas=0 probe=1 alerts=none\nNAME                                     UID                                    IMAGE                                                                                                                                    READY\nproductcatalogservice-7b58b447f7-pfdxg   b20d5dd3-881f-42eb-9d8d-b9d9aae1d9b2   gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef   true\nRESULT verb=cleanup ok=1 image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none recovery_s=97\n\nWarning: resource deployments/productcatalogservice was previously managed with 'kubectl apply'. Rolling back will not update the kubectl.kubernetes.io/last-applied-configuration annotation, which may cause unexpected behavior on future 'kubectl apply' operations. Consider using 'kubectl apply' with your previous configuration file instead."
+        }
+      },
+      "investigation_id": "inv-c6c2ba0b7ed6",
+      "exit_code": 3,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "correct",
+        "action_detail": "rollout_undo@productcatalogservice 已提案",
+        "confirmed": false,
+        "recovered_by_arm": false,
+        "blocked_on_approval": true,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "running",
+          "task": {
+            "phase": "waiting_approval",
+            "outcome": null,
+            "termination_code": null,
+            "runtime_version": "rules-1",
+            "proposal_id": "act-0de360802935",
+            "no_progress_rounds": 0,
+            "recovered_at": null,
+            "investigation_seconds": 0.4,
+            "action_seconds": 0.0,
+            "calendar_seconds": 0.5,
+            "used_model_calls": 0,
+            "used_tool_calls": 12
+          },
+          "action_ids": [
+            "act-0de360802935"
+          ],
+          "evidence_count": 9,
+          "tool_call_count": 12,
+          "elapsed_seconds": 2.7
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [
+          {
+            "id": "act-0de360802935",
+            "kind": "rollout_undo",
+            "target": "productcatalogservice",
+            "status": "pending_approval",
+            "origin": "rules",
+            "evidence_ids": [
+              "obs-97031ec4ef23",
+              "obs-96de629fa5d7"
+            ]
+          }
+        ],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 12,
+        "model_calls": 0,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=productcatalogservice",
+            "id": "obs-97031ec4ef23"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "probe_success{job=\"frontend-probe\"}",
+            "id": "obs-96de629fa5d7"
+          }
+        ],
+        "status": "running",
+        "conclusion": null,
+        "needs_review": []
+      },
+      "output_tail": "ls\": 12}, \"conclusion\": null, \"termination_reason\": null, \"hypotheses\": [{\"id\": \"hyp-da9f2bcc14db\", \"parent_id\": null, \"statement\": \"productcatalogservice 在最近一次发布里把镜像从 gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef 改成 vigil/productcatalogservice:canary-20261104，发布后业务请求开始失败；回退到上一 revision 可以恢复。\", \"status\": \"supported\", \"update_reason\": \"规则所需信号全部成立\"}], \"evidence_count\": 9, \"tool_call_count\": 12, \"action_ids\": [\"act-0de360802935\"], \"relations\": [{\"hypothesis_id\": \"hyp-da9f2bcc14db\", \"observation_id\": \"obs-97031ec4ef23\", \"relation\": \"supporting\", \"rationale\": \"revision 102 的镜像与更早的 revision 101 不同，Pod 在取证窗口内重新启动，并且入口成功率降到 0.0。\"}, {\"hypothesis_id\": \"hyp-da9f2bcc14db\", \"observation_id\": \"obs-96de629fa5d7\", \"relation\": \"supporting\", \"rationale\": \"revision 102 的镜像与更早的 revision 101 不同，Pod 在取证窗口内重新启动，并且入口成功率降到 0.0。\"}], \"skills\": [], \"delegations\": [], \"prediction\": {\"proposal_id\": \"act-0de360802935\", \"purpose\": \"remediation\", \"prediction\": \"回退后业务请求与入口成功率恢复\", \"observation_conditions\": {\"window_seconds\": 135, \"absence_meaning\": \"没有恢复说明判定或动作都不适用，需要人工核实\", \"business_target\": \"productcatalogservice/\", \"expected_change\": \"回退后业务请求与入口成功率恢复\"}, \"observation_window_seconds\": 135, \"outcome\": null, \"outcome_reason\": null}, \"remaining_budget\": {\"tool_calls\": 16, \"model_calls\": 20, \"investigation_seconds\": 599.6, \"action_seconds\": 450.0, \"total_seconds\": 1049.6}, \"needs_human\": [], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-cbe2702a9ab8",
+      "scenario": "f01-bad-release",
+      "arm": "rules",
+      "index": 2,
+      "started_at": "2026-11-17T17:59:48.187889+00:00",
+      "finished_at": "2026-11-17T18:03:35.219089+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "image": "gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef",
+            "probe": "1",
+            "alerts": "none",
+            "home": "200"
+          },
+          "output_tail": "2026-11-17T17:59:49Z PRE image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none\n2026-11-17T17:59:50Z BASELINE image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none home=200\nRESULT verb=preflight ok=1 image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none home=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "image": "vigil/productcatalogservice:canary-20261104",
+            "pod": "productcatalogservice-57f9df78f8-4q5wm",
+            "probe": "0",
+            "alert": "firing",
+            "elapsed_s": "90"
+          },
+          "output_tail": "2026-11-17T17:59:50Z INJECT start\n2026-11-17T17:59:51Z ROLLOUT_DONE elapsed=1s\n2026-11-17T17:59:52Z NEW_POD productcatalogservice-57f9df78f8-4q5wm uid=cdb72377-104d-4b98-8dec-53731d6a0f8a image=vigil/productcatalogservice:canary-20261104\n2026-11-17T18:00:12Z HOME_500 elapsed=22s\n2026-11-17T18:00:12Z PROBE_0 elapsed=22s\n2026-11-17T18:01:20Z ALERT_FIRING elapsed=90s state=firing\nRESULT verb=inject ok=1 image=vigil/productcatalogservice:canary-20261104 pod=productcatalogservice-57f9df78f8-4q5wm probe=0 alert=firing elapsed_s=90"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "image": "vigil/productcatalogservice:canary-20261104",
+            "home": "500",
+            "probe": "0",
+            "alert": "firing"
+          },
+          "output_tail": "2026-11-17T18:01:21Z OBSERVE image=vigil/productcatalogservice:canary-20261104 home=500 probe=0 alert=firing\nRESULT verb=verify ok=1 image=vigil/productcatalogservice:canary-20261104 home=500 probe=0 alert=firing"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "image": "vigil/productcatalogservice:canary-20261104",
+            "home": "500",
+            "probe": "0",
+            "alert": "firing"
+          },
+          "output_tail": "2026-11-17T18:02:23Z RECOVERED_CHECK image=vigil/productcatalogservice:canary-20261104 home=500 probe=0 alert=firing\nRESULT verb=recovered ok=0 reason=not_recovered image=vigil/productcatalogservice:canary-20261104 home=500 probe=0 alert=firing"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "image": "gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef",
+            "probe": "1",
+            "alerts": "none",
+            "recovery_s": "71"
+          },
+          "output_tail": "1-17T18:02:26Z HEALTHY_POD productcatalogservice-7b58b447f7-2tmvx uid=12182577-138d-4606-8ecc-1a41a29a2624\n2026-11-17T18:02:32Z RECOVERY_FIRST probe=1 home=200\n2026-11-17T18:03:34Z RECOVERY_WINDOW_DONE elapsed_since_rollback=71s\n2026-11-17T18:03:34Z ALERT_CLEARED elapsed_since_rollback=71s\n2026-11-17T18:03:35Z FINAL image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef generation=105 bad_rs_replicas=0 probe=1 alerts=none\nNAME                                     UID                                    IMAGE                                                                                                                                    READY\nproductcatalogservice-7b58b447f7-2tmvx   12182577-138d-4606-8ecc-1a41a29a2624   gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef   true\nRESULT verb=cleanup ok=1 image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none recovery_s=71\n\nWarning: resource deployments/productcatalogservice was previously managed with 'kubectl apply'. Rolling back will not update the kubectl.kubernetes.io/last-applied-configuration annotation, which may cause unexpected behavior on future 'kubectl apply' operations. Consider using 'kubectl apply' with your previous configuration file instead."
+        }
+      },
+      "investigation_id": "inv-2eb6f685f222",
+      "exit_code": 3,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "correct",
+        "action_detail": "rollout_undo@productcatalogservice 已提案",
+        "confirmed": false,
+        "recovered_by_arm": false,
+        "blocked_on_approval": true,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "running",
+          "task": {
+            "phase": "waiting_approval",
+            "outcome": null,
+            "termination_code": null,
+            "runtime_version": "rules-1",
+            "proposal_id": "act-802da0df1442",
+            "no_progress_rounds": 0,
+            "recovered_at": null,
+            "investigation_seconds": 0.3,
+            "action_seconds": 0.0,
+            "calendar_seconds": 0.4,
+            "used_model_calls": 0,
+            "used_tool_calls": 12
+          },
+          "action_ids": [
+            "act-802da0df1442"
+          ],
+          "evidence_count": 9,
+          "tool_call_count": 12,
+          "elapsed_seconds": 2.2
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [
+          {
+            "id": "act-802da0df1442",
+            "kind": "rollout_undo",
+            "target": "productcatalogservice",
+            "status": "pending_approval",
+            "origin": "rules",
+            "evidence_ids": [
+              "obs-37bf2cdc1c9a",
+              "obs-a6af8c36634b"
+            ]
+          }
+        ],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 12,
+        "model_calls": 0,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=productcatalogservice",
+            "id": "obs-37bf2cdc1c9a"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "probe_success{job=\"frontend-probe\"}",
+            "id": "obs-a6af8c36634b"
+          }
+        ],
+        "status": "running",
+        "conclusion": null,
+        "needs_review": []
+      },
+      "output_tail": "ls\": 12}, \"conclusion\": null, \"termination_reason\": null, \"hypotheses\": [{\"id\": \"hyp-6c35adaaec7c\", \"parent_id\": null, \"statement\": \"productcatalogservice 在最近一次发布里把镜像从 gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef 改成 vigil/productcatalogservice:canary-20261104，发布后业务请求开始失败；回退到上一 revision 可以恢复。\", \"status\": \"supported\", \"update_reason\": \"规则所需信号全部成立\"}], \"evidence_count\": 9, \"tool_call_count\": 12, \"action_ids\": [\"act-802da0df1442\"], \"relations\": [{\"hypothesis_id\": \"hyp-6c35adaaec7c\", \"observation_id\": \"obs-37bf2cdc1c9a\", \"relation\": \"supporting\", \"rationale\": \"revision 104 的镜像与更早的 revision 103 不同，Pod 在取证窗口内重新启动，并且入口成功率降到 0.0。\"}, {\"hypothesis_id\": \"hyp-6c35adaaec7c\", \"observation_id\": \"obs-a6af8c36634b\", \"relation\": \"supporting\", \"rationale\": \"revision 104 的镜像与更早的 revision 103 不同，Pod 在取证窗口内重新启动，并且入口成功率降到 0.0。\"}], \"skills\": [], \"delegations\": [], \"prediction\": {\"proposal_id\": \"act-802da0df1442\", \"purpose\": \"remediation\", \"prediction\": \"回退后业务请求与入口成功率恢复\", \"observation_conditions\": {\"window_seconds\": 135, \"absence_meaning\": \"没有恢复说明判定或动作都不适用，需要人工核实\", \"business_target\": \"productcatalogservice/\", \"expected_change\": \"回退后业务请求与入口成功率恢复\"}, \"observation_window_seconds\": 135, \"outcome\": null, \"outcome_reason\": null}, \"remaining_budget\": {\"tool_calls\": 16, \"model_calls\": 20, \"investigation_seconds\": 599.6, \"action_seconds\": 450.0, \"total_seconds\": 1049.6}, \"needs_human\": [], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-cc4583e4587a",
+      "scenario": "f01-bad-release",
+      "arm": "rules",
+      "index": 3,
+      "started_at": "2026-11-17T18:03:35.219170+00:00",
+      "finished_at": "2026-11-17T18:07:32.367309+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "image": "gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef",
+            "probe": "1",
+            "alerts": "none",
+            "home": "200"
+          },
+          "output_tail": "2026-11-17T18:03:35Z PRE image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none\n2026-11-17T18:03:36Z BASELINE image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none home=200\nRESULT verb=preflight ok=1 image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none home=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "image": "vigil/productcatalogservice:canary-20261104",
+            "pod": "productcatalogservice-57f9df78f8-7mnrk",
+            "probe": "0",
+            "alert": "firing",
+            "elapsed_s": "72"
+          },
+          "output_tail": "2026-11-17T18:03:37Z INJECT start\n2026-11-17T18:03:38Z ROLLOUT_DONE elapsed=1s\n2026-11-17T18:03:38Z NEW_POD productcatalogservice-57f9df78f8-7mnrk uid=6c3c07e6-833e-4b3b-87d4-b7d6104b44e9 image=vigil/productcatalogservice:canary-20261104\n2026-11-17T18:03:39Z HOME_500 elapsed=2s\n2026-11-17T18:03:45Z PROBE_0 elapsed=8s\n2026-11-17T18:04:49Z ALERT_FIRING elapsed=72s state=firing\nRESULT verb=inject ok=1 image=vigil/productcatalogservice:canary-20261104 pod=productcatalogservice-57f9df78f8-7mnrk probe=0 alert=firing elapsed_s=72"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "image": "vigil/productcatalogservice:canary-20261104",
+            "home": "500",
+            "probe": "0",
+            "alert": "firing"
+          },
+          "output_tail": "2026-11-17T18:04:51Z OBSERVE image=vigil/productcatalogservice:canary-20261104 home=500 probe=0 alert=firing\nRESULT verb=verify ok=1 image=vigil/productcatalogservice:canary-20261104 home=500 probe=0 alert=firing"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "image": "vigil/productcatalogservice:canary-20261104",
+            "home": "500",
+            "probe": "0",
+            "alert": "firing"
+          },
+          "output_tail": "2026-11-17T18:05:53Z RECOVERED_CHECK image=vigil/productcatalogservice:canary-20261104 home=500 probe=0 alert=firing\nRESULT verb=recovered ok=0 reason=not_recovered image=vigil/productcatalogservice:canary-20261104 home=500 probe=0 alert=firing"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "image": "gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef",
+            "probe": "1",
+            "alerts": "none",
+            "recovery_s": "99"
+          },
+          "output_tail": "1-17T18:05:54Z HEALTHY_POD productcatalogservice-7b58b447f7-vfgdx uid=1c9ce277-fbe4-49fc-bc81-fee66cacc223\n2026-11-17T18:06:30Z RECOVERY_FIRST probe=1 home=200\n2026-11-17T18:07:32Z RECOVERY_WINDOW_DONE elapsed_since_rollback=99s\n2026-11-17T18:07:32Z ALERT_CLEARED elapsed_since_rollback=99s\n2026-11-17T18:07:32Z FINAL image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef generation=107 bad_rs_replicas=0 probe=1 alerts=none\nNAME                                     UID                                    IMAGE                                                                                                                                    READY\nproductcatalogservice-7b58b447f7-vfgdx   1c9ce277-fbe4-49fc-bc81-fee66cacc223   gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef   true\nRESULT verb=cleanup ok=1 image=gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef probe=1 alerts=none recovery_s=99\n\nWarning: resource deployments/productcatalogservice was previously managed with 'kubectl apply'. Rolling back will not update the kubectl.kubernetes.io/last-applied-configuration annotation, which may cause unexpected behavior on future 'kubectl apply' operations. Consider using 'kubectl apply' with your previous configuration file instead."
+        }
+      },
+      "investigation_id": "inv-137bd1db4720",
+      "exit_code": 3,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "correct",
+        "action_detail": "rollout_undo@productcatalogservice 已提案",
+        "confirmed": false,
+        "recovered_by_arm": false,
+        "blocked_on_approval": true,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "running",
+          "task": {
+            "phase": "waiting_approval",
+            "outcome": null,
+            "termination_code": null,
+            "runtime_version": "rules-1",
+            "proposal_id": "act-8f393f201385",
+            "no_progress_rounds": 0,
+            "recovered_at": null,
+            "investigation_seconds": 0.3,
+            "action_seconds": 0.0,
+            "calendar_seconds": 0.4,
+            "used_model_calls": 0,
+            "used_tool_calls": 12
+          },
+          "action_ids": [
+            "act-8f393f201385"
+          ],
+          "evidence_count": 9,
+          "tool_call_count": 12,
+          "elapsed_seconds": 2.4
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [
+          {
+            "id": "act-8f393f201385",
+            "kind": "rollout_undo",
+            "target": "productcatalogservice",
+            "status": "pending_approval",
+            "origin": "rules",
+            "evidence_ids": [
+              "obs-17c59b430360",
+              "obs-defddf343ea4"
+            ]
+          }
+        ],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 12,
+        "model_calls": 0,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=productcatalogservice",
+            "id": "obs-17c59b430360"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "probe_success{job=\"frontend-probe\"}",
+            "id": "obs-defddf343ea4"
+          }
+        ],
+        "status": "running",
+        "conclusion": null,
+        "needs_review": []
+      },
+      "output_tail": "ls\": 12}, \"conclusion\": null, \"termination_reason\": null, \"hypotheses\": [{\"id\": \"hyp-93101862ba2d\", \"parent_id\": null, \"statement\": \"productcatalogservice 在最近一次发布里把镜像从 gcr.io/google-samples/microservices-demo/productcatalogservice@sha256:1d51f9e5aa923ff9c338b1b155b39da737306c0ebc230e62ec6271f2b0cb7bef 改成 vigil/productcatalogservice:canary-20261104，发布后业务请求开始失败；回退到上一 revision 可以恢复。\", \"status\": \"supported\", \"update_reason\": \"规则所需信号全部成立\"}], \"evidence_count\": 9, \"tool_call_count\": 12, \"action_ids\": [\"act-8f393f201385\"], \"relations\": [{\"hypothesis_id\": \"hyp-93101862ba2d\", \"observation_id\": \"obs-17c59b430360\", \"relation\": \"supporting\", \"rationale\": \"revision 106 的镜像与更早的 revision 105 不同，Pod 在取证窗口内重新启动，并且入口成功率降到 0.0。\"}, {\"hypothesis_id\": \"hyp-93101862ba2d\", \"observation_id\": \"obs-defddf343ea4\", \"relation\": \"supporting\", \"rationale\": \"revision 106 的镜像与更早的 revision 105 不同，Pod 在取证窗口内重新启动，并且入口成功率降到 0.0。\"}], \"skills\": [], \"delegations\": [], \"prediction\": {\"proposal_id\": \"act-8f393f201385\", \"purpose\": \"remediation\", \"prediction\": \"回退后业务请求与入口成功率恢复\", \"observation_conditions\": {\"window_seconds\": 135, \"absence_meaning\": \"没有恢复说明判定或动作都不适用，需要人工核实\", \"business_target\": \"productcatalogservice/\", \"expected_change\": \"回退后业务请求与入口成功率恢复\"}, \"observation_window_seconds\": 135, \"outcome\": null, \"outcome_reason\": null}, \"remaining_budget\": {\"tool_calls\": 16, \"model_calls\": 20, \"investigation_seconds\": 599.7, \"action_seconds\": 450.0, \"total_seconds\": 1049.7}, \"needs_human\": [], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-b22bf4ac70dc",
+      "scenario": "f02-memory-limit-oom",
+      "arm": "rules",
+      "index": 1,
+      "started_at": "2026-11-17T18:07:32.367364+00:00",
+      "finished_at": "2026-11-17T18:09:53.160141+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "limit": "128Mi",
+            "probe": "1",
+            "alerts": "none",
+            "home": "200"
+          },
+          "output_tail": "2026-11-17T18:07:34Z PREFLIGHT revision=53 limit=128Mi probe=1 alerts=none home=200\nRESULT verb=preflight ok=1 limit=128Mi probe=1 alerts=none home=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "limit": "16Mi",
+            "revision": "54"
+          },
+          "output_tail": "2026-11-17T18:07:34Z BASELINE revision=53 limit=128Mi probe=1 alerts=none restarts=0\n2026-11-17T18:07:34Z INJECT patch limit=16Mi request=8Mi\n2026-11-17T18:07:40Z INJECTED revision=54 limit=16Mi\nRESULT verb=inject ok=1 limit=16Mi revision=54"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "oom": "1",
+            "restarts": "3",
+            "reason": "OOMKilled",
+            "home": "500",
+            "probe": "0",
+            "alert": "firing",
+            "limit": "16Mi"
+          },
+          "output_tail": "ate=\n2026-11-17T18:07:52Z OBSERVE restarts=1 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-5w4vr restarts=1 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:08:02Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-5w4vr restarts=2 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:08:13Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-5w4vr restarts=2 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:08:23Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-5w4vr restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:08:33Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-5w4vr restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:08:44Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-5w4vr restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:08:54Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=firing | currencyservice-f6d9b8f46-5w4vr restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:08:54Z VERIFIED sustained_oom=1 business_failure=1 alert_firing=1 revision=54 limit=16Mi\nRESULT verb=verify ok=1 oom=1 restarts=3 reason=OOMKilled home=500 probe=0 alert=firing limit=16Mi"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "limit": "16Mi",
+            "home": "500",
+            "probe": "0",
+            "alert": "firing"
+          },
+          "output_tail": "2026-11-17T18:08:58Z RECOVERED_CHECK limit=16Mi home=500 probe=0 alert=firing\nRESULT verb=recovered ok=0 reason=not_recovered limit=16Mi home=500 probe=0 alert=firing"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "limit": "128Mi",
+            "home": "200",
+            "probe": "1",
+            "alerts": "none"
+          },
+          "output_tail": "2026-11-17T18:08:58Z RESTORE start revision=54 limit=16Mi restarts=3\n2026-11-17T18:09:12Z RECOVER home=500 probe=0 alert=firing restarts=0\n2026-11-17T18:09:22Z RECOVER home=500 probe=0 alert=firing restarts=0\n2026-11-17T18:09:32Z RECOVER home=200 probe=0 alert=firing restarts=0\n2026-11-17T18:09:42Z RECOVER home=200 probe=0 alert=firing restarts=0\n2026-11-17T18:09:53Z RECOVER home=200 probe=1 alert=none restarts=0\n2026-11-17T18:09:53Z RESTORED revision=55 limit=128Mi restarts=0 | currencyservice-567db8cb65-cxlkc restarts=0 ready=true last=/ state=\nRESULT verb=cleanup ok=1 limit=128Mi home=200 probe=1 alerts=none"
+        }
+      },
+      "investigation_id": "inv-86f40793b12c",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "not_required",
+        "action_detail": "没有提案；场景的正确做法是不动作",
+        "confirmed": true,
+        "recovered_by_arm": false,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "diagnosis_only",
+            "termination_code": "no_applicable_action",
+            "runtime_version": "rules-1",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": null,
+            "investigation_seconds": 0.5,
+            "action_seconds": 0.0,
+            "calendar_seconds": 0.6,
+            "used_model_calls": 0,
+            "used_tool_calls": 11
+          },
+          "action_ids": [],
+          "evidence_count": 9,
+          "tool_call_count": 11,
+          "elapsed_seconds": 2.8
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 11,
+        "model_calls": 0,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "app=currencyservice",
+            "id": "obs-ff9ab3c18734"
+          },
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=currencyservice",
+            "id": "obs-b7f47d8a4730"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "probe_success{job=\"frontend-probe\"}",
+            "id": "obs-babb34200a8a"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "currencyservice 的容器内存限额是 16Mi，进程反复超过限额被 OOMKilled（累计重启 3 次）；这是规格不足，不属于任何已注册动作能修的范围。",
+        "needs_review": []
+      },
+      "output_tail": "5, \"action_seconds\": 0.0, \"calendar_seconds\": 0.6, \"used_model_calls\": 0, \"used_tool_calls\": 11}, \"conclusion\": \"currencyservice 的容器内存限额是 16Mi，进程反复超过限额被 OOMKilled（累计重启 3 次）；这是规格不足，不属于任何已注册动作能修的范围。\", \"termination_reason\": null, \"hypotheses\": [{\"id\": \"hyp-3883b004474d\", \"parent_id\": null, \"statement\": \"currencyservice 的容器内存限额是 16Mi，进程反复超过限额被 OOMKilled（累计重启 3 次）；这是规格不足，不属于任何已注册动作能修的范围。\", \"status\": \"supported\", \"update_reason\": \"规则所需信号全部成立\"}], \"evidence_count\": 9, \"tool_call_count\": 11, \"action_ids\": [], \"relations\": [{\"hypothesis_id\": \"hyp-3883b004474d\", \"observation_id\": \"obs-ff9ab3c18734\", \"relation\": \"supporting\", \"rationale\": \"Pod currencyservice-f6d9b8f46-5w4vr 的 last_terminated.reason=OOMKilled，restart_count 合计 3 ≥ 3，模板限额 16Mi ≤ 64Mi。\"}, {\"hypothesis_id\": \"hyp-3883b004474d\", \"observation_id\": \"obs-b7f47d8a4730\", \"relation\": \"supporting\", \"rationale\": \"Pod currencyservice-f6d9b8f46-5w4vr 的 last_terminated.reason=OOMKilled，restart_count 合计 3 ≥ 3，模板限额 16Mi ≤ 64Mi。\"}, {\"hypothesis_id\": \"hyp-3883b004474d\", \"observation_id\": \"obs-babb34200a8a\", \"relation\": \"supporting\", \"rationale\": \"Pod currencyservice-f6d9b8f46-5w4vr 的 last_terminated.reason=OOMKilled，restart_count 合计 3 ≥ 3，模板限额 16Mi ≤ 64Mi。\"}], \"skills\": [], \"delegations\": [], \"prediction\": null, \"remaining_budget\": {\"tool_calls\": 17, \"model_calls\": 20, \"investigation_seconds\": 599.4, \"action_seconds\": 450.0, \"total_seconds\": 1049.4}, \"needs_human\": [\"评估 currencyservice 的内存限额与真实用量，按容量调整规格\"], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-a05758123af6",
+      "scenario": "f02-memory-limit-oom",
+      "arm": "rules",
+      "index": 2,
+      "started_at": "2026-11-17T18:09:53.160205+00:00",
+      "finished_at": "2026-11-17T18:12:14.787547+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "limit": "128Mi",
+            "probe": "1",
+            "alerts": "none",
+            "home": "200"
+          },
+          "output_tail": "2026-11-17T18:09:54Z PREFLIGHT revision=55 limit=128Mi probe=1 alerts=none home=200\nRESULT verb=preflight ok=1 limit=128Mi probe=1 alerts=none home=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "limit": "16Mi",
+            "revision": "56"
+          },
+          "output_tail": "2026-11-17T18:09:55Z BASELINE revision=55 limit=128Mi probe=1 alerts=none restarts=0\n2026-11-17T18:09:55Z INJECT patch limit=16Mi request=8Mi\n2026-11-17T18:10:01Z INJECTED revision=56 limit=16Mi\nRESULT verb=inject ok=1 limit=16Mi revision=56"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "oom": "1",
+            "restarts": "3",
+            "reason": "OOMKilled",
+            "home": "500",
+            "probe": "0",
+            "alert": "firing",
+            "limit": "16Mi"
+          },
+          "output_tail": "ate=CrashLoopBackOff\n2026-11-17T18:10:23Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-xhjn5 restarts=2 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:10:33Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-xhjn5 restarts=2 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:10:43Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-xhjn5 restarts=3 ready=false last=OOMKilled/137 state=\n2026-11-17T18:10:53Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-xhjn5 restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:11:04Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-xhjn5 restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:11:14Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-xhjn5 restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:11:24Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=firing | currencyservice-f6d9b8f46-xhjn5 restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:11:24Z VERIFIED sustained_oom=1 business_failure=1 alert_firing=1 revision=56 limit=16Mi\nRESULT verb=verify ok=1 oom=1 restarts=3 reason=OOMKilled home=500 probe=0 alert=firing limit=16Mi"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "limit": "16Mi",
+            "home": "500",
+            "probe": "0",
+            "alert": "firing"
+          },
+          "output_tail": "2026-11-17T18:11:28Z RECOVERED_CHECK limit=16Mi home=500 probe=0 alert=firing\nRESULT verb=recovered ok=0 reason=not_recovered limit=16Mi home=500 probe=0 alert=firing"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "limit": "128Mi",
+            "home": "200",
+            "probe": "1",
+            "alerts": "none"
+          },
+          "output_tail": "2026-11-17T18:11:28Z RESTORE start revision=56 limit=16Mi restarts=3\n2026-11-17T18:11:32Z RECOVER home=500 probe=0 alert=firing restarts=0\n2026-11-17T18:11:43Z RECOVER home=500 probe=0 alert=firing restarts=0\n2026-11-17T18:11:54Z RECOVER home=500 probe=0 alert=firing restarts=0\n2026-11-17T18:12:04Z RECOVER home=200 probe=1 alert=firing restarts=0\n2026-11-17T18:12:14Z RECOVER home=200 probe=1 alert=none restarts=0\n2026-11-17T18:12:14Z RESTORED revision=57 limit=128Mi restarts=0 | currencyservice-567db8cb65-7cc2g restarts=0 ready=true last=/ state=\nRESULT verb=cleanup ok=1 limit=128Mi home=200 probe=1 alerts=none"
+        }
+      },
+      "investigation_id": "inv-15c58274a4eb",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "not_required",
+        "action_detail": "没有提案；场景的正确做法是不动作",
+        "confirmed": true,
+        "recovered_by_arm": false,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "diagnosis_only",
+            "termination_code": "no_applicable_action",
+            "runtime_version": "rules-1",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": null,
+            "investigation_seconds": 0.5,
+            "action_seconds": 0.0,
+            "calendar_seconds": 0.5,
+            "used_model_calls": 0,
+            "used_tool_calls": 11
+          },
+          "action_ids": [],
+          "evidence_count": 9,
+          "tool_call_count": 11,
+          "elapsed_seconds": 2.4
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 11,
+        "model_calls": 0,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "app=currencyservice",
+            "id": "obs-14e77f66c5a9"
+          },
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=currencyservice",
+            "id": "obs-0979e0933488"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "probe_success{job=\"frontend-probe\"}",
+            "id": "obs-1778bdce0e1e"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "currencyservice 的容器内存限额是 16Mi，进程反复超过限额被 OOMKilled（累计重启 3 次）；这是规格不足，不属于任何已注册动作能修的范围。",
+        "needs_review": []
+      },
+      "output_tail": "5, \"action_seconds\": 0.0, \"calendar_seconds\": 0.5, \"used_model_calls\": 0, \"used_tool_calls\": 11}, \"conclusion\": \"currencyservice 的容器内存限额是 16Mi，进程反复超过限额被 OOMKilled（累计重启 3 次）；这是规格不足，不属于任何已注册动作能修的范围。\", \"termination_reason\": null, \"hypotheses\": [{\"id\": \"hyp-ea1d26390d3d\", \"parent_id\": null, \"statement\": \"currencyservice 的容器内存限额是 16Mi，进程反复超过限额被 OOMKilled（累计重启 3 次）；这是规格不足，不属于任何已注册动作能修的范围。\", \"status\": \"supported\", \"update_reason\": \"规则所需信号全部成立\"}], \"evidence_count\": 9, \"tool_call_count\": 11, \"action_ids\": [], \"relations\": [{\"hypothesis_id\": \"hyp-ea1d26390d3d\", \"observation_id\": \"obs-14e77f66c5a9\", \"relation\": \"supporting\", \"rationale\": \"Pod currencyservice-f6d9b8f46-xhjn5 的 last_terminated.reason=OOMKilled，restart_count 合计 3 ≥ 3，模板限额 16Mi ≤ 64Mi。\"}, {\"hypothesis_id\": \"hyp-ea1d26390d3d\", \"observation_id\": \"obs-0979e0933488\", \"relation\": \"supporting\", \"rationale\": \"Pod currencyservice-f6d9b8f46-xhjn5 的 last_terminated.reason=OOMKilled，restart_count 合计 3 ≥ 3，模板限额 16Mi ≤ 64Mi。\"}, {\"hypothesis_id\": \"hyp-ea1d26390d3d\", \"observation_id\": \"obs-1778bdce0e1e\", \"relation\": \"supporting\", \"rationale\": \"Pod currencyservice-f6d9b8f46-xhjn5 的 last_terminated.reason=OOMKilled，restart_count 合计 3 ≥ 3，模板限额 16Mi ≤ 64Mi。\"}], \"skills\": [], \"delegations\": [], \"prediction\": null, \"remaining_budget\": {\"tool_calls\": 17, \"model_calls\": 20, \"investigation_seconds\": 599.5, \"action_seconds\": 450.0, \"total_seconds\": 1049.5}, \"needs_human\": [\"评估 currencyservice 的内存限额与真实用量，按容量调整规格\"], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-45eec837a9e7",
+      "scenario": "f02-memory-limit-oom",
+      "arm": "rules",
+      "index": 3,
+      "started_at": "2026-11-17T18:12:14.787622+00:00",
+      "finished_at": "2026-11-17T18:14:54.422565+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "limit": "128Mi",
+            "probe": "1",
+            "alerts": "none",
+            "home": "200"
+          },
+          "output_tail": "2026-11-17T18:12:16Z PREFLIGHT revision=57 limit=128Mi probe=1 alerts=none home=200\nRESULT verb=preflight ok=1 limit=128Mi probe=1 alerts=none home=200"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "limit": "16Mi",
+            "revision": "58"
+          },
+          "output_tail": "2026-11-17T18:12:16Z BASELINE revision=57 limit=128Mi probe=1 alerts=none restarts=0\n2026-11-17T18:12:16Z INJECT patch limit=16Mi request=8Mi\n2026-11-17T18:12:22Z INJECTED revision=58 limit=16Mi\nRESULT verb=inject ok=1 limit=16Mi revision=58"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "oom": "1",
+            "restarts": "4",
+            "reason": "OOMKilled",
+            "home": "500",
+            "probe": "0",
+            "alert": "firing",
+            "limit": "16Mi"
+          },
+          "output_tail": "kOff\n2026-11-17T18:12:52Z OBSERVE restarts=2 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-zjctd restarts=2 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:13:02Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-zjctd restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:13:12Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-zjctd restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:13:23Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-zjctd restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:13:33Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-zjctd restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:13:43Z OBSERVE restarts=3 last=OOMKilled home=500 probe=0 alert=pending | currencyservice-f6d9b8f46-zjctd restarts=3 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:13:54Z OBSERVE restarts=4 last=OOMKilled home=500 probe=0 alert=firing | currencyservice-f6d9b8f46-zjctd restarts=4 ready=false last=OOMKilled/137 state=CrashLoopBackOff\n2026-11-17T18:13:54Z VERIFIED sustained_oom=1 business_failure=1 alert_firing=1 revision=58 limit=16Mi\nRESULT verb=verify ok=1 oom=1 restarts=4 reason=OOMKilled home=500 probe=0 alert=firing limit=16Mi"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "limit": "16Mi",
+            "home": "500",
+            "probe": "0",
+            "alert": "firing"
+          },
+          "output_tail": "2026-11-17T18:13:57Z RECOVERED_CHECK limit=16Mi home=500 probe=0 alert=firing\nRESULT verb=recovered ok=0 reason=not_recovered limit=16Mi home=500 probe=0 alert=firing"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "limit": "128Mi",
+            "home": "200",
+            "probe": "1",
+            "alerts": "none"
+          },
+          "output_tail": "2026-11-17T18:13:58Z RESTORE start revision=58 limit=16Mi restarts=4\n2026-11-17T18:14:02Z RECOVER home=500 probe=0 alert=firing restarts=0\n2026-11-17T18:14:13Z RECOVER home=500 probe=0 alert=firing restarts=0\n2026-11-17T18:14:23Z RECOVER home=500 probe=0 alert=firing restarts=0\n2026-11-17T18:14:33Z RECOVER home=500 probe=0 alert=firing restarts=0\n2026-11-17T18:14:44Z RECOVER home=200 probe=0 alert=firing restarts=0\n2026-11-17T18:14:54Z RECOVER home=200 probe=1 alert=none restarts=0\n2026-11-17T18:14:54Z RESTORED revision=59 limit=128Mi restarts=0 | currencyservice-567db8cb65-7sn55 restarts=0 ready=true last=/ state=\nRESULT verb=cleanup ok=1 limit=128Mi home=200 probe=1 alerts=none"
+        }
+      },
+      "investigation_id": "inv-059bbee9c8e2",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "not_required",
+        "action_detail": "没有提案；场景的正确做法是不动作",
+        "confirmed": true,
+        "recovered_by_arm": false,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "diagnosis_only",
+            "termination_code": "no_applicable_action",
+            "runtime_version": "rules-1",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": null,
+            "investigation_seconds": 0.6,
+            "action_seconds": 0.0,
+            "calendar_seconds": 0.6,
+            "used_model_calls": 0,
+            "used_tool_calls": 11
+          },
+          "action_ids": [],
+          "evidence_count": 9,
+          "tool_call_count": 11,
+          "elapsed_seconds": 2.5
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 11,
+        "model_calls": 0,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "app=currencyservice",
+            "id": "obs-c2bce595a676"
+          },
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=currencyservice",
+            "id": "obs-74857134a05c"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "probe_success{job=\"frontend-probe\"}",
+            "id": "obs-c048d23d4070"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "currencyservice 的容器内存限额是 16Mi，进程反复超过限额被 OOMKilled（累计重启 4 次）；这是规格不足，不属于任何已注册动作能修的范围。",
+        "needs_review": []
+      },
+      "output_tail": "6, \"action_seconds\": 0.0, \"calendar_seconds\": 0.6, \"used_model_calls\": 0, \"used_tool_calls\": 11}, \"conclusion\": \"currencyservice 的容器内存限额是 16Mi，进程反复超过限额被 OOMKilled（累计重启 4 次）；这是规格不足，不属于任何已注册动作能修的范围。\", \"termination_reason\": null, \"hypotheses\": [{\"id\": \"hyp-e8e0c6ab63c7\", \"parent_id\": null, \"statement\": \"currencyservice 的容器内存限额是 16Mi，进程反复超过限额被 OOMKilled（累计重启 4 次）；这是规格不足，不属于任何已注册动作能修的范围。\", \"status\": \"supported\", \"update_reason\": \"规则所需信号全部成立\"}], \"evidence_count\": 9, \"tool_call_count\": 11, \"action_ids\": [], \"relations\": [{\"hypothesis_id\": \"hyp-e8e0c6ab63c7\", \"observation_id\": \"obs-c2bce595a676\", \"relation\": \"supporting\", \"rationale\": \"Pod currencyservice-f6d9b8f46-zjctd 的 last_terminated.reason=OOMKilled，restart_count 合计 4 ≥ 3，模板限额 16Mi ≤ 64Mi。\"}, {\"hypothesis_id\": \"hyp-e8e0c6ab63c7\", \"observation_id\": \"obs-74857134a05c\", \"relation\": \"supporting\", \"rationale\": \"Pod currencyservice-f6d9b8f46-zjctd 的 last_terminated.reason=OOMKilled，restart_count 合计 4 ≥ 3，模板限额 16Mi ≤ 64Mi。\"}, {\"hypothesis_id\": \"hyp-e8e0c6ab63c7\", \"observation_id\": \"obs-c048d23d4070\", \"relation\": \"supporting\", \"rationale\": \"Pod currencyservice-f6d9b8f46-zjctd 的 last_terminated.reason=OOMKilled，restart_count 合计 4 ≥ 3，模板限额 16Mi ≤ 64Mi。\"}], \"skills\": [], \"delegations\": [], \"prediction\": null, \"remaining_budget\": {\"tool_calls\": 17, \"model_calls\": 20, \"investigation_seconds\": 599.4, \"action_seconds\": 450.0, \"total_seconds\": 1049.4}, \"needs_human\": [\"评估 currencyservice 的内存限额与真实用量，按容量调整规格\"], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-07c457291f87",
+      "scenario": "f03-redis-latency",
+      "arm": "agent",
+      "index": 1,
+      "started_at": "2026-11-17T19:11:27.471047+00:00",
+      "finished_at": "2026-11-17T19:17:54.663723+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "selector": "redis-cart",
+            "probe": "1",
+            "cart": "200:0.006592",
+            "latency_ms": "11"
+          },
+          "output_tail": "2026-11-17T19:11:28Z PREFLIGHT probe=1 selector=redis-cart latency_ms=11\nRESULT verb=preflight ok=1 selector=redis-cart probe=1 cart=200:0.006592 latency_ms=11"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "selector": "redis-access-proxy",
+            "proxy": "present"
+          },
+          "output_tail": "2026-11-17T19:11:29Z BASELINE probe_duration=0.011121083625 probe=1 selector=redis-cart\n2026-11-17T19:12:01Z INJECTED selector=redis-access-proxy proxy=redis-access-proxy-8466cb447-4wmmp\nNAME         ENDPOINTS          AGE\nredis-cart   10.42.0.109:6379   13d\nRESULT verb=inject ok=1 selector=redis-access-proxy proxy=present\n\nWarning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "latency_ms": "766",
+            "probe": "1",
+            "selector": "redis-access-proxy",
+            "home_s": "1.076162"
+          },
+          "output_tail": "2026-11-17T19:12:06Z OBSERVE probe_duration_2m=0.634869918 probe_success=0 home_s=1.306140 cart=200:1.009541 cartservice_restarts=0 redis_restarts=0\n2026-11-17T19:12:19Z OBSERVE probe_duration_2m=0.765792859125 probe_success=1 home_s=1.076162 cart=200:1.008737 cartservice_restarts=0 redis_restarts=0\n2026-11-17T19:12:19Z VERIFIED latency_ms=766 probe_success=1 selector=redis-access-proxy cleanup_pending=1\nRESULT verb=verify ok=1 latency_ms=766 probe=1 selector=redis-access-proxy home_s=1.076162"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "selector": "redis-access-proxy",
+            "probe": "1",
+            "cart": "200:1.364686",
+            "latency_ms": "1213"
+          },
+          "output_tail": "2026-11-17T19:15:21Z RECOVERED_CHECK selector=redis-access-proxy probe=1 probe_duration_2m=1.21340002225 cart=200:1.364686\nRESULT verb=recovered ok=0 reason=not_recovered selector=redis-access-proxy probe=1 cart=200:1.364686 latency_ms=1213"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "selector": "redis-cart",
+            "probe": "1",
+            "cart": "200:0.006987",
+            "latency_ms": "7"
+          },
+          "output_tail": ":02Z RECOVER probe_duration_2m=1.0806148686250001 probe_success=1 home_s=0.007216 cart=200:0.092581\n2026-11-17T19:16:12Z RECOVER probe_duration_2m=1.0806148686250001 probe_success=1 home_s=0.029345 cart=200:0.006328\n2026-11-17T19:16:22Z RECOVER probe_duration_2m=0.955334132625 probe_success=1 home_s=0.009651 cart=200:0.007466\n2026-11-17T19:16:32Z RECOVER probe_duration_2m=0.787446134875 probe_success=1 home_s=0.007569 cart=200:0.070386\n2026-11-17T19:16:43Z RECOVER probe_duration_2m=0.787446134875 probe_success=1 home_s=0.008513 cart=200:0.038501\n2026-11-17T19:16:53Z RECOVER probe_duration_2m=0.614250237125 probe_success=1 home_s=0.007208 cart=200:0.041361\n2026-11-17T19:17:03Z RECOVER probe_duration_2m=0.466184411625 probe_success=1 home_s=0.008470 cart=200:0.006331\n2026-11-17T19:17:13Z RECOVER probe_duration_2m=0.466184411625 probe_success=1 home_s=0.007839 cart=200:0.006082\n2026-11-17T19:17:23Z RECOVER probe_duration_2m=0.2973607035 probe_success=1 home_s=0.007442 cart=200:0.007548\n2026-11-17T19:17:34Z RECOVER probe_duration_2m=0.132744544875 probe_success=1 home_s=0.009516 cart=200:0.006920\n2026-11-17T19:17:44Z RECOVER probe_duration_2m=0.132744544875 probe_success=1 home_s=0.008815 cart=200:0.006833\n2026-11-17T19:17:54Z RECOVER probe_duration_2m=0.007453963 probe_success=1 home_s=0.072523 cart=200:0.006987\n2026-11-17T19:17:54Z CLEANED selector=redis-cart probe_duration_ms=7 redis_restarts=0\nRESULT verb=cleanup ok=1 selector=redis-cart probe=1 cart=200:0.006987 latency_ms=7"
+        }
+      },
+      "investigation_id": "inv-f7927eb77a8e",
+      "exit_code": 5,
+      "verdict": {
+        "diagnosis_correct": false,
+        "conclusion_matched": false,
+        "evidence_matched": false,
+        "missing_evidence": [
+          "延迟事实"
+        ],
+        "action_decision": "not_required",
+        "action_detail": "没有提案；场景的正确做法是不动作",
+        "confirmed": false,
+        "recovered_by_arm": false,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "inconclusive",
+          "task": {
+            "phase": "terminal",
+            "outcome": "inconclusive",
+            "termination_code": "insufficient_evidence",
+            "runtime_version": "langchain-skill-tool-2",
+            "proposal_id": null,
+            "no_progress_rounds": 1,
+            "recovered_at": null,
+            "investigation_seconds": 176.2,
+            "action_seconds": 0.0,
+            "calendar_seconds": 176.4,
+            "used_model_calls": 12,
+            "used_tool_calls": 28
+          },
+          "action_ids": [],
+          "evidence_count": 26,
+          "tool_call_count": 29,
+          "elapsed_seconds": 178.3
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 29,
+        "model_calls": 12,
+        "supporting_observations": [],
+        "status": "inconclusive",
+        "conclusion": null,
+        "needs_review": []
+      },
+      "output_tail": "m/request 200m，症状为购物车请求变慢且无重启\"}, {\"id\": \"hyp-62fae52d9585\", \"parent_id\": null, \"statement\": \"下游依赖（redis-cart 等）延迟升高，cartservice 等待放大，导致前端延迟上升\", \"status\": \"pending\", \"update_reason\": \"依赖链路类症状：本服务错误率正常但延迟上升，需核对下游调用耗时\"}, {\"id\": \"hyp-2249154b2cef\", \"parent_id\": null, \"statement\": \"cartservice 单 Pod 运行时局部状态异常（连接池/客户端状态损坏），与模板、镜像变更无关\", \"status\": \"pending\", \"update_reason\": \"单副本且 Deployment revision 只有 1、无发布变更，需排除 Pod 局部状态问题\"}], \"evidence_count\": 26, \"tool_call_count\": 29, \"action_ids\": [], \"relations\": [], \"skills\": [{\"name\": \"hypothesis-driven-investigation\", \"content_hash\": \"adae984226618f9adc1509babe6c4802a4922fd35307f7dfccb6d53684fa22c0\", \"trigger\": \"signal\"}, {\"name\": \"dependency-latency\", \"content_hash\": \"85d211e7c4fff5b3c139bd4613c3ec172e7d1967e98a04cfa06dbcf13b13d019\", \"trigger\": \"description\"}], \"delegations\": [], \"prediction\": null, \"remaining_budget\": {\"tool_calls\": 0, \"model_calls\": 8, \"investigation_seconds\": 423.8, \"action_seconds\": 450.0, \"total_seconds\": 873.8}, \"needs_human\": [\"补充 Redis 侧可观测性：cartservice 的 Redis 客户端调用耗时/超时计数，或代理侧请求耗时与连接数指标，用于区分「代理自身变慢」与「代理→redis-cart 段变慢」\", \"核对 19:11:29 首次创建的 redis-access-proxy Deployment（镜像 vigil/redis-access-proxy:20261105，cpu limit 100m / request 20m）的变更来源与配置；它现在是 Service redis-cart 的唯一后端，若属临时方案应评估回退或恢复直连 redis-cart-direct\", \"评估代理资源规格是否成为瓶颈（100m CPU 上限承载全部购物车 Redis 流量），需先有监控数据支撑再调整\", \"查明 cartservice Pod 在 18:15、18:18、18:22、19:11 被反复替换的触发者，避免与延迟问题混淆\", \"对入口探针设置分位数与超时阈值的正式告警，当前仅靠单点 5s 尖刺与单点失败可见\"], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-a04997182b90",
+      "scenario": "f03-redis-latency",
+      "arm": "agent",
+      "index": 2,
+      "started_at": "2026-11-17T19:17:54.663787+00:00",
+      "finished_at": "2026-11-17T19:24:30.940664+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "selector": "redis-cart",
+            "probe": "1",
+            "cart": "200:0.006487",
+            "latency_ms": "7"
+          },
+          "output_tail": "2026-11-17T19:17:56Z PREFLIGHT probe=1 selector=redis-cart latency_ms=7\nRESULT verb=preflight ok=1 selector=redis-cart probe=1 cart=200:0.006487 latency_ms=7"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "selector": "redis-access-proxy",
+            "proxy": "present"
+          },
+          "output_tail": "2026-11-17T19:17:56Z BASELINE probe_duration=0.007453963 probe=1 selector=redis-cart\n2026-11-17T19:18:27Z INJECTED selector=redis-access-proxy proxy=redis-access-proxy-8466cb447-mtfqr\nNAME         ENDPOINTS          AGE\nredis-cart   10.42.0.111:6379   13d\nRESULT verb=inject ok=1 selector=redis-access-proxy proxy=present\n\nWarning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "latency_ms": "423",
+            "probe": "1",
+            "selector": "redis-access-proxy",
+            "home_s": "1.011160"
+          },
+          "output_tail": "2026-11-17T19:18:35Z OBSERVE probe_duration_2m=0.24823476925000001 probe_success=1 home_s=1.060687 cart=200:1.038388 cartservice_restarts=0 redis_restarts=0\n2026-11-17T19:18:48Z OBSERVE probe_duration_2m=0.42345214275000004 probe_success=1 home_s=1.011160 cart=200:1.009064 cartservice_restarts=0 redis_restarts=0\n2026-11-17T19:18:48Z VERIFIED latency_ms=423 probe_success=1 selector=redis-access-proxy cleanup_pending=1\nRESULT verb=verify ok=1 latency_ms=423 probe=1 selector=redis-access-proxy home_s=1.011160"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "selector": "redis-access-proxy",
+            "probe": "1",
+            "cart": "200:1.011002",
+            "latency_ms": "1220"
+          },
+          "output_tail": "2026-11-17T19:22:08Z RECOVERED_CHECK selector=redis-access-proxy probe=1 probe_duration_2m=1.220486870875 cart=200:1.011002\nRESULT verb=recovered ok=0 reason=not_recovered selector=redis-access-proxy probe=1 cart=200:1.011002 latency_ms=1220"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "selector": "redis-cart",
+            "probe": "1",
+            "cart": "200:0.006051",
+            "latency_ms": "8"
+          },
+          "output_tail": "19:22:38Z RECOVER probe_duration_2m=1.23046134975 probe_success=1 home_s=1.247116 cart=500:0.542798\n2026-11-17T19:22:48Z RECOVER probe_duration_2m=1.08536802675 probe_success=1 home_s=0.008838 cart=200:0.007714\n2026-11-17T19:22:59Z RECOVER probe_duration_2m=1.08536802675 probe_success=1 home_s=0.032388 cart=200:0.006490\n2026-11-17T19:23:09Z RECOVER probe_duration_2m=0.921911451375 probe_success=1 home_s=0.028935 cart=200:0.006222\n2026-11-17T19:23:19Z RECOVER probe_duration_2m=0.73508539675 probe_success=1 home_s=0.009762 cart=200:0.007878\n2026-11-17T19:23:29Z RECOVER probe_duration_2m=0.5893724782499999 probe_success=1 home_s=0.006479 cart=200:0.007142\n2026-11-17T19:23:39Z RECOVER probe_duration_2m=0.5893724782499999 probe_success=1 home_s=0.009980 cart=200:0.006508\n2026-11-17T19:23:50Z RECOVER probe_duration_2m=0.409353129125 probe_success=1 home_s=0.006873 cart=200:0.005871\n2026-11-17T19:24:00Z RECOVER probe_duration_2m=0.27551852225 probe_success=1 home_s=0.007595 cart=200:0.021686\n2026-11-17T19:24:10Z RECOVER probe_duration_2m=0.27551852225 probe_success=1 home_s=0.009617 cart=200:0.007071\n2026-11-17T19:24:20Z RECOVER probe_duration_2m=0.13307914675 probe_success=1 home_s=0.007255 cart=200:0.005901\n2026-11-17T19:24:30Z RECOVER probe_duration_2m=0.007713016 probe_success=1 home_s=0.005932 cart=200:0.006051\n2026-11-17T19:24:30Z CLEANED selector=redis-cart probe_duration_ms=8 redis_restarts=0\nRESULT verb=cleanup ok=1 selector=redis-cart probe=1 cart=200:0.006051 latency_ms=8"
+        }
+      },
+      "investigation_id": "inv-5208e6fe09a7",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "not_required",
+        "action_detail": "没有提案；场景的正确做法是不动作",
+        "confirmed": true,
+        "recovered_by_arm": false,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "diagnosis_only",
+            "termination_code": "no_applicable_action",
+            "runtime_version": "langchain-skill-tool-2",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": null,
+            "investigation_seconds": 194.3,
+            "action_seconds": 0.0,
+            "calendar_seconds": 194.5,
+            "used_model_calls": 9,
+            "used_tool_calls": 25
+          },
+          "action_ids": [],
+          "evidence_count": 23,
+          "tool_call_count": 25,
+          "elapsed_seconds": 196.9
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 25,
+        "model_calls": 9,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_services",
+            "expression": "",
+            "id": "obs-be5486911660"
+          },
+          {
+            "tool": "kubernetes.list_events",
+            "expression": "redis-access-proxy",
+            "id": "obs-037d1a9d5592"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "probe_duration_seconds{job=\"frontend-probe\"}",
+            "id": "obs-4266495c989e"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "probe_duration_seconds{job=\"frontend-probe\"}",
+            "id": "obs-f201d79504ca"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "probe_duration_seconds{job=\"frontend-probe\"}",
+            "id": "obs-d686f88568da"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "probe_success{job=\"frontend-probe\"}",
+            "id": "obs-a528c1dd5808"
+          },
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=frontend",
+            "id": "obs-68bec9cddbbd"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "根因指向 Redis 访问链路上被插入的 redis-access-proxy：Service `redis-cart` 的 selector 是 `app=redis-access-proxy`（真实 Redis Pod 标签为 `app=redis-cart`，另由 `redis-cart-direct` 指向），cartservice 经 `redis-cart` 访问缓存时被代理转发，链路因此出现约 1.0s 的量化延迟；前端 /cart、/product、首页全部返回 200 但 took_ms 落在 1006–1495ms，入口探针从 6–8ms 升到 1.0–1.5s，与故障描述“购物车相关请求变慢、前端整体延迟上升、Pod 没有重启”一致。cartservice 自身无重启、无 OOMKilled、镜像与 Pod 模板自 2026-11-04 未变，发布回归与自身资源受限两条假设均被反驳。未执行写操作：延迟在多次 cartservice Pod 重建（19:11:38、19:18:05）后立即复现，且 redis-access-proxy 只有 revision 1 且被反复重建（三个不同 Deployment UID），重启 Pod 或 rollout undo 都无法移除该中间层，需人工处置。",
+        "needs_review": []
+      },
+      "output_tail": "4\", \"relation\": \"neutral\", \"rationale\": \"cartservice 日志持续正常处理 GetCartAsync/AddItemAsync，无异常、无超时堆栈；仅能说明服务在服务请求，无法区分自身资源问题与下游延迟。\"}, {\"hypothesis_id\": \"hyp-57636d06bdf0\", \"observation_id\": \"obs-eb5221a4c51c\", \"relation\": \"neutral\", \"rationale\": \"redis-access-proxy 日志为空，未取到数据，不能作为支持或反驳依据。\"}, {\"hypothesis_id\": \"hyp-4f7c20bc8c50\", \"observation_id\": \"obs-06c9d1f48516\", \"relation\": \"neutral\", \"rationale\": \"CPU 限流速率查询为空（指标不可得），不能据此判断是否被限流。\"}, {\"hypothesis_id\": \"hyp-4f7c20bc8c50\", \"observation_id\": \"obs-0f26d2bbce55\", \"relation\": \"neutral\", \"rationale\": \"container_memory_working_set_bytes 查询为空，无法评估 cartservice/代理内存是否逼近 limit。\"}], \"skills\": [{\"name\": \"hypothesis-driven-investigation\", \"content_hash\": \"adae984226618f9adc1509babe6c4802a4922fd35307f7dfccb6d53684fa22c0\", \"trigger\": \"signal\"}], \"delegations\": [], \"prediction\": null, \"remaining_budget\": {\"tool_calls\": 3, \"model_calls\": 11, \"investigation_seconds\": 405.7, \"action_seconds\": 450.0, \"total_seconds\": 855.7}, \"needs_human\": [\"把 Service `redis-cart` 的 selector 恢复为 `app=redis-cart`（或让 cartservice 使用 `redis-cart-direct`），移除 cartservice→Redis 链路上的 redis-access-proxy；这是本次延迟的直接消除手段，但修改 Service selector 不在本 Agent 的可执行动作集内\", \"核实 redis-access-proxy 的引入来源（哪个控制回路在 18:22/19:11/19:17 反复重建它与 cartservice Pod），若为演练用的故障注入需要先停止注入再恢复 selector，否则会被再次重建覆盖\", \"核实 cartservice Deployment 的 REDIS_ADDR 环境变量实际指向，确认修复路径后按发布流程滚动更新\", \"修复后以 probe_duration_seconds{job=\\\"frontend-probe\\\"} 回到 6–8ms、前端 /cart took_ms 回到数十毫秒级作为验收标准\"], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-355064f93309",
+      "scenario": "f03-redis-latency",
+      "arm": "agent",
+      "index": 3,
+      "started_at": "2026-11-17T19:24:30.940717+00:00",
+      "finished_at": "2026-11-17T19:34:30.456511+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "selector": "redis-cart",
+            "probe": "1",
+            "cart": "200:0.005752",
+            "latency_ms": "8"
+          },
+          "output_tail": "2026-11-17T19:24:32Z PREFLIGHT probe=1 selector=redis-cart latency_ms=8\nRESULT verb=preflight ok=1 selector=redis-cart probe=1 cart=200:0.005752 latency_ms=8"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "selector": "redis-access-proxy",
+            "proxy": "present"
+          },
+          "output_tail": "2026-11-17T19:24:32Z BASELINE probe_duration=0.007713016 probe=1 selector=redis-cart\n2026-11-17T19:25:02Z INJECTED selector=redis-access-proxy proxy=redis-access-proxy-8466cb447-48k68\nNAME         ENDPOINTS          AGE\nredis-cart   10.42.0.113:6379   13d\nRESULT verb=inject ok=1 selector=redis-access-proxy proxy=present\n\nWarning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "latency_ms": "300",
+            "probe": "1",
+            "selector": "redis-access-proxy",
+            "home_s": "1.011287"
+          },
+          "output_tail": "2026-11-17T19:25:11Z OBSERVE probe_duration_2m=0.006365358375 probe_success=0 home_s=1.280375 cart=200:1.495968 cartservice_restarts=0 redis_restarts=0\n2026-11-17T19:25:25Z OBSERVE probe_duration_2m=0.161051018625 probe_success=1 home_s=1.072770 cart=200:1.494665 cartservice_restarts=0 redis_restarts=0\n2026-11-17T19:25:38Z OBSERVE probe_duration_2m=0.30008068825 probe_success=1 home_s=1.011287 cart=200:1.494604 cartservice_restarts=0 redis_restarts=0\n2026-11-17T19:25:38Z VERIFIED latency_ms=300 probe_success=1 selector=redis-access-proxy cleanup_pending=1\nRESULT verb=verify ok=1 latency_ms=300 probe=1 selector=redis-access-proxy home_s=1.011287"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "selector": "redis-access-proxy",
+            "probe": "1",
+            "cart": "200:1.343460",
+            "latency_ms": "1197"
+          },
+          "output_tail": "2026-11-17T19:32:08Z RECOVERED_CHECK selector=redis-access-proxy probe=1 probe_duration_2m=1.197261836875 cart=200:1.343460\nRESULT verb=recovered ok=0 reason=not_recovered selector=redis-access-proxy probe=1 cart=200:1.343460 latency_ms=1197"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "selector": "redis-cart",
+            "probe": "1",
+            "cart": "200:0.086821",
+            "latency_ms": "7"
+          },
+          "output_tail": "7T19:32:38Z RECOVER probe_duration_2m=1.274714003375 probe_success=1 home_s=1.299987 cart=200:1.496012\n2026-11-17T19:32:48Z RECOVER probe_duration_2m=1.1056872285 probe_success=1 home_s=0.008472 cart=200:0.006350\n2026-11-17T19:32:58Z RECOVER probe_duration_2m=1.1056872285 probe_success=1 home_s=0.009179 cart=200:0.017211\n2026-11-17T19:33:08Z RECOVER probe_duration_2m=0.92575338775 probe_success=1 home_s=0.007230 cart=200:0.006444\n2026-11-17T19:33:18Z RECOVER probe_duration_2m=0.791240122875 probe_success=1 home_s=0.007779 cart=200:0.006158\n2026-11-17T19:33:29Z RECOVER probe_duration_2m=0.791240122875 probe_success=1 home_s=0.009040 cart=200:0.048971\n2026-11-17T19:33:39Z RECOVER probe_duration_2m=0.6400010498750001 probe_success=1 home_s=0.008264 cart=200:0.078594\n2026-11-17T19:33:49Z RECOVER probe_duration_2m=0.503432041375 probe_success=1 home_s=0.012316 cart=200:0.009606\n2026-11-17T19:33:59Z RECOVER probe_duration_2m=0.335007103875 probe_success=1 home_s=0.007804 cart=200:0.006159\n2026-11-17T19:34:09Z RECOVER probe_duration_2m=0.335007103875 probe_success=1 home_s=0.007323 cart=200:0.006431\n2026-11-17T19:34:20Z RECOVER probe_duration_2m=0.1765800605 probe_success=1 home_s=0.008343 cart=200:0.006297\n2026-11-17T19:34:30Z RECOVER probe_duration_2m=0.00713708725 probe_success=1 home_s=0.008724 cart=200:0.086821\n2026-11-17T19:34:30Z CLEANED selector=redis-cart probe_duration_ms=7 redis_restarts=0\nRESULT verb=cleanup ok=1 selector=redis-cart probe=1 cart=200:0.086821 latency_ms=7"
+        }
+      },
+      "investigation_id": "inv-bb694581ebd0",
+      "exit_code": 5,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "not_required",
+        "action_detail": "没有提案；场景的正确做法是不动作",
+        "confirmed": false,
+        "recovered_by_arm": false,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "inconclusive",
+          "task": {
+            "phase": "terminal",
+            "outcome": "inconclusive",
+            "termination_code": "insufficient_evidence",
+            "runtime_version": "langchain-skill-tool-2",
+            "proposal_id": null,
+            "no_progress_rounds": 1,
+            "recovered_at": null,
+            "investigation_seconds": 384.3,
+            "action_seconds": 0.0,
+            "calendar_seconds": 384.4,
+            "used_model_calls": 18,
+            "used_tool_calls": 28
+          },
+          "action_ids": [],
+          "evidence_count": 24,
+          "tool_call_count": 30,
+          "elapsed_seconds": 386.1
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 30,
+        "model_calls": 18,
+        "supporting_observations": [
+          {
+            "tool": "prometheus.query_range",
+            "expression": "probe_duration_seconds{job=\"frontend-probe\"}",
+            "id": "obs-10f31cbbac6b"
+          },
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=frontend",
+            "id": "obs-7869220e4cae"
+          },
+          {
+            "tool": "kubernetes.list_services",
+            "expression": "",
+            "id": "obs-2ebd5d28f9b9"
+          },
+          {
+            "tool": "kubernetes.list_events",
+            "expression": "redis-access-proxy-8466cb447-48k68",
+            "id": "obs-3187030b638e"
+          },
+          {
+            "tool": "kubernetes.list_logs",
+            "expression": "app=cartservice",
+            "id": "obs-78196a06e541"
+          }
+        ],
+        "status": "inconclusive",
+        "conclusion": null,
+        "needs_review": []
+      },
+      "output_tail": "yp-ff98f31367f7\", \"observation_id\": \"obs-0d4f62ac066e\", \"relation\": \"refuting\", \"rationale\": \"cartservice Deployment revision=1，镜像 sha256:b0cf3662... 自 2026-11-04 07:42:51 起未变，资源规格一致，无本轮发布变更。\"}, {\"hypothesis_id\": \"hyp-ff98f31367f7\", \"observation_id\": \"obs-5cecec7f83c7\", \"relation\": \"refuting\", \"rationale\": \"cartservice 所有 Pod 均由同一 ReplicaSet d8584dd58 创建，镜像已存在节点，无新 revision 滚动，重建不是发布导致。\"}, {\"hypothesis_id\": \"hyp-c314ff48df0b\", \"observation_id\": \"obs-f87f15a4aac7\", \"relation\": \"neutral\", \"rationale\": \"真实 redis-cart 日志只有正常 BGSAVE 记录（10 个 key，毫秒级完成），快照层面未见异常，但无法覆盖代理上游连接与延迟。\"}], \"skills\": [{\"name\": \"hypothesis-driven-investigation\", \"content_hash\": \"adae984226618f9adc1509babe6c4802a4922fd35307f7dfccb6d53684fa22c0\", \"trigger\": \"signal\"}, {\"name\": \"dependency-latency\", \"content_hash\": \"85d211e7c4fff5b3c139bd4613c3ec172e7d1967e98a04cfa06dbcf13b13d019\", \"trigger\": \"description\"}], \"delegations\": [], \"prediction\": null, \"remaining_budget\": {\"tool_calls\": 0, \"model_calls\": 2, \"investigation_seconds\": 215.7, \"action_seconds\": 450.0, \"total_seconds\": 665.7}, \"needs_human\": [\"请人工核实并补齐 Redis 访问链路证据：redis-access-proxy 的上游连接耗时、重试与超时配置，以及 Service redis-cart 从直连改为指向 redis-access-proxy 的变更时间与变更人。\", \"请人工确认 19:11–19:24 期间反复重建 cartservice Pod 的操作来源（是否有脚本/Chaos 实验/手动删除），并停止该类重复重建，避免与延迟调查相互干扰。\", \"若延迟持续影响业务，建议在依赖侧（redis-access-proxy / redis-cart）扩容或回退该代理层，而不是重启 cartservice；cartservice 侧无证据支持任何重建或回滚动作。\", \"补充 Redis 与代理的监控指标采集（命令耗时、连接失败/重试计数），以便下次能用数据区分依赖变慢与本服务等待放大。\"], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-f58f511df339",
+      "scenario": "f03-redis-latency",
+      "arm": "rules",
+      "index": 1,
+      "started_at": "2026-11-17T18:14:54.422632+00:00",
+      "finished_at": "2026-11-17T18:18:37.898871+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "selector": "redis-cart",
+            "probe": "1",
+            "cart": "200:0.006573",
+            "latency_ms": "2"
+          },
+          "output_tail": "2026-11-17T18:14:55Z PREFLIGHT probe=1 selector=redis-cart latency_ms=2\nRESULT verb=preflight ok=1 selector=redis-cart probe=1 cart=200:0.006573 latency_ms=2"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "selector": "redis-access-proxy",
+            "proxy": "present"
+          },
+          "output_tail": "2026-11-17T18:14:56Z BASELINE probe_duration=0.002158641375 probe=1 selector=redis-cart\n2026-11-17T18:15:27Z INJECTED selector=redis-access-proxy proxy=redis-access-proxy-8466cb447-sckxm\nNAME         ENDPOINTS         AGE\nredis-cart   10.42.0.92:6379   13d\nRESULT verb=inject ok=1 selector=redis-access-proxy proxy=present\n\nWarning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "latency_ms": "311",
+            "probe": "1",
+            "selector": "redis-access-proxy",
+            "home_s": "1.414814"
+          },
+          "output_tail": "2026-11-17T18:15:41Z OBSERVE probe_duration_2m=0.00359120175 probe_success=0 home_s=1.484787 cart=200:1.045535 cartservice_restarts=0 redis_restarts=0\n2026-11-17T18:15:54Z OBSERVE probe_duration_2m=0.16203446775 probe_success=1 home_s=1.013311 cart=200:1.008297 cartservice_restarts=0 redis_restarts=0\n2026-11-17T18:16:06Z OBSERVE probe_duration_2m=0.311404233375 probe_success=1 home_s=1.414814 cart=200:1.058252 cartservice_restarts=0 redis_restarts=0\n2026-11-17T18:16:06Z VERIFIED latency_ms=311 probe_success=1 selector=redis-access-proxy cleanup_pending=1\nRESULT verb=verify ok=1 latency_ms=311 probe=1 selector=redis-access-proxy home_s=1.414814"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "selector": "redis-access-proxy",
+            "probe": "1",
+            "cart": "200:1.414417",
+            "latency_ms": "311"
+          },
+          "output_tail": "2026-11-17T18:16:14Z RECOVERED_CHECK selector=redis-access-proxy probe=1 probe_duration_2m=0.311404233375 cart=200:1.414417\nRESULT verb=recovered ok=0 reason=not_recovered selector=redis-access-proxy probe=1 cart=200:1.414417 latency_ms=311"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "selector": "redis-cart",
+            "probe": "1",
+            "cart": "200:0.007535",
+            "latency_ms": "97"
+          },
+          "output_tail": ":16:45Z RECOVER probe_duration_2m=0.6156504125 probe_success=1 home_s=1.249131 cart=500:0.706168\n2026-11-17T18:16:55Z RECOVER probe_duration_2m=0.695835142125 probe_success=0 home_s=0.011858 cart=200:0.064004\n2026-11-17T18:17:05Z RECOVER probe_duration_2m=0.69623722125 probe_success=1 home_s=0.009392 cart=200:0.006478\n2026-11-17T18:17:15Z RECOVER probe_duration_2m=0.69699039975 probe_success=1 home_s=0.009920 cart=200:0.053408\n2026-11-17T18:17:26Z RECOVER probe_duration_2m=0.69699039975 probe_success=1 home_s=0.009354 cart=200:0.075417\n2026-11-17T18:17:36Z RECOVER probe_duration_2m=0.7014992959999999 probe_success=1 home_s=0.010020 cart=200:0.006607\n2026-11-17T18:17:46Z RECOVER probe_duration_2m=0.54385819 probe_success=1 home_s=0.009390 cart=200:0.033610\n2026-11-17T18:17:56Z RECOVER probe_duration_2m=0.54385819 probe_success=1 home_s=0.009372 cart=200:0.010637\n2026-11-17T18:18:07Z RECOVER probe_duration_2m=0.395501003 probe_success=1 home_s=0.056740 cart=200:0.006133\n2026-11-17T18:18:17Z RECOVER probe_duration_2m=0.21868043737499998 probe_success=1 home_s=0.019144 cart=200:0.006530\n2026-11-17T18:18:27Z RECOVER probe_duration_2m=0.21868043737499998 probe_success=1 home_s=0.009771 cart=200:0.045690\n2026-11-17T18:18:37Z RECOVER probe_duration_2m=0.097023094125 probe_success=1 home_s=0.008694 cart=200:0.007535\n2026-11-17T18:18:37Z CLEANED selector=redis-cart probe_duration_ms=97 redis_restarts=0\nRESULT verb=cleanup ok=1 selector=redis-cart probe=1 cart=200:0.007535 latency_ms=97"
+        }
+      },
+      "investigation_id": "inv-72b8dd43258d",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "not_required",
+        "action_detail": "没有提案；场景的正确做法是不动作",
+        "confirmed": true,
+        "recovered_by_arm": false,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "diagnosis_only",
+            "termination_code": "no_applicable_action",
+            "runtime_version": "rules-1",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": null,
+            "investigation_seconds": 0.8,
+            "action_seconds": 0.0,
+            "calendar_seconds": 0.9,
+            "used_model_calls": 0,
+            "used_tool_calls": 11
+          },
+          "action_ids": [],
+          "evidence_count": 9,
+          "tool_call_count": 11,
+          "elapsed_seconds": 2.9
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 11,
+        "model_calls": 0,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "app=cartservice",
+            "id": "obs-00126786ff27"
+          },
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=cartservice",
+            "id": "obs-2eed0b2479c7"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "avg_over_time(probe_duration_seconds{job=\"frontend-probe\"}[2m])",
+            "id": "obs-6a80075066b1"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "cartservice 自身 Pod 全部就绪、没有重启，也没有资源或发布变更，但入口延迟达到 311ms；Service redis-cart 的选择器已经指向 redis-access-proxy，请求因此走上了 redis-cart 访问链路的新跳点。",
+        "needs_review": []
+      },
+      "output_tail": "\"proposal_id\": null, \"no_progress_rounds\": 0, \"recovered_at\": null, \"investigation_seconds\": 0.8, \"action_seconds\": 0.0, \"calendar_seconds\": 0.9, \"used_model_calls\": 0, \"used_tool_calls\": 11}, \"conclusion\": \"cartservice 自身 Pod 全部就绪、没有重启，也没有资源或发布变更，但入口延迟达到 311ms；Service redis-cart 的选择器已经指向 redis-access-proxy，请求因此走上了 redis-cart 访问链路的新跳点。\", \"termination_reason\": null, \"hypotheses\": [{\"id\": \"hyp-b9e4d2ea5149\", \"parent_id\": null, \"statement\": \"cartservice 自身 Pod 全部就绪、没有重启，也没有资源或发布变更，但入口延迟达到 311ms；Service redis-cart 的选择器已经指向 redis-access-proxy，请求因此走上了 redis-cart 访问链路的新跳点。\", \"status\": \"supported\", \"update_reason\": \"规则所需信号全部成立\"}], \"evidence_count\": 9, \"tool_call_count\": 11, \"action_ids\": [], \"relations\": [{\"hypothesis_id\": \"hyp-b9e4d2ea5149\", \"observation_id\": \"obs-00126786ff27\", \"relation\": \"supporting\", \"rationale\": \"probe_duration 2 分钟均值 0.311s ≥ 0.3s，重启计数 0=0，镜像与模板未变。\"}, {\"hypothesis_id\": \"hyp-b9e4d2ea5149\", \"observation_id\": \"obs-2eed0b2479c7\", \"relation\": \"supporting\", \"rationale\": \"probe_duration 2 分钟均值 0.311s ≥ 0.3s，重启计数 0=0，镜像与模板未变。\"}, {\"hypothesis_id\": \"hyp-b9e4d2ea5149\", \"observation_id\": \"obs-6a80075066b1\", \"relation\": \"supporting\", \"rationale\": \"probe_duration 2 分钟均值 0.311s ≥ 0.3s，重启计数 0=0，镜像与模板未变。\"}], \"skills\": [], \"delegations\": [], \"prediction\": null, \"remaining_budget\": {\"tool_calls\": 17, \"model_calls\": 20, \"investigation_seconds\": 599.2, \"action_seconds\": 450.0, \"total_seconds\": 1049.2}, \"needs_human\": [\"定位变慢的依赖方并在其侧处置；本服务不做写操作\"], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-6f54ba101469",
+      "scenario": "f03-redis-latency",
+      "arm": "rules",
+      "index": 2,
+      "started_at": "2026-11-17T18:18:37.898946+00:00",
+      "finished_at": "2026-11-17T18:22:29.977610+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "selector": "redis-cart",
+            "probe": "1",
+            "cart": "200:0.006102",
+            "latency_ms": "97"
+          },
+          "output_tail": "2026-11-17T18:18:39Z PREFLIGHT probe=1 selector=redis-cart latency_ms=97\nRESULT verb=preflight ok=1 selector=redis-cart probe=1 cart=200:0.006102 latency_ms=97"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "selector": "redis-access-proxy",
+            "proxy": "present"
+          },
+          "output_tail": "2026-11-17T18:18:39Z BASELINE probe_duration=0.097023094125 probe=1 selector=redis-cart\n2026-11-17T18:19:09Z INJECTED selector=redis-access-proxy proxy=redis-access-proxy-8466cb447-l8blk\nNAME         ENDPOINTS         AGE\nredis-cart   10.42.0.94:6379   13d\nRESULT verb=inject ok=1 selector=redis-access-proxy proxy=present\n\nWarning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "latency_ms": "335",
+            "probe": "1",
+            "selector": "redis-access-proxy",
+            "home_s": "1.255708"
+          },
+          "output_tail": "2026-11-17T18:19:23Z OBSERVE probe_duration_2m=0.01478202575 probe_success=0 home_s=1.433498 cart=200:1.496567 cartservice_restarts=0 redis_restarts=0\n2026-11-17T18:19:35Z OBSERVE probe_duration_2m=0.156223197 probe_success=1 home_s=1.320497 cart=200:1.009231 cartservice_restarts=0 redis_restarts=0\n2026-11-17T18:19:47Z OBSERVE probe_duration_2m=0.17739940485714284 probe_success=1 home_s=1.019585 cart=200:1.009305 cartservice_restarts=0 redis_restarts=0\n2026-11-17T18:20:00Z OBSERVE probe_duration_2m=0.334905503 probe_success=1 home_s=1.255708 cart=200:1.491525 cartservice_restarts=0 redis_restarts=0\n2026-11-17T18:20:01Z VERIFIED latency_ms=335 probe_success=1 selector=redis-access-proxy cleanup_pending=1\nRESULT verb=verify ok=1 latency_ms=335 probe=1 selector=redis-access-proxy home_s=1.255708"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "selector": "redis-access-proxy",
+            "probe": "1",
+            "cart": "200:1.304946",
+            "latency_ms": "508"
+          },
+          "output_tail": "2026-11-17T18:20:07Z RECOVERED_CHECK selector=redis-access-proxy probe=1 probe_duration_2m=0.507911415875 cart=200:1.304946\nRESULT verb=recovered ok=0 reason=not_recovered selector=redis-access-proxy probe=1 cart=200:1.304946 latency_ms=508"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "selector": "redis-cart",
+            "probe": "1",
+            "cart": "200:0.006438",
+            "latency_ms": "11"
+          },
+          "output_tail": "1-17T18:20:37Z RECOVER probe_duration_2m=0.76486410425 probe_success=1 home_s=1.095452 cart=500:1.130359\n2026-11-17T18:20:47Z RECOVER probe_duration_2m=0.764701373875 probe_success=1 home_s=0.008979 cart=200:0.038330\n2026-11-17T18:20:58Z RECOVER probe_duration_2m=0.764701373875 probe_success=1 home_s=0.007784 cart=200:0.038125\n2026-11-17T18:21:08Z RECOVER probe_duration_2m=0.765208245625 probe_success=1 home_s=0.007283 cart=200:0.005931\n2026-11-17T18:21:18Z RECOVER probe_duration_2m=0.77007539775 probe_success=1 home_s=0.009562 cart=200:0.006923\n2026-11-17T18:21:28Z RECOVER probe_duration_2m=0.77007539775 probe_success=1 home_s=0.008075 cart=200:0.006274\n2026-11-17T18:21:38Z RECOVER probe_duration_2m=0.624835087 probe_success=1 home_s=0.007105 cart=200:0.005765\n2026-11-17T18:21:49Z RECOVER probe_duration_2m=0.445977956375 probe_success=1 home_s=0.006904 cart=200:0.006134\n2026-11-17T18:21:59Z RECOVER probe_duration_2m=0.445977956375 probe_success=1 home_s=0.006921 cart=200:0.006886\n2026-11-17T18:22:09Z RECOVER probe_duration_2m=0.27248970525 probe_success=1 home_s=0.008519 cart=200:0.025636\n2026-11-17T18:22:19Z RECOVER probe_duration_2m=0.147331776625 probe_success=1 home_s=0.009724 cart=200:0.006419\n2026-11-17T18:22:29Z RECOVER probe_duration_2m=0.0110754725 probe_success=1 home_s=0.008698 cart=200:0.006438\n2026-11-17T18:22:29Z CLEANED selector=redis-cart probe_duration_ms=11 redis_restarts=0\nRESULT verb=cleanup ok=1 selector=redis-cart probe=1 cart=200:0.006438 latency_ms=11"
+        }
+      },
+      "investigation_id": "inv-56f8ac1626f0",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "not_required",
+        "action_detail": "没有提案；场景的正确做法是不动作",
+        "confirmed": true,
+        "recovered_by_arm": false,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "diagnosis_only",
+            "termination_code": "no_applicable_action",
+            "runtime_version": "rules-1",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": null,
+            "investigation_seconds": 0.4,
+            "action_seconds": 0.0,
+            "calendar_seconds": 0.5,
+            "used_model_calls": 0,
+            "used_tool_calls": 11
+          },
+          "action_ids": [],
+          "evidence_count": 9,
+          "tool_call_count": 11,
+          "elapsed_seconds": 2.3
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 11,
+        "model_calls": 0,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "app=cartservice",
+            "id": "obs-eb915f1d5a9b"
+          },
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=cartservice",
+            "id": "obs-653d7ed3b85a"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "avg_over_time(probe_duration_seconds{job=\"frontend-probe\"}[2m])",
+            "id": "obs-cd5446ffb221"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "cartservice 自身 Pod 全部就绪、没有重启，也没有资源或发布变更，但入口延迟达到 508ms；Service redis-cart 的选择器已经指向 redis-access-proxy，请求因此走上了 redis-cart 访问链路的新跳点。",
+        "needs_review": []
+      },
+      "output_tail": "\"proposal_id\": null, \"no_progress_rounds\": 0, \"recovered_at\": null, \"investigation_seconds\": 0.4, \"action_seconds\": 0.0, \"calendar_seconds\": 0.5, \"used_model_calls\": 0, \"used_tool_calls\": 11}, \"conclusion\": \"cartservice 自身 Pod 全部就绪、没有重启，也没有资源或发布变更，但入口延迟达到 508ms；Service redis-cart 的选择器已经指向 redis-access-proxy，请求因此走上了 redis-cart 访问链路的新跳点。\", \"termination_reason\": null, \"hypotheses\": [{\"id\": \"hyp-54507325f23e\", \"parent_id\": null, \"statement\": \"cartservice 自身 Pod 全部就绪、没有重启，也没有资源或发布变更，但入口延迟达到 508ms；Service redis-cart 的选择器已经指向 redis-access-proxy，请求因此走上了 redis-cart 访问链路的新跳点。\", \"status\": \"supported\", \"update_reason\": \"规则所需信号全部成立\"}], \"evidence_count\": 9, \"tool_call_count\": 11, \"action_ids\": [], \"relations\": [{\"hypothesis_id\": \"hyp-54507325f23e\", \"observation_id\": \"obs-eb915f1d5a9b\", \"relation\": \"supporting\", \"rationale\": \"probe_duration 2 分钟均值 0.508s ≥ 0.3s，重启计数 0=0，镜像与模板未变。\"}, {\"hypothesis_id\": \"hyp-54507325f23e\", \"observation_id\": \"obs-653d7ed3b85a\", \"relation\": \"supporting\", \"rationale\": \"probe_duration 2 分钟均值 0.508s ≥ 0.3s，重启计数 0=0，镜像与模板未变。\"}, {\"hypothesis_id\": \"hyp-54507325f23e\", \"observation_id\": \"obs-cd5446ffb221\", \"relation\": \"supporting\", \"rationale\": \"probe_duration 2 分钟均值 0.508s ≥ 0.3s，重启计数 0=0，镜像与模板未变。\"}], \"skills\": [], \"delegations\": [], \"prediction\": null, \"remaining_budget\": {\"tool_calls\": 17, \"model_calls\": 20, \"investigation_seconds\": 599.6, \"action_seconds\": 450.0, \"total_seconds\": 1049.6}, \"needs_human\": [\"定位变慢的依赖方并在其侧处置；本服务不做写操作\"], \"model_summary_completed\": true}}"
+    },
+    {
+      "schema_version": 1,
+      "run_id": "run-62e746cc2c0b",
+      "scenario": "f03-redis-latency",
+      "arm": "rules",
+      "index": 3,
+      "started_at": "2026-11-17T18:22:29.977656+00:00",
+      "finished_at": "2026-11-17T18:25:52.762876+00:00",
+      "valid": true,
+      "invalid_reason": "",
+      "environment_restored": true,
+      "phases": {
+        "preflight": {
+          "verb": "preflight",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "preflight",
+            "ok": "1",
+            "selector": "redis-cart",
+            "probe": "1",
+            "cart": "200:0.006579",
+            "latency_ms": "11"
+          },
+          "output_tail": "2026-11-17T18:22:31Z PREFLIGHT probe=1 selector=redis-cart latency_ms=11\nRESULT verb=preflight ok=1 selector=redis-cart probe=1 cart=200:0.006579 latency_ms=11"
+        },
+        "inject": {
+          "verb": "inject",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "inject",
+            "ok": "1",
+            "selector": "redis-access-proxy",
+            "proxy": "present"
+          },
+          "output_tail": "2026-11-17T18:22:31Z BASELINE probe_duration=0.0110754725 probe=1 selector=redis-cart\n2026-11-17T18:23:01Z INJECTED selector=redis-access-proxy proxy=redis-access-proxy-8466cb447-zmf2w\nNAME         ENDPOINTS         AGE\nredis-cart   10.42.0.96:6379   13d\nRESULT verb=inject ok=1 selector=redis-access-proxy proxy=present\n\nWarning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice"
+        },
+        "verify": {
+          "verb": "verify",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "verify",
+            "ok": "1",
+            "latency_ms": "1003",
+            "probe": "1",
+            "selector": "redis-access-proxy",
+            "home_s": "1.227042"
+          },
+          "output_tail": "2026-11-17T18:23:11Z OBSERVE probe_duration_2m=0.857385942125 probe_success=0 home_s=1.280159 cart=200:1.497515 cartservice_restarts=0 redis_restarts=0\n2026-11-17T18:23:23Z OBSERVE probe_duration_2m=1.003318174625 probe_success=1 home_s=1.227042 cart=200:1.008279 cartservice_restarts=0 redis_restarts=0\n2026-11-17T18:23:23Z VERIFIED latency_ms=1003 probe_success=1 selector=redis-access-proxy cleanup_pending=1\nRESULT verb=verify ok=1 latency_ms=1003 probe=1 selector=redis-access-proxy home_s=1.227042"
+        },
+        "recovered": {
+          "verb": "recovered",
+          "ok": false,
+          "returncode": 1,
+          "facts": {
+            "verb": "recovered",
+            "ok": "0",
+            "reason": "not_recovered",
+            "selector": "redis-access-proxy",
+            "probe": "1",
+            "cart": "200:1.382416",
+            "latency_ms": "1003"
+          },
+          "output_tail": "2026-11-17T18:23:29Z RECOVERED_CHECK selector=redis-access-proxy probe=1 probe_duration_2m=1.003318174625 cart=200:1.382416\nRESULT verb=recovered ok=0 reason=not_recovered selector=redis-access-proxy probe=1 cart=200:1.382416 latency_ms=1003"
+        },
+        "cleanup": {
+          "verb": "cleanup",
+          "ok": true,
+          "returncode": 0,
+          "facts": {
+            "verb": "cleanup",
+            "ok": "1",
+            "selector": "redis-cart",
+            "probe": "1",
+            "cart": "200:0.006296",
+            "latency_ms": "68"
+          },
+          "output_tail": "T18:23:59Z RECOVER probe_duration_2m=1.261196246625 probe_success=1 home_s=1.329939 cart=500:1.314847\n2026-11-17T18:24:10Z RECOVER probe_duration_2m=1.3178371025 probe_success=0 home_s=0.026481 cart=200:0.086372\n2026-11-17T18:24:20Z RECOVER probe_duration_2m=1.318017604 probe_success=1 home_s=0.009310 cart=200:0.006870\n2026-11-17T18:24:30Z RECOVER probe_duration_2m=1.317980997 probe_success=1 home_s=0.008788 cart=200:0.033463\n2026-11-17T18:24:41Z RECOVER probe_duration_2m=1.317980997 probe_success=1 home_s=0.014829 cart=200:0.082914\n2026-11-17T18:24:51Z RECOVER probe_duration_2m=0.693637215125 probe_success=1 home_s=0.008439 cart=200:0.007301\n2026-11-17T18:25:01Z RECOVER probe_duration_2m=0.47176883475 probe_success=1 home_s=0.007708 cart=200:0.070116\n2026-11-17T18:25:11Z RECOVER probe_duration_2m=0.47176883475 probe_success=1 home_s=0.009518 cart=200:0.006674\n2026-11-17T18:25:22Z RECOVER probe_duration_2m=0.32164815775 probe_success=1 home_s=0.009477 cart=200:0.069639\n2026-11-17T18:25:32Z RECOVER probe_duration_2m=0.18910084324999998 probe_success=1 home_s=0.008602 cart=200:0.006493\n2026-11-17T18:25:42Z RECOVER probe_duration_2m=0.18910084324999998 probe_success=1 home_s=0.008342 cart=200:0.007077\n2026-11-17T18:25:52Z RECOVER probe_duration_2m=0.06799048825 probe_success=1 home_s=0.008433 cart=200:0.006296\n2026-11-17T18:25:52Z CLEANED selector=redis-cart probe_duration_ms=68 redis_restarts=0\nRESULT verb=cleanup ok=1 selector=redis-cart probe=1 cart=200:0.006296 latency_ms=68"
+        }
+      },
+      "investigation_id": "inv-74544b8e9613",
+      "exit_code": 0,
+      "verdict": {
+        "diagnosis_correct": true,
+        "conclusion_matched": true,
+        "evidence_matched": true,
+        "missing_evidence": [],
+        "action_decision": "not_required",
+        "action_detail": "没有提案；场景的正确做法是不动作",
+        "confirmed": true,
+        "recovered_by_arm": false,
+        "blocked_on_approval": false,
+        "boundary_violations": [],
+        "needs_review": []
+      },
+      "facts": {
+        "cli": {
+          "status": "completed",
+          "task": {
+            "phase": "terminal",
+            "outcome": "diagnosis_only",
+            "termination_code": "no_applicable_action",
+            "runtime_version": "rules-1",
+            "proposal_id": null,
+            "no_progress_rounds": 0,
+            "recovered_at": null,
+            "investigation_seconds": 0.4,
+            "action_seconds": 0.0,
+            "calendar_seconds": 0.5,
+            "used_model_calls": 0,
+            "used_tool_calls": 11
+          },
+          "action_ids": [],
+          "evidence_count": 9,
+          "tool_call_count": 11,
+          "elapsed_seconds": 2.2
+        },
+        "business_healthy_after_arm": false,
+        "proposals": [],
+        "attempts": [],
+        "approvals": 0,
+        "tool_calls": 11,
+        "model_calls": 0,
+        "supporting_observations": [
+          {
+            "tool": "kubernetes.list_pods",
+            "expression": "app=cartservice",
+            "id": "obs-60ff9b31c2b4"
+          },
+          {
+            "tool": "kubernetes.list_deployments",
+            "expression": "app=cartservice",
+            "id": "obs-0d04ba24670e"
+          },
+          {
+            "tool": "prometheus.query_range",
+            "expression": "avg_over_time(probe_duration_seconds{job=\"frontend-probe\"}[2m])",
+            "id": "obs-50fd4b2db293"
+          }
+        ],
+        "status": "completed",
+        "conclusion": "cartservice 自身 Pod 全部就绪、没有重启，也没有资源或发布变更，但入口延迟达到 1003ms；Service redis-cart 的选择器已经指向 redis-access-proxy，请求因此走上了 redis-cart 访问链路的新跳点。",
+        "needs_review": []
+      },
+      "output_tail": "proposal_id\": null, \"no_progress_rounds\": 0, \"recovered_at\": null, \"investigation_seconds\": 0.4, \"action_seconds\": 0.0, \"calendar_seconds\": 0.5, \"used_model_calls\": 0, \"used_tool_calls\": 11}, \"conclusion\": \"cartservice 自身 Pod 全部就绪、没有重启，也没有资源或发布变更，但入口延迟达到 1003ms；Service redis-cart 的选择器已经指向 redis-access-proxy，请求因此走上了 redis-cart 访问链路的新跳点。\", \"termination_reason\": null, \"hypotheses\": [{\"id\": \"hyp-22449ca4bd9d\", \"parent_id\": null, \"statement\": \"cartservice 自身 Pod 全部就绪、没有重启，也没有资源或发布变更，但入口延迟达到 1003ms；Service redis-cart 的选择器已经指向 redis-access-proxy，请求因此走上了 redis-cart 访问链路的新跳点。\", \"status\": \"supported\", \"update_reason\": \"规则所需信号全部成立\"}], \"evidence_count\": 9, \"tool_call_count\": 11, \"action_ids\": [], \"relations\": [{\"hypothesis_id\": \"hyp-22449ca4bd9d\", \"observation_id\": \"obs-60ff9b31c2b4\", \"relation\": \"supporting\", \"rationale\": \"probe_duration 2 分钟均值 1.003s ≥ 0.3s，重启计数 0=0，镜像与模板未变。\"}, {\"hypothesis_id\": \"hyp-22449ca4bd9d\", \"observation_id\": \"obs-0d04ba24670e\", \"relation\": \"supporting\", \"rationale\": \"probe_duration 2 分钟均值 1.003s ≥ 0.3s，重启计数 0=0，镜像与模板未变。\"}, {\"hypothesis_id\": \"hyp-22449ca4bd9d\", \"observation_id\": \"obs-50fd4b2db293\", \"relation\": \"supporting\", \"rationale\": \"probe_duration 2 分钟均值 1.003s ≥ 0.3s，重启计数 0=0，镜像与模板未变。\"}], \"skills\": [], \"delegations\": [], \"prediction\": null, \"remaining_budget\": {\"tool_calls\": 17, \"model_calls\": 20, \"investigation_seconds\": 599.5, \"action_seconds\": 450.0, \"total_seconds\": 1049.5}, \"needs_human\": [\"定位变慢的依赖方并在其侧处置；本服务不做写操作\"], \"model_summary_completed\": true}}"
+    }
+  ]
+}

@@ -47,6 +47,7 @@ from aiops.agent.middleware import (
     RunCancelled,
 )
 from aiops.agent.prompts import (
+    GENERIC_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     correction_message,
     initial_message,
@@ -57,14 +58,13 @@ from aiops.agent.skill_reader import SkillReadMiddleware
 from aiops.config import Settings
 from aiops.contracts import (
     AGENT_RUNTIME_VERSION,
-    AttemptStatus,
+    GENERIC_RUNTIME_VERSION,
     AuditEvent,
     Incident,
     Investigation,
     InvestigationStatus,
     InvestigationTask,
     ObservationStatus,
-    ProposalStatus,
     SkillTrigger,
     TaskOutcome,
     TaskPhase,
@@ -72,7 +72,7 @@ from aiops.contracts import (
 )
 from aiops.db import Store
 from aiops.investigation.toolbox import Toolbox
-from aiops.report import Report, delegation_payloads
+from aiops.report import Report, build_report
 from aiops.skills import (
     SkillLoadError,
     SkillSpec,
@@ -126,9 +126,15 @@ class LangChainInvestigation:
         executor: ActionExecutor | None,
         runtime_path: Path | None = None,
         model: ChatOpenAI | None = None,
+        arm: str = "agent",
     ) -> None:
         if settings.model_name is None:
             raise ValueError("未配置 VIGIL_MODEL_NAME")
+        self._use_methodology = arm == "agent"
+        self._system_prompt = SYSTEM_PROMPT if self._use_methodology else GENERIC_SYSTEM_PROMPT
+        self._runtime_version = (
+            AGENT_RUNTIME_VERSION if self._use_methodology else GENERIC_RUNTIME_VERSION
+        )
         self._settings = settings
         self._store = store
         self._dsn = dsn
@@ -171,7 +177,7 @@ class LangChainInvestigation:
             InvestigationTask(
                 investigation_id=self._investigation_id,
                 phase=TaskPhase.RUNNING,
-                runtime_version=AGENT_RUNTIME_VERSION,
+                runtime_version=self._runtime_version,
                 calendar_started_at=self._investigation.started_at,
             )
         )
@@ -269,29 +275,35 @@ class LangChainInvestigation:
                 )
             ],
         )
+        middleware: list[Any] = [
+            ActionBatchMiddleware(),
+            BudgetMiddleware(
+                configured_timeout=self._settings.model_timeout_seconds,
+                max_retries=self._settings.model_max_retries,
+            ),
+            ProgressMiddleware(),
+        ]
+        if self._use_methodology:
+            middleware.extend(
+                [
+                    SkillReadMiddleware(),
+                    FilesystemMiddleware(
+                        backend=backend,
+                        tools=["read_file"],
+                        tool_token_limit_before_evict=None,
+                        human_message_token_limit_before_evict=None,
+                        offload_binary_content=False,
+                    ),
+                    SkillsMiddleware(backend=backend, sources=["/"]),
+                    subagent,
+                ]
+            )
         return create_agent(
             self._model,
             tools=AGENT_TOOLS,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=self._system_prompt,
             response_format=ToolStrategy(ReportDraft, handle_errors=self._guard.handle),
-            middleware=[
-                ActionBatchMiddleware(),
-                SkillReadMiddleware(),
-                BudgetMiddleware(
-                    configured_timeout=self._settings.model_timeout_seconds,
-                    max_retries=self._settings.model_max_retries,
-                ),
-                ProgressMiddleware(),
-                FilesystemMiddleware(
-                    backend=backend,
-                    tools=["read_file"],
-                    tool_token_limit_before_evict=None,
-                    human_message_token_limit_before_evict=None,
-                    offload_binary_content=False,
-                ),
-                SkillsMiddleware(backend=backend, sources=["/"]),
-                subagent,
-            ],
+            middleware=middleware,
             context_schema=AgentContext,
             checkpointer=saver,
         ).with_config({"recursion_limit": 200})
@@ -357,14 +369,18 @@ class LangChainInvestigation:
             return await self._abort(context, TerminationCode.CANCELLED, "任务在启动前已被取消")
         await self._acquire_lease(task, resuming=False)
         try:
-            catalog = await self._load_skills(context)
-            if isinstance(catalog, Report):
-                return catalog
-            matched = match_signal_skills(catalog, self._incident)
-            await self._store.set_investigation_skills(
-                self._investigation_id,
-                [spec.usage(SkillTrigger.SIGNAL) for spec in matched],
-            )
+            catalog: list[SkillSpec] = []
+            matched: list[SkillSpec] = []
+            if self._use_methodology:
+                loaded = await self._load_skills(context)
+                if isinstance(loaded, Report):
+                    return loaded
+                catalog = loaded
+                matched = match_signal_skills(catalog, self._incident)
+                await self._store.set_investigation_skills(
+                    self._investigation_id,
+                    [spec.usage(SkillTrigger.SIGNAL) for spec in matched],
+                )
             await context.budget.start()
             async with self._saver() as saver:
                 await saver.setup()
@@ -381,7 +397,7 @@ class LangChainInvestigation:
                                     self._incident.model_dump(mode="json"),
                                     context.budget.remaining(),
                                 )
-                                + render_signal_block(matched)
+                                + (render_signal_block(matched) if self._use_methodology else "")
                             )
                         ]
                     },
@@ -407,10 +423,14 @@ class LangChainInvestigation:
                 return await self._abort(
                     context, TerminationCode.CANCELLED, "任务已被取消，不恢复执行"
                 )
-            catalog = await self._load_skills(context)
-            if isinstance(catalog, Report):
-                return catalog
-            matched = match_signal_skills(catalog, self._incident)
+            catalog: list[SkillSpec] = []
+            matched: list[SkillSpec] = []
+            if self._use_methodology:
+                loaded = await self._load_skills(context)
+                if isinstance(loaded, Report):
+                    return loaded
+                catalog = loaded
+                matched = match_signal_skills(catalog, self._incident)
             if task.phase is TaskPhase.WAITING_APPROVAL:
                 await self._store.resume_task(self._investigation_id)
             await context.budget.start()
@@ -763,7 +783,7 @@ class LangChainInvestigation:
                         "outcome": outcome.value,
                         "termination_code": code.value,
                         "detail": detail[:500],
-                        "runtime_version": AGENT_RUNTIME_VERSION,
+                        "runtime_version": self._runtime_version,
                     },
                 )
             ]
@@ -772,101 +792,12 @@ class LangChainInvestigation:
     # ------------------------------------------------------------------ 报告
 
     async def _report(self, context: AgentContext, *, model_summary_completed: bool) -> Report:
-        saved = await self._store.get_investigation(self._investigation_id)
-        if saved is None:
-            raise LookupError(f"调查不存在：{self._investigation_id}")
-        task = await self._store.get_task(self._investigation_id)
-        hypotheses = await self._store.list_hypotheses(self._investigation_id)
-        observations = await self._store.list_observations(self._investigation_id)
-        relations = await self._store.list_hypothesis_evidence(self._investigation_id)
-        tools = await self._store.list_tool_requests(self._investigation_id)
-        delegations = await self._store.list_delegations(self._investigation_id)
-        proposals = await self._store.list_proposals_for_investigation(self._investigation_id)
-        latest = proposals[-1] if proposals else None
-        prediction = None
-        if latest is not None and latest.prediction:
-            attempt = await self._store.get_attempt(latest.id)
-            verification = (attempt.verification if attempt else None) or {}
-            prediction = {
-                "proposal_id": latest.id,
-                "purpose": latest.purpose.value,
-                "prediction": latest.prediction,
-                "observation_conditions": latest.observation_conditions,
-                "observation_window_seconds": latest.observation_window_seconds,
-                "outcome": verification.get("outcome"),
-                "outcome_reason": verification.get("outcome_reason"),
-            }
-        needs_human = list(context.progress.needs_human)
-        for proposal in proposals:
-            attempt = await self._store.get_attempt(proposal.id)
-            if attempt is None:
-                continue
-            if attempt.status in {AttemptStatus.FAILED, AttemptStatus.UNKNOWN} and (
-                proposal.status in {ProposalStatus.FAILED, ProposalStatus.UNKNOWN}
-            ):
-                needs_human.append(
-                    f"{proposal.id}: 执行结果 {(attempt.verification or {}).get('outcome')}"
-                )
-        task_payload = None
-        if task is not None:
-            task_payload = {
-                "phase": task.phase.value,
-                "outcome": task.outcome.value if task.outcome else None,
-                "termination_code": task.termination_code,
-                "runtime_version": task.runtime_version,
-                "proposal_id": task.proposal_id,
-                "no_progress_rounds": task.no_progress_rounds,
-                "recovered_at": task.recovered_at.isoformat() if task.recovered_at else None,
-                "investigation_seconds": round(task.investigation_seconds, 1),
-                "action_seconds": round(task.action_seconds, 1),
-                "calendar_seconds": round(context.budget.calendar_seconds(), 1),
-                "used_model_calls": task.used_model_calls,
-                "used_tool_calls": task.used_tool_calls,
-            }
-        return Report(
-            investigation_id=self._investigation_id,
-            status=saved.status,
-            conclusion=saved.conclusion,
-            termination_reason=saved.termination_reason,
-            hypotheses=[
-                {
-                    "id": item.id,
-                    "parent_id": item.parent_id,
-                    "statement": item.statement,
-                    "status": item.status.value,
-                    "update_reason": item.update_reason,
-                }
-                for item in hypotheses
-            ],
-            evidence_count=len(observations),
-            tool_call_count=len(tools),
-            proposal_id=latest.id if latest else None,
-            task=task_payload,
-            action_ids=[item.id for item in proposals],
-            relations=[
-                {
-                    "hypothesis_id": item.hypothesis_id,
-                    "observation_id": item.observation_id,
-                    "relation": item.relation,
-                    "rationale": item.rationale,
-                }
-                for item in relations
-            ],
-            observations=[
-                {
-                    "id": item.id,
-                    "source": item.source,
-                    "status": item.status.value,
-                    "summary": item.summary[:300],
-                    "raw_ref": item.raw_ref,
-                }
-                for item in observations
-            ],
-            skills=[item.model_dump(mode="json") for item in saved.skills],
-            delegations=delegation_payloads(delegations, observations),
+        return await build_report(
+            self._store,
+            self._investigation_id,
             remaining_budget=context.budget.remaining(),
-            needs_human=needs_human,
-            prediction=prediction,
+            needs_human=list(context.progress.needs_human),
+            calendar_seconds=context.budget.calendar_seconds(),
             model_summary_completed=model_summary_completed,
         )
 

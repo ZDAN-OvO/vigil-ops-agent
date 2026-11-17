@@ -34,6 +34,11 @@ SYSTEM_PROMPT = """你是 Kubernetes 故障调查与受控处置 Agent。你在�
     不要把所有评估留到最后；剩余工具次数不足时优先提交结构化报告。
 """
 
+GENERIC_SYSTEM_PROMPT = """你是 Kubernetes 运维调查助手。用提供的工具查询集群对象与指标，
+判断故障原因；需要处置时可以请求动作，动作会经过规则判定，必要时由人工审批。
+结束前提交结构化报告，写清结论、置信依据与剩余未知。只使用中文表达。
+"""
+
 TOOL_GUIDE = """可用工具：
 - prometheus_query_range(expression, lookback_seconds, step_seconds)：PromQL 区间查询；
   lookback 60-3600 秒，step 5-300 秒。入口信号通常是
@@ -94,6 +99,7 @@ def no_progress_message() -> str:
 
 
 __all__ = [
+    "GENERIC_SYSTEM_PROMPT",
     "SYSTEM_PROMPT",
     "TOOL_GUIDE",
     "correction_message",

@@ -30,7 +30,19 @@ from aiops.contracts import (
     TimeRange,
 )
 from aiops.db import Store, StoreUnavailable
+from aiops.evaluation.harness import (
+    ARMS,
+    execute,
+    load_records,
+    merge_records,
+    render_markdown,
+    rescore,
+    summarize,
+    write_records,
+)
+from aiops.evaluation.scenarios import SCENARIOS, get_scenario, scenario_payload
 from aiops.investigation.factory import open_agent, open_executor
+from aiops.investigation.rules import RULES_MODEL_NAME
 from aiops.knowledge import load_runbooks
 from aiops.report import Report, delegation_payloads
 from aiops.webhook import build_app
@@ -42,11 +54,21 @@ app = typer.Typer(
 )
 db_app = typer.Typer(help="实验 PostgreSQL 的迁移与连接检查。", no_args_is_help=True)
 app.add_typer(db_app, name="db")
+lab_app = typer.Typer(help="对照评估：跑场景、看记录、比门槛。", no_args_is_help=True)
+app.add_typer(lab_app, name="lab")
 
 
 class OutputFormat(StrEnum):
     TEXT = "text"
     JSON = "json"
+
+
+class Arm(StrEnum):
+    """对照臂：同一故障集上比较的三种调查方式。"""
+
+    AGENT = "agent"
+    GENERIC = "generic"
+    RULES = "rules"
 
 
 def _require_dsn() -> str:
@@ -206,11 +228,12 @@ def investigate(
     cluster: str = typer.Option("vigil-lab", help="集群名，仅用于记录"),
     lookback_minutes: int = typer.Option(15, min=1, max=180, help="取证时间窗"),
     context: Annotated[list[str] | None, typer.Option(help="人工补充的上下文，可重复")] = None,
+    arm: Annotated[Arm, typer.Option(help="对照臂：agent / generic / rules")] = Arm.AGENT,
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
     """运行一次调查；命中自动规则的可丢弃 Pod 重建会立即执行，其余只提案等待审批。"""
     settings = Settings()
-    model_name = settings.model_name
+    model_name = RULES_MODEL_NAME if arm is Arm.RULES else settings.model_name
     if not model_name:
         typer.echo("未配置 VIGIL_MODEL_NAME，无法调用模型。", err=True)
         raise typer.Exit(code=2)
@@ -256,7 +279,7 @@ def investigate(
                         actor="cli",
                         event="investigation.started",
                         occurred_at=now,
-                        payload={"service": service, "model": model_name},
+                        payload={"service": service, "model": model_name, "arm": arm.value},
                     )
                 ]
             )
@@ -266,6 +289,7 @@ def investigate(
                 dsn=dsn,
                 incident=incident,
                 investigation=investigation,
+                arm=arm.value,
             ) as runtime:
                 return await runtime.run()
 
@@ -280,6 +304,178 @@ def investigate(
 
     _print_report(report, output)
     raise typer.Exit(code=report.exit_code())
+
+
+@lab_app.command("scenarios")
+def lab_scenarios(output: OutputFormat = OutputFormat.TEXT) -> None:
+    """列出可注入、可核验、可复位的场景与判定口径。"""
+    payload = [scenario_payload(spec) for spec in SCENARIOS]
+    if output == OutputFormat.JSON:
+        typer.echo(json.dumps({"schema_version": "1", "scenarios": payload}, ensure_ascii=False))
+        return
+    for item in payload:
+        typer.echo(f"{item['id']}（{item['name']}）：{item['namespace']}/{item['service']}")
+        typer.echo(f"  真值：{item['truth']}")
+        action = item["expected_action"]
+        if action == "none":
+            typer.echo("  动作：正确做法是不动作")
+        else:
+            typer.echo(f"  动作：{action}@{item['expected_target']}")
+        checks = "；".join(
+            check["name"] + "(" + "/".join(check["tools"]) + ")"
+            for check in item["evidence_checks"]
+        )
+        typer.echo(f"  证据检查：{checks}")
+
+
+def _default_record_path() -> Path:
+    today = datetime.now(UTC).date().isoformat()
+    return Path("faults") / "runs" / f"{today}-comparison.json"
+
+
+@lab_app.command("run")
+def lab_run(
+    scenario: Annotated[
+        list[str] | None, typer.Option(help="场景 ID，可重复；留空表示全部场景")
+    ] = None,
+    arm: Annotated[
+        list[Arm] | None, typer.Option(help="对照臂，可重复；留空表示三条臂都跑")
+    ] = None,
+    runs: int = typer.Option(3, min=1, max=20, help="每个（场景，臂）跑几次"),
+    record: Annotated[
+        Path | None, typer.Option(help="记录文件；默认 faults/runs/<日期>-comparison.json")
+    ] = None,
+    append: Annotated[bool, typer.Option(help="并入已有记录文件，而不是覆盖")] = False,
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """按场景顺序跑对照实验；每步都调用 faults/ 下的脚本，不直接改集群。
+
+    有效运行的定义：健康基线成立、注入成立、故障核验成立。任一步失败都记为无效，
+    不计入分母以外的地方，也不删除记录。
+    """
+    dsn = _require_dsn()
+    settings = Settings()
+    specs = [get_scenario(name) for name in scenario] if scenario else list(SCENARIOS)
+    arms = [item.value for item in (arm or [Arm.AGENT, Arm.GENERIC, Arm.RULES])]
+    unknown = [name for name in arms if name not in ARMS]
+    if unknown:
+        typer.echo(f"未知对照臂：{', '.join(unknown)}", err=True)
+        raise typer.Exit(code=2)
+    target = record or _default_record_path()
+    batch = {
+        "date": datetime.now(UTC).date().isoformat(),
+        "label": "同故障集对照",
+        "scenarios": [spec.id for spec in specs],
+        "arms": arms,
+        "runs_per_cell": runs,
+    }
+    records: list[dict] = []
+
+    async def run_batch() -> list[dict]:
+        collected: list[dict] = []
+        async with Store.open(dsn) as store:
+            await store.migrate()
+            for spec in specs:
+                for name in arms:
+                    for index in range(1, runs + 1):
+                        item = await execute(store, spec, name, index, settings=settings)
+                        collected.append(item.as_dict())
+        return collected
+
+    records = asyncio.run(run_batch())
+    batch["environment_restored"] = all(item["environment_restored"] for item in records)
+    if append and target.exists():
+        batch, records = merge_records(json.loads(target.read_text()), batch, records)
+    summary = summarize(records)
+    write_records(target, batch, records)
+    markdown_path = target.with_suffix(".md")
+    markdown_path.write_text(render_markdown(batch, summary) + "\n")
+
+    if output == OutputFormat.JSON:
+        typer.echo(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "record": str(target),
+                    "summary": summary,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    typer.echo(f"记录：{target}")
+    typer.echo(f"汇总：{markdown_path}")
+    typer.echo("")
+    for row in summary["rows"]:
+        typer.echo(
+            f"{row['scenario']} / {row['arm']}：有效 {row['valid']}/{row['runs']}，"
+            f"诊断正确 {row['diagnosis_correct']}，确认 {row['confirmed']}，"
+            f"本臂恢复 {row['recovered_by_arm']}，越界 {row['boundary_violations']}"
+        )
+    for note in summary["comparison"]:
+        typer.echo(f"- {note}")
+
+
+@lab_app.command("rescore")
+def lab_rescore(
+    record: Annotated[Path, typer.Option(help="要重新判定的记录文件")],
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """按当前判定口径重算已有记录；不重跑实验，也不改实验事实。"""
+    try:
+        payload = json.loads(record.read_text())
+    except FileNotFoundError as exc:
+        typer.echo(f"记录不存在：{record}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    async def run() -> dict:
+        async with Store.open(_require_dsn()) as store:
+            return await rescore(store, payload)
+
+    result = asyncio.run(run())
+    batch = result.get("batch") or {}
+    body = {
+        "schema_version": result.get("schema_version", 1),
+        "batch": batch,
+        "summary": result["summary"],
+        "records": result["records"],
+    }
+    record.write_text(json.dumps(body, ensure_ascii=False, indent=2, default=str) + "\n")
+    record.with_suffix(".md").write_text(render_markdown(batch, result["summary"]) + "\n")
+    if output == OutputFormat.JSON:
+        typer.echo(json.dumps(result["summary"], ensure_ascii=False))
+        return
+    typer.echo(f"已重算：{record}")
+    for row in result["summary"]["rows"]:
+        typer.echo(
+            f"{row['scenario']} / {row['arm']}："
+            f"诊断正确 {row['diagnosis_correct']}/{row['valid']}，"
+            f"达到门槛 {row['meets_floor']}"
+        )
+
+
+@lab_app.command("summarize")
+def lab_summarize(
+    record: Annotated[Path, typer.Option(help="lab run 写出的 JSON 记录")],
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """重新汇总一份已有记录；不重跑实验，也不修改记录。"""
+    try:
+        payload = load_records(record)
+    except FileNotFoundError as exc:
+        typer.echo(f"记录不存在：{record}", err=True)
+        raise typer.Exit(code=2) from exc
+    summary = payload.get("summary") or summarize(payload.get("records") or [])
+    if output == OutputFormat.JSON:
+        typer.echo(json.dumps(summary, ensure_ascii=False))
+        return
+    for row in summary["rows"]:
+        typer.echo(
+            f"{row['scenario']} / {row['arm']}：有效 {row['valid']}/{row['runs']}，"
+            f"诊断正确率 {row['diagnosis_rate']:.2f}，达到门槛 {row['meets_floor']}"
+        )
+    for note in summary["comparison"]:
+        typer.echo(f"- {note}")
 
 
 @app.command()

@@ -35,6 +35,30 @@ def test_help_does_not_require_external_services():
     assert "status" in result.stdout
 
 
+def test_lab_scenarios_lists_truth_and_expected_action_without_external_services():
+    result = runner.invoke(app, ["lab", "scenarios", "--output", "json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    items = {item["id"]: item for item in payload["scenarios"]}
+    assert set(items) == {
+        "f01-bad-release",
+        "f02-memory-limit-oom",
+        "f03-redis-latency",
+        "a01-pod-rebuild",
+    }
+    assert items["f01-bad-release"]["expected_action"] == "rollout_undo"
+    assert items["f02-memory-limit-oom"]["expected_action"] == "none"
+    assert items["a01-pod-rebuild"]["expected_action"] == "restart_pod"
+    for item in items.values():
+        assert item["truth"]
+        assert item["evidence_checks"]
+
+
+def test_lab_summarize_reports_a_missing_record():
+    result = runner.invoke(app, ["lab", "summarize", "--record", "/tmp/does-not-exist.json"])
+    assert result.exit_code == 2
+
+
 def test_status_json_reports_only_implemented_capabilities():
     result = runner.invoke(app, ["status", "--output", "json"])
     assert result.exit_code == 0

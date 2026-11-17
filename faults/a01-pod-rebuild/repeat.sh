@@ -15,10 +15,13 @@ WAIT_SECONDS="${WAIT_SECONDS:-120}"
 OBSERVE_SECONDS="${OBSERVE_SECONDS:-60}"
 RECOVERY_SECONDS="${RECOVERY_SECONDS:-90}"
 SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-1}"
+VERB="${1:-deploy}"
+# shellcheck source=faults/lib/result.sh
+source "$DIR/../lib/result.sh"
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 say() { printf '%s %s\n' "$(now)" "$*"; }
-fail() { say "FAIL $*"; exit 1; }
+fail() { say "FAIL $*"; result "$VERB" fail "reason=$1"; exit 1; }
 
 kget() { "$KUBECTL" -n "$NS" "$@" 2>/dev/null; }
 
@@ -148,6 +151,7 @@ deploy() {
   start_port_forward
   [ "$(work_status)" = "200" ] || fail "部署后 /work 不是 200"
   say "DEPLOYED pod=$pod_name uid=$pod_uid rs=$rs template=$(hash_of "$tmpl") ready=$ready restarts=$restarts work=200"
+  result preflight ok "pod=$pod_name" "uid=$pod_uid" "replicaset=$rs" "template=$(hash_of "$tmpl")" "work=200"
 }
 
 inject() {
@@ -164,6 +168,25 @@ inject() {
   wait_status 500 $(( $(date +%s) + 60 )) || fail "注入后 /work 不是 500"
   read_identity
   say "INJECTED pod=$pod_name uid=$pod_uid restarts=$restarts work=500"
+  result inject ok "pod=$pod_name" "uid=$pod_uid" "restarts=$restarts" "work=500"
+}
+
+# 只读检查：目标 Pod 的 /work 是否已经回到 200；不改任何东西。
+recovered() {
+  VERB=recovered
+  if ! kget get deploy "$DEPLOY" >/dev/null; then
+    result recovered fail "reason=deployment_absent"
+    exit 1
+  fi
+  start_port_forward
+  code=$(work_status)
+  stop_port_forward
+  say "RECOVERED_CHECK work=$code"
+  if [ "$code" != "200" ]; then
+    result recovered fail "reason=not_recovered" "work=$code"
+    exit 1
+  fi
+  result recovered ok "work=200"
 }
 
 verify() {
@@ -185,6 +208,7 @@ verify() {
   [ "$after_uid" = "$uid_before" ] || fail "观察期间 Pod UID 变化"
   [ "$after_restarts" = "$restarts_before" ] || fail "观察期间容器重启次数变化"
   say "VERIFIED_FAULT uid=$after_uid restarts=$after_restarts work=500"
+  result verify ok "uid=$after_uid" "restarts=$after_restarts" "work=500" "ok_requests=$ok" "fail_requests=$failed"
 }
 
 container_restart() {
@@ -302,6 +326,7 @@ cleanup() {
     if ! kget get deploy "$DEPLOY" >/dev/null && [ "$(pod_count)" -eq 0 ]; then
       say "CLEANED deployment=$DEPLOY service=$DEPLOY pods=0"
       delete_namespace_if_owned
+      result cleanup ok "deployment=absent" "pods=0"
       return 0
     fi
     sleep 1
@@ -313,11 +338,12 @@ trap stop_port_forward EXIT
 # 清单里写死命名空间；允许覆盖 NS 会让所有权检查和实际删除目标不一致。
 [ "$NS" = "vigil-experiment" ] || fail "NS 必须与 manifests.yaml 一致：vigil-experiment"
 case "${1:-}" in
-  deploy) deploy ;;
+  preflight | deploy) deploy ;;
+  recovered) recovered ;;
   inject) inject ;;
   verify) verify ;;
   container-restart) container_restart ;;
   rebuild) rebuild ;;
   cleanup) cleanup ;;
-  *) echo "用法：$0 {deploy|inject|verify|container-restart|rebuild|cleanup}" >&2; exit 2 ;;
+  *) echo "用法：$0 {preflight|recovered|inject|verify|container-restart|rebuild|cleanup}" >&2; exit 2 ;;
 esac

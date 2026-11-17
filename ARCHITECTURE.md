@@ -40,6 +40,7 @@ flowchart TD
 | 受控处置 | [actions/](src/aiops/actions) | 风险规则、授权、资源快照、锁、外部写入与业务验证；不以模型结论代替授权 |
 | 持久化与审计 | [db.py](src/aiops/db.py)、[contracts.py](src/aiops/contracts.py)、[migrations/](src/aiops/migrations) | 业务状态与约束；checkpoint 由官方 saver 管理，追踪平台不参与业务正确性 |
 | 运行手册知识 | [knowledge.py](src/aiops/knowledge.py) | 结构化 runbook 导入与查询，通过 Store 与工具供调查参考 |
+| 对照评估 | [evaluation/](src/aiops/evaluation)、[rules.py](src/aiops/investigation/rules.py) | 场景动词编排、判定口径、规则基线与汇总；故障机制仍在 `faults/`，评估不直接改集群 |
 
 运行状态与诊断结果独立记录：任务结束不等于查明根因，动作执行不等于业务恢复。业务数据结构和枚举定义在 `contracts.py`，数据库约束定义在 `migrations/`。
 
@@ -54,3 +55,4 @@ flowchart TD
 | 历史事故 | 保存症状、根因、解决方法、证据和确认状态；未经验证的结论不能自动变成可信知识 |
 | 文本 PDF | 保存文档 ID、哈希、版本、页码和 chunk；导入可重复，更新替换旧版本，删除后不再召回；扫描件和复杂版式明确拒绝。embedding 模型、维度和距离属于索引约定，换模型要重建 |
 | 执行中断协调 | 重启后根据持久化的执行意图核实真实资源状态，能核实的收敛，不能核实的保持未知并升级 |
+| 外部通用 Agent 对照 | 同一故障集与同一权限，只换执行体；需要外部 Agent CLI 与独立预算评估 |

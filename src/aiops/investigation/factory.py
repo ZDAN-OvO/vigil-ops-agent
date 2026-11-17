@@ -12,6 +12,7 @@ from aiops.agent.engine import LangChainInvestigation
 from aiops.config import Settings
 from aiops.contracts import Incident, Investigation
 from aiops.db import Store
+from aiops.investigation.rules import RulesInvestigator
 from aiops.investigation.toolbox import Toolbox
 from aiops.tools.kubernetes import KubernetesRead
 from aiops.tools.prometheus import PrometheusClient
@@ -75,17 +76,35 @@ async def open_executor(settings: Settings, *, store: Store) -> AsyncIterator[Ac
 
 
 @asynccontextmanager
-async def open_agent(
+async def open_runtime(
     *,
     settings: Settings,
     store: Store,
     dsn: str,
     incident: Incident,
     investigation: Investigation,
-) -> AsyncIterator[LangChainInvestigation]:
-    if settings.model_name is None:
-        raise ValueError("未配置 VIGIL_MODEL_NAME")
+    arm: str = "agent",
+) -> AsyncIterator[LangChainInvestigation | RulesInvestigator]:
+    """按对照臂装配调查运行时；三条臂共用同一套工具与动作执行器。
+
+    `agent`：现有运行时（Skill + 排查方法提示词）；`generic`：同一 create_agent
+    循环但去掉 Skill 与方法论；`rules`：固定规则链，不调用模型。
+    """
     async with _open_io(settings, store=store) as (toolbox, executor):
+        if arm == "rules":
+            yield RulesInvestigator(
+                store=store,
+                incident=incident,
+                investigation=investigation,
+                toolbox=toolbox,
+                executor=executor,
+                runtime_path=settings.runtime_path,
+                max_observation_chars=settings.investigation_max_observation_chars,
+                tool_timeout_seconds=settings.tool_timeout_seconds,
+            )
+            return
+        if settings.model_name is None:
+            raise ValueError("未配置 VIGIL_MODEL_NAME")
         yield LangChainInvestigation(
             settings=settings,
             store=store,
@@ -95,11 +114,34 @@ async def open_agent(
             toolbox=toolbox,
             executor=executor,
             runtime_path=settings.runtime_path,
+            arm=arm,
         )
+
+
+@asynccontextmanager
+async def open_agent(
+    *,
+    settings: Settings,
+    store: Store,
+    dsn: str,
+    incident: Incident,
+    investigation: Investigation,
+    arm: str = "agent",
+) -> AsyncIterator[LangChainInvestigation | RulesInvestigator]:
+    async with open_runtime(
+        settings=settings,
+        store=store,
+        dsn=dsn,
+        incident=incident,
+        investigation=investigation,
+        arm=arm,
+    ) as runtime:
+        yield runtime
 
 
 __all__ = [
     "build_executor",
     "open_agent",
     "open_executor",
+    "open_runtime",
 ]

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -106,54 +107,74 @@ def _is_empty(data: Any) -> bool:
     return False
 
 
+@dataclass(frozen=True)
+class ReadOutcome:
+    """一次只读工具的结构化结果：`message` 给模型，`data` 给程序判断。
+
+    规则基线不读模型消息，只看这里保留的原始数据，避免把摘要或截断文本当成事实来源。
+    """
+
+    message: str
+    data: Any = None
+    status: ObservationStatus = ObservationStatus.ERROR
+    observation_id: str | None = None
+    tool: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.status is ObservationStatus.OK
+
+
 async def _prepare_request(
     runtime: ToolRuntime[AgentContext], tool_name: str, arguments: dict[str, Any]
 ) -> tuple[AgentContext, str, str | None]:
-    """登记请求或返回已保存的结果；cached 非空表示这条工具调用应直接重放。"""
+    """LangChain 工具入口的兼容包装：把 runtime 拆成上下文与调用 ID。"""
     ctx = runtime.context
     call_id = str(runtime.tool_call_id or "")
+    cached = await prepare_request(ctx, call_id, tool_name, arguments)
+    return ctx, call_id, cached
+
+
+async def prepare_request(
+    ctx: AgentContext, call_id: str, tool_name: str, arguments: dict[str, Any]
+) -> str | None:
+    """登记请求或返回已保存的结果；返回值非空表示这条工具调用应直接重放。
+
+    Agent 与规则基线共用这一层：同一调查内相同工具调用 ID 只计一次预算、只写一次记录。
+    """
     if not call_id:
-        return ctx, "", _error("missing_tool_call_id", "工具调用缺少 ID，不能登记请求")
+        return _error("missing_tool_call_id", "工具调用缺少 ID，不能登记请求")
     existing = await ctx.store.get_tool_request(ctx.investigation_id, call_id)
     if existing is not None:
         if existing.state is ToolRequestState.ACTION_PENDING:
             # 等待审批的请求在恢复时要走“读账本与提案”的分支，不能当作已完成重放。
-            return ctx, call_id, None
+            return None
         cached = None
         if isinstance(existing.result, dict):
             cached = existing.result.get("tool_message")
         if cached:
-            return ctx, call_id, str(cached)
+            return str(cached)
         if existing.state is ToolRequestState.RUNNING:
             attempt = (
                 await _attempt_for(ctx, existing.proposal_id) if existing.proposal_id else None
             )
             if attempt is not None:
-                return (
-                    ctx,
-                    call_id,
-                    _dump(
-                        {
-                            "status": "in_flight",
-                            "proposal_id": existing.proposal_id,
-                            "attempt_id": attempt.id,
-                            "attempt_status": attempt.status.value,
-                            "note": (
-                                "写请求可能已经发出，不能重复执行；"
-                                "请读取已保存的执行记录或等人工核实。"
-                            ),
-                        }
-                    ),
+                return _dump(
+                    {
+                        "status": "in_flight",
+                        "proposal_id": existing.proposal_id,
+                        "attempt_id": attempt.id,
+                        "attempt_status": attempt.status.value,
+                        "note": (
+                            "写请求可能已经发出，不能重复执行；请读取已保存的执行记录或等人工核实。"
+                        ),
+                    }
                 )
-            return (
-                ctx,
-                call_id,
-                _error(
-                    "request_in_flight",
-                    "同一请求仍在执行或结果未知，不能重复执行；请读取已保存结果或等待人工核实",
-                ),
+            return _error(
+                "request_in_flight",
+                "同一请求仍在执行或结果未知，不能重复执行；请读取已保存结果或等待人工核实",
             )
-        return ctx, call_id, cached
+        return cached
     await ctx.store.start_tool_request(
         ToolRequest(
             investigation_id=ctx.investigation_id,
@@ -182,8 +203,8 @@ async def _prepare_request(
             message=message,
             error_code="budget_exhausted",
         )
-        return ctx, call_id, message
-    return ctx, call_id, None
+        return message
+    return None
 
 
 async def _finish_request(
@@ -222,13 +243,15 @@ def _tool_context(ctx: AgentContext) -> ToolContext:
     )
 
 
-async def _run_read(
-    runtime: ToolRuntime[AgentContext], *, tool_name: str, request: QueryRequest
-) -> str:
-    ctx = runtime.context
-    repeated = await _find_repeated_request(
-        ctx, tool_name, request, str(runtime.tool_call_id or "")
-    )
+async def read_tool(
+    ctx: AgentContext, call_id: str, *, tool_name: str, request: QueryRequest
+) -> ReadOutcome:
+    """执行一次只读工具：记账、保存观测，并把结构化数据一并返回。
+
+    Agent 只用 `message` 给模型看；规则基线只用 `data` 做判定。两者共用同一条
+    账本与观测写入路径，预算和可回查性因此完全一致。
+    """
+    repeated = await _find_repeated_request(ctx, tool_name, request, call_id)
     if (
         repeated is not None
         and isinstance(repeated.result, dict)
@@ -236,10 +259,10 @@ async def _run_read(
     ):
         cached = repeated.result.get("tool_message")
         if cached:
-            return str(cached)
-    ctx, call_id, cached = await _prepare_request(runtime, tool_name, request.model_dump())
+            return ReadOutcome(message=str(cached), tool=tool_name)
+    cached = await prepare_request(ctx, call_id, tool_name, request.model_dump())
     if cached is not None:
-        return cached
+        return ReadOutcome(message=cached, tool=tool_name)
     try:
         result = await ctx.toolbox.run(_tool_context(ctx), ctx.window, request)
     except Exception as exc:  # noqa: BLE001 - 工具异常不能中断整轮，但要留失败记录
@@ -252,7 +275,7 @@ async def _run_read(
             message=message,
             error_code="tool_exception",
         )
-        return message
+        return ReadOutcome(message=message, tool=tool_name)
     status = (
         ObservationStatus.ERROR
         if result.error is not None
@@ -307,7 +330,7 @@ async def _run_read(
             error_code=result.error.code,
             result_ref=result.raw_ref,
         )
-        return message
+        return ReadOutcome(message=message, data=result.data, status=status, tool=tool_name)
     await _finish_request(
         ctx,
         call_id,
@@ -320,7 +343,26 @@ async def _run_read(
         for runbook_id in _runbook_ids(result.data):
             if runbook_id not in ctx.progress.runbook_ids:
                 ctx.progress.runbook_ids.append(runbook_id)
-    return message
+    return ReadOutcome(
+        message=message,
+        data=result.data,
+        status=status,
+        observation_id=observation_id,
+        tool=tool_name,
+    )
+
+
+async def _run_read(
+    runtime: ToolRuntime[AgentContext], *, tool_name: str, request: QueryRequest
+) -> str:
+    """LangChain 工具入口的兼容包装；业务逻辑在 `read_tool`。"""
+    outcome = await read_tool(
+        runtime.context,
+        str(runtime.tool_call_id or ""),
+        tool_name=tool_name,
+        request=request,
+    )
+    return outcome.message
 
 
 async def _find_repeated_request(
@@ -522,8 +564,21 @@ async def manage_hypotheses(
 
     每次内容或状态变更都必须写 reason；假设被反驳后可由新证据重新打开。
     """
+    return await manage_hypotheses_core(
+        runtime.context, str(runtime.tool_call_id or ""), operations
+    )
+
+
+async def manage_hypotheses_core(
+    ctx: AgentContext,
+    call_id: str,
+    operations: list[HypothesisOperation],
+    *,
+    origin: str = "model",
+) -> str:
+    """假设维护的实现；规则基线用 `origin="rules"` 记录来源。"""
     payload = {"operations": [item.model_dump() for item in operations]}
-    ctx, call_id, cached = await _prepare_request(runtime, "manage_hypotheses", payload)
+    cached = await prepare_request(ctx, call_id, "manage_hypotheses", payload)
     if cached is not None:
         return cached
     try:
@@ -578,7 +633,7 @@ async def manage_hypotheses(
                 investigation_id=ctx.investigation_id,
                 parent_id=parent_id or None,
                 statement=operation.statement.strip(),
-                origin="model",
+                origin=origin,
                 update_reason=operation.reason or "模型创建假设",
             )
             await ctx.store.save_hypothesis(hypothesis)
@@ -676,8 +731,23 @@ async def assess_evidence(
 
     空结果和查询失败不能作为 supporting/refuting；runbook 只是参考，不能当证据。
     """
+    return await assess_evidence_core(
+        runtime.context,
+        str(runtime.tool_call_id or ""),
+        links,
+        hypothesis_updates,
+    )
+
+
+async def assess_evidence_core(
+    ctx: AgentContext,
+    call_id: str,
+    links: list[dict[str, Any]],
+    hypothesis_updates: list[dict[str, Any]],
+) -> str:
+    """证据判定的实现；Agent 与规则基线共用同一套关系写入与校验。"""
     payload = {"links": links, "hypothesis_updates": hypothesis_updates}
-    ctx, call_id, cached = await _prepare_request(runtime, "assess_evidence", payload)
+    cached = await prepare_request(ctx, call_id, "assess_evidence", payload)
     if cached is not None:
         return cached
     try:
@@ -1092,7 +1162,26 @@ async def request_action(
     except ValidationError as exc:
         return _error("invalid_argument", str(exc))
 
-    ctx, call_id, cached = await _prepare_request(runtime, "request_action", args.model_dump())
+    return await request_action_core(runtime.context, str(runtime.tool_call_id or ""), args)
+
+
+async def request_action_core(
+    ctx: AgentContext,
+    call_id: str,
+    args: RequestActionArgs,
+    *,
+    actor: str = "model-agent",
+    origin: ActionOrigin = ActionOrigin.MODEL,
+    pause_for_approval: bool = True,
+) -> str:
+    """动作请求的实现：先落提案与风险判定，再按授权执行并返回结构化反馈。
+
+    Agent 用默认参数；规则基线换成自己的 actor 与 origin，并关闭中断等待——
+    规则运行是同步的，没有可恢复的 checkpoint。
+    """
+    cached = await prepare_request(ctx, call_id, "request_action", args.model_dump())
+    if cached is not None:
+        return cached
     if cached is not None:
         return cached
     if ctx.progress.recovered:
@@ -1145,10 +1234,10 @@ async def request_action(
     purpose_enum = ActionPurpose(args.purpose)
     common = {
         "reason": args.reason,
-        "actor": "model-agent",
+        "actor": actor,
         "namespace": ctx.namespace,
         "investigation_id": ctx.investigation_id,
-        "origin": ActionOrigin.MODEL,
+        "origin": origin,
         "evidence_ids": args.evidence_ids,
         "purpose": purpose_enum,
         "hypothesis_id": args.hypothesis_id,
@@ -1228,7 +1317,7 @@ async def request_action(
         return message
 
     if decision.disposition is RiskDisposition.AUTO and approval is not None:
-        message, _ = await _execute_and_feedback(ctx, proposal, decision, actor="model-agent")
+        message, _ = await _execute_and_feedback(ctx, proposal, decision, actor=actor)
         attempt = await _attempt_for(ctx, proposal.id)
         await _finish_request(
             ctx,
@@ -1284,6 +1373,8 @@ async def request_action(
         message=_dump({"status": "waiting_approval", **pause_payload}),
         proposal_id=proposal.id,
     )
+    if not pause_for_approval:
+        return _dump({"status": "waiting_approval", **pause_payload})
     await ctx.budget.pause()
     return _dump(interrupt(pause_payload))
 
@@ -1383,6 +1474,12 @@ async def _resume_pending_action(ctx: AgentContext, call_id: str, request: ToolR
 
 __all__ = [
     "READ_TOOLS",
+    "ReadOutcome",
+    "assess_evidence_core",
+    "manage_hypotheses_core",
+    "prepare_request",
+    "read_tool",
+    "request_action_core",
     "assess_evidence",
     "knowledge_get_runbook",
     "knowledge_list_runbooks",
