@@ -198,3 +198,12 @@ def test_derived_metric_expressions_do_not_count_as_raw_values():
             )
         ]
     )
+    for derived in (
+        "probe_success == bool 0",
+        "rate(probe_success[5m])",
+        "count(probe_success)",
+        "sum(probe_success)",
+    ):
+        assert not check.matched_by(
+            [SupportFact("o", "prometheus.query_range", derived, "", data=inverted)]
+        )

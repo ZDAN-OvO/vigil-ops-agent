@@ -61,19 +61,24 @@ class SupportFact:
         return [item for item in self.data.get("items") or [] if isinstance(item, dict)]
 
 
-ARITHMETIC = re.compile(r"[+\-*/%]")
+# 只接受保持指标原义的两类表达式：裸选择器，或对它的区间聚合。
+# `1 - probe_success`、`probe_success == bool 0`、`count(probe_success)` 都会
+# 改变数值含义，按值判断会被反过来，一律不算原始指标。
+_WINDOW_FUNCTIONS = ("avg_over_time", "max_over_time", "min_over_time", "last_over_time")
+_SELECTOR = r"\s*{metric}\s*(\{{[^}}]*\}})?\s*"
 
 
 def _raw_metric(expression: str, metric: str) -> bool:
-    """只接受直接读取指标（可带标签过滤或区间函数）的表达式。
-
-    `1 - probe_success` 这类运算会把 0 变成"健康"，按值判断就会反过来。
-    去掉标签过滤块后仍然出现算术符号的，一律不算原始指标。
-    """
-    if metric not in expression:
-        return False
-    stripped = re.sub(r"\{[^}]*\}", "", expression)
-    return ARITHMETIC.search(stripped) is None
+    """表达式是否只是读取这条指标（或它的区间聚合）。"""
+    text = expression.strip()
+    selector = _SELECTOR.format(metric=metric)
+    if re.match(r"^" + selector + r"$", text):
+        return True
+    for function in _WINDOW_FUNCTIONS:
+        pattern = r"^\s*" + function + r"\s*\(\s*" + selector + r"\[[0-9]+[smhd]\]\s*\)\s*$"
+        if re.match(pattern, text):
+            return True
+    return False
 
 
 def _fact_business_failure(fact: SupportFact) -> bool:
@@ -85,7 +90,7 @@ def _fact_business_failure(fact: SupportFact) -> bool:
 
 def _fact_latency_elevated(fact: SupportFact) -> bool:
     """入口延迟真的偏高：原始 probe_duration 表达式的取值超过基线量级。"""
-    if not _raw_metric(fact.expression, "probe_duration"):
+    if not _raw_metric(fact.expression, "probe_duration_seconds"):
         return False
     return any(value >= LATENCY_FLOOR_SECONDS for value in fact.prometheus_values())
 

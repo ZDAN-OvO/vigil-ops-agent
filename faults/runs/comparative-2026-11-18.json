@@ -860,7 +860,7 @@
       "exit_code": 0,
       "verdict": {
         "diagnosis_correct": false,
-        "conclusion_matched": false,
+        "conclusion_matched": true,
         "evidence_matched": false,
         "missing_evidence": [
           "Pod 平台状态"

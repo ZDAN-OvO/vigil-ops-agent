@@ -421,14 +421,16 @@ def _pair_note(
     if not better and not worse:
         return f"{scenario}：{left} 与 {right} 在可比较维度上相同，不构成收益结论{suffix}"
     if better and not worse:
+        claim = "整体不构成收益结论（有维度缺失）" if unknown else "支持相对收益结论"
         return (
             f"{scenario}：{left} 在可比较维度上不劣于 {right} 且更强"
-            f"（{'；'.join(better)}），支持相对收益结论{suffix}"
+            f"（{'；'.join(better)}），{claim}{suffix}"
         )
     if worse and not better:
+        claim = "整体不构成收益结论（有维度缺失）" if unknown else "支持相对收益结论"
         return (
             f"{scenario}：{right} 在可比较维度上不劣于 {left} 且更强"
-            f"（{'；'.join(worse)}），支持相对收益结论{suffix}"
+            f"（{'；'.join(worse)}），{claim}{suffix}"
         )
     return (
         f"{scenario}：{left} 与 {right} 各有强弱（{left} 更强：{'、'.join(better) or '无'}；"

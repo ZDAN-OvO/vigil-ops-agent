@@ -274,6 +274,16 @@ def test_negated_sentence_does_not_count_as_a_match():
     assert match_conclusion(spec, _facts("延迟来自 Redis 访问链路，不是 CPU 限流"))
 
 
+def test_abnormality_words_are_not_treated_as_negation():
+    """ "不足/不一致/未恢复"描述的是异常，不是否定诊断。"""
+    oom = ScenarioSpec(**{**SPEC.__dict__, "conclusion_groups": (("OOM",), ("不足",))})
+    assert match_conclusion(oom, _facts("内存不足而 OOMKilled"))
+    pod = ScenarioSpec(**{**SPEC.__dict__, "conclusion_groups": (("Pod", "运行时状态"), ("状态",))})
+    assert match_conclusion(pod, _facts("Pod 局部运行时状态不一致"))
+    redis = ScenarioSpec(**{**SPEC.__dict__, "conclusion_groups": (("Redis",), ("延迟",))})
+    assert match_conclusion(redis, _facts("Redis 链路延迟升高且未恢复"))
+
+
 def test_extra_remediation_on_another_target_breaks_correctness():
     wrong_target = _proposal("rollout_undo", "checkoutservice")
     verdict = judge(
