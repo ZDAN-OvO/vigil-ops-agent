@@ -1,6 +1,6 @@
 # 本地实验环境
 
-单节点 k3d 实验环境的版本、清单、搭建步骤和复位方法。它是本机实验环境，不是生产环境，也不代表其他机器的容量。故障场景见[故障目录](../faults/README.md)。
+单节点 k3d 实验环境的版本、清单、搭建与删除步骤。它是本机实验环境，不是生产环境，也不代表其他机器的容量。
 
 ## 1. 实测版本
 
@@ -120,14 +120,6 @@ Prometheus 与 AlertManager 同样只通过 port-forward 访问：
 kubectl port-forward -n vigil-monitoring svc/prometheus 9090:9090 --address 127.0.0.1
 ```
 
-只读调查需要 Prometheus 转发在位，并读取 `.env` 中的 `VIGIL_DATABASE_URL`、`VIGIL_KUBECONFIG` 和 `VIGIL_MODEL_NAME`：
-
-```bash
-uv run --frozen aiops investigate --service frontend --symptoms "首页探测是否持续成功" --lookback-minutes 10
-```
-
-该命令会写业务表与 checkpoint 表，但不修改集群。
-
 ## 5. 已定位的配置问题
 
 1. **blackbox-exporter 配置文件名不匹配。** ConfigMap 的键是 `blackbox.yml`，容器默认读取 `config.yml`。启动参数必须写成 `--config.file=/etc/blackbox_exporter/blackbox.yml`，否则进程反复退出。
@@ -195,16 +187,9 @@ kubectl create secret generic vigil-webhook-token -n vigil-monitoring \
 uv run --frozen aiops serve --host 172.20.0.1 --port 8091
 ```
 
-调查仍需要 Prometheus 的 port-forward 在位。收到告警后服务先返回 202，再异步发起调查；`aiops incidents` 查看事件，`aiops report <investigation_id>` 查看结论与证据统计。
+接收端运行期间保持 Prometheus 的 port-forward 在线。
 
-
-## 9. 受控处置
-
-动作的提案、审批、执行与验证用法见[操作手册](../docs/USAGE.md#4-命令手册)，风险与停止规则见 [ADR-0009](../docs/adr/0009-risk-verification-and-stop.md)。
-
-## 10. 复位与删除
-
-故障实验的复位由各场景脚本完成，见[故障目录](../faults/README.md)。
+## 9. 删除集群
 
 删除整个实验环境是破坏性操作，需要用户明确授权：
 

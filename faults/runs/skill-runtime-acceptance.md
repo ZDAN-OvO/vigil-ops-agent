@@ -35,4 +35,4 @@
 | 任务运行状态与诊断结果分开记录 | [ADR-0006](../../docs/adr/0006-task-outcome-separation.md) |
 | Skill、工具注册表与只读委派调查 | [ADR-0007](../../docs/adr/0007-skill-tool-subagent-runtime.md) |
 
-通用判定标准见[验收规则](../README.md#验收规则)。Pod 重建手动入口的后续运行结果独立保存在 [2026-11-15 记录](../a01-pod-rebuild/runs/2026-11-15.md)；未完成事项见[当前阶段计划](../../docs/plan.md)。
+通用判定标准见[验收规则](../README.md#验收规则)。Pod 重建手动入口的后续运行结果独立保存在 [2026-11-15 记录](../a01-pod-rebuild/runs/2026-11-15.md)。

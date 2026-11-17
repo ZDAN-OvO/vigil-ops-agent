@@ -33,7 +33,6 @@ def test_document_entrypoints_exist():
         "AGENTS.md",
         "README.md",
         "ARCHITECTURE.md",
-        "docs/plan.md",
     ):
         assert (PROJECT_ROOT / name).is_file(), name
 
