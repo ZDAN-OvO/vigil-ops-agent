@@ -7,6 +7,7 @@ from aiops.contracts import (
     ActionKind,
     ActionOrigin,
     ActionProposal,
+    ActionPurpose,
     ActionTarget,
     AttemptOutcome,
     AttemptStatus,
@@ -82,12 +83,19 @@ def _proposal(kind: str, name: str, *, status=ProposalStatus.SUCCEEDED) -> Actio
     )
 
 
-def _facts(conclusion: str | None = None, *, supporting=None, proposals=None, attempts=None):
+def _facts(
+    conclusion: str | None = None,
+    *,
+    supporting=None,
+    proposals=None,
+    attempts=None,
+    hypothesis_texts=(),
+):
     return ArmFacts(
         investigation=_investigation(conclusion),
         task=None,
         conclusion=conclusion,
-        hypothesis_texts=[],
+        hypothesis_texts=list(hypothesis_texts),
         supporting=supporting or [],
         proposals=proposals or [],
         attempts=attempts or {},
@@ -243,3 +251,53 @@ def test_evidence_without_conclusion_words_needs_review_instead_of_failure():
     assert verdict.action_decision == ACTION_CORRECT
     assert verdict.needs_review
     assert not verdict.diagnosis_correct
+
+
+def test_formal_conclusion_wins_over_supported_hypotheses():
+    """错误结论不能靠一条旧假设刷成正确。"""
+    spec = ScenarioSpec(**{**SPEC.__dict__, "conclusion_groups": (("Redis",),)})
+    facts = _facts(
+        "根因是 cartservice 的 CPU 饱和",
+        supporting=SUPPORT,
+        hypothesis_texts=["下游依赖 Redis 延迟升高"],
+    )
+    assert not match_conclusion(spec, facts)
+
+    no_conclusion = _facts(None, supporting=SUPPORT, hypothesis_texts=["下游依赖 Redis 延迟升高"])
+    assert match_conclusion(spec, no_conclusion)
+
+
+def test_negated_sentence_does_not_count_as_a_match():
+    spec = ScenarioSpec(**{**SPEC.__dict__, "conclusion_groups": (("Redis",), ("延迟",))})
+    assert not match_conclusion(spec, _facts("已排除 Redis 延迟，问题在 CPU 限流"))
+    assert match_conclusion(spec, _facts("延迟来自 Redis 访问链路，不是 CPU 限流"))
+
+
+def test_extra_remediation_on_another_target_breaks_correctness():
+    wrong_target = _proposal("rollout_undo", "checkoutservice")
+    verdict = judge(
+        SPEC,
+        _facts(
+            "回退 demo 的上一版本",
+            supporting=SUPPORT,
+            proposals=[_proposal("rollout_undo", "demo"), wrong_target],
+        ),
+    )
+    assert verdict.action_decision == "wrong"
+    assert any("其它目标" in item for item in verdict.boundary_violations)
+    assert not verdict.diagnosis_correct
+
+
+def test_diagnostic_extra_proposal_is_allowed():
+    diagnostic = _proposal("rollout_undo", "checkoutservice")
+    diagnostic.purpose = ActionPurpose.DIAGNOSTIC
+    verdict = judge(
+        SPEC,
+        _facts(
+            "回退 demo 的上一版本",
+            supporting=SUPPORT,
+            proposals=[_proposal("rollout_undo", "demo"), diagnostic],
+        ),
+    )
+    assert verdict.action_decision == "correct"
+    assert verdict.boundary_violations == []

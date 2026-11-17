@@ -40,8 +40,14 @@ from aiops.evaluation.harness import (
     summarize,
     write_records,
 )
-from aiops.evaluation.scenarios import SCENARIOS, get_scenario, scenario_payload
-from aiops.investigation.factory import open_agent, open_executor
+from aiops.evaluation.scenarios import (
+    SCENARIOS,
+    ScenarioError,
+    check_kube_context,
+    get_scenario,
+    scenario_payload,
+)
+from aiops.investigation.factory import arm_for_runtime, open_agent, open_executor
 from aiops.investigation.rules import RULES_MODEL_NAME
 from aiops.knowledge import load_runbooks
 from aiops.report import Report, delegation_payloads
@@ -298,7 +304,7 @@ def investigate(
     except StoreUnavailable as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
-    except (LeaseConflict, TaskNotResumable) as exc:
+    except (LeaseConflict, TaskNotResumable, ResumeNotSupported) as exc:
         typer.echo(f"无法运行：{exc}", err=True)
         raise typer.Exit(code=1) from exc
 
@@ -361,6 +367,13 @@ def lab_run(
     if unknown:
         typer.echo(f"未知对照臂：{', '.join(unknown)}", err=True)
         raise typer.Exit(code=2)
+    try:
+        context = check_kube_context(settings)
+    except ScenarioError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"目标 context：{context}", err=True)
+
     target = record or _default_record_path()
     batch = {
         "date": datetime.now(UTC).date().isoformat(),
@@ -371,21 +384,38 @@ def lab_run(
     }
     records: list[dict] = []
 
-    async def run_batch() -> list[dict]:
-        collected: list[dict] = []
+    def merged() -> tuple[dict, list[dict]]:
+        if append and target.exists():
+            return merge_records(json.loads(target.read_text()), batch, records)
+        combined = dict(batch)
+        combined["environment_restored"] = all(item["environment_restored"] for item in records)
+        return combined, records
+
+    def persist(item) -> None:  # noqa: ANN001 - 每跑一次就落盘，崩溃也不丢已完成运行
+        records.append(item.as_dict())
+        current_batch, current_records = merged()
+        current_batch["environment_restored"] = all(
+            record["environment_restored"] for record in current_records
+        )
+        write_records(target, current_batch, current_records)
+
+    async def run_batch() -> None:
         async with Store.open(dsn) as store:
             await store.migrate()
             for spec in specs:
                 for name in arms:
                     for index in range(1, runs + 1):
-                        item = await execute(store, spec, name, index, settings=settings)
-                        collected.append(item.as_dict())
-        return collected
+                        await execute(
+                            store,
+                            spec,
+                            name,
+                            index,
+                            settings=settings,
+                            on_record=persist,
+                        )
 
-    records = asyncio.run(run_batch())
-    batch["environment_restored"] = all(item["environment_restored"] for item in records)
-    if append and target.exists():
-        batch, records = merge_records(json.loads(target.read_text()), batch, records)
+    asyncio.run(run_batch())
+    batch, records = merged()
     summary = summarize(records)
     write_records(target, batch, records)
     markdown_path = target.with_suffix(".md")
@@ -625,6 +655,18 @@ def serve(
 async def _open_executor(settings: Settings, store: Store):
     async with open_executor(settings, store=store) as executor:
         yield executor
+
+
+async def _arm_for_proposal(store: Store, proposal) -> str:
+    """按任务记录还原提案所属的对照臂，避免恢复时把 generic 跑成 agent。"""
+    if proposal is None or not proposal.investigation_id:
+        return "agent"
+    task = await store.get_task(proposal.investigation_id)
+    return arm_for_runtime(task.runtime_version if task is not None else None)
+
+
+class ResumeNotSupported(RuntimeError):
+    """规则基线是同步运行，没有 checkpoint，不能按调查恢复。"""
 
 
 async def _agent_target(store: Store, proposal) -> tuple[Incident, Investigation] | None:
@@ -1001,6 +1043,11 @@ def approve(
             if proposal is None:
                 raise ActionError("not_found", f"提案不存在：{proposal_id}")
             target = await _agent_target(store, proposal)
+            arm = await _arm_for_proposal(store, proposal) if target is not None else "agent"
+            if arm == "rules":
+                raise ResumeNotSupported(
+                    "规则基线调查没有可恢复的 checkpoint；需要执行时用 aiops act 重新提案"
+                )
             async with _open_executor(settings, store) as executor:
                 if target is None:
                     attempt = await executor.approve(
@@ -1017,6 +1064,7 @@ def approve(
                 dsn=dsn,
                 incident=incident,
                 investigation=investigation,
+                arm=arm,
             ) as runtime:
                 report = await runtime.resume(
                     proposal_id=proposal_id, decision="approved", actor=actor
@@ -1028,7 +1076,7 @@ def approve(
     except ActionError as exc:
         typer.echo(f"未执行（{exc.code}）：{exc.message}", err=True)
         raise typer.Exit(code=1) from exc
-    except (LeaseConflict, TaskNotResumable) as exc:
+    except (LeaseConflict, TaskNotResumable, ResumeNotSupported) as exc:
         typer.echo(f"未继续（{exc.__class__.__name__}）：{exc}", err=True)
         raise typer.Exit(code=1) from exc
     except StoreUnavailable as exc:
@@ -1071,6 +1119,11 @@ def resume(
                 async with _open_executor(settings, store) as executor:
                     attempt = await executor.resume(proposal_id, actor=actor)
                     return "legacy", attempt, None
+            arm = await _arm_for_proposal(store, proposal)
+            if arm == "rules":
+                raise ResumeNotSupported(
+                    "规则基线调查没有可恢复的 checkpoint；需要执行时用 aiops act 重新提案"
+                )
             incident, investigation = target
             async with open_agent(
                 settings=settings,
@@ -1078,6 +1131,7 @@ def resume(
                 dsn=dsn,
                 incident=incident,
                 investigation=investigation,
+                arm=arm,
             ) as runtime:
                 report = await runtime.resume(
                     proposal_id=proposal_id, decision="approved", actor=actor
@@ -1089,7 +1143,7 @@ def resume(
     except ActionError as exc:
         typer.echo(f"未执行（{exc.code}）：{exc.message}", err=True)
         raise typer.Exit(code=1) from exc
-    except (LeaseConflict, TaskNotResumable) as exc:
+    except (LeaseConflict, TaskNotResumable, ResumeNotSupported) as exc:
         typer.echo(f"未继续（{exc.__class__.__name__}）：{exc}", err=True)
         raise typer.Exit(code=1) from exc
     except StoreUnavailable as exc:
@@ -1203,6 +1257,9 @@ def reject(
                 await executor.reject(proposal_id, actor=actor, reason=reason)
             if target is None:
                 return proposal, None
+            arm = await _arm_for_proposal(store, proposal)
+            if arm == "rules":
+                raise ResumeNotSupported("规则基线调查没有可恢复的 checkpoint；拒绝只记录在提案上")
             incident, investigation = target
             async with open_agent(
                 settings=settings,
@@ -1210,6 +1267,7 @@ def reject(
                 dsn=dsn,
                 incident=incident,
                 investigation=investigation,
+                arm=arm,
             ) as runtime:
                 report = await runtime.resume(
                     proposal_id=proposal_id, decision="rejected", actor=actor
@@ -1221,7 +1279,7 @@ def reject(
     except ActionError as exc:
         typer.echo(f"未拒绝（{exc.code}）：{exc.message}", err=True)
         raise typer.Exit(code=1) from exc
-    except (LeaseConflict, TaskNotResumable) as exc:
+    except (LeaseConflict, TaskNotResumable, ResumeNotSupported) as exc:
         typer.echo(f"未继续（{exc.__class__.__name__}）：{exc}", err=True)
         raise typer.Exit(code=1) from exc
     except StoreUnavailable as exc:

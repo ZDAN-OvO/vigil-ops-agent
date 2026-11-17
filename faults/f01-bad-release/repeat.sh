@@ -66,10 +66,14 @@ rollback_if_bad() {
     "$KUBECTL" rollout status deployment/productcatalogservice -n "$NS" --timeout=180s >/dev/null 2>&1 || true
   fi
 }
+# 失败处理：只读动词（preflight/verify/recovered）不得改集群，恢复只交给 cleanup。
+# 只有 inject 显式打开 FAIL_ROLLBACK，避免"检查失败顺手回退"把故障现场清掉。
 fail() {
   say "FAIL: $*"
   stop_port_forward
-  rollback_if_bad
+  if [ "${FAIL_ROLLBACK:-0}" = "1" ]; then
+    rollback_if_bad
+  fi
   say "STATE image=$(deploy_image) probe=$(probe_value) alerts=$(alert_state)"
   result "$VERB" fail "reason=$1"
   exit 1
@@ -78,10 +82,13 @@ fail() {
 # 转发可用不等于业务健康：注入后首页就是 500。这里只等端口通，不把 500 当失败。
 start_port_forward() {
   stop_port_forward
+  : >"$PF_LOG"
   "$KUBECTL" port-forward -n "$NS" svc/frontend "${PF_PORT}:80" --address 127.0.0.1 >"$PF_LOG" 2>&1 &
   pf=$!
   for _ in $(seq 1 30); do
-    case "$(home_status)" in 000) sleep 1 ;; *) return 0 ;; esac
+    kill -0 "$pf" 2>/dev/null || return 1
+    grep -q "Forwarding from" "$PF_LOG" 2>/dev/null && return 0
+    sleep 1
   done
   return 1
 }
@@ -103,6 +110,7 @@ preflight() {
 
 inject() {
   VERB=inject
+  FAIL_ROLLBACK=1
   probe_value >/dev/null
   [ "$(deploy_image)" = "$HEALTHY" ] || fail "注入前不是健康镜像"
   t0=$(epoch)
@@ -180,10 +188,18 @@ recovered() {
 cleanup() {
   VERB=cleanup
   trb=$(epoch)
-  say "ROLLBACK start image=$(deploy_image)"
-  "$KUBECTL" rollout undo deployment/productcatalogservice -n "$NS" >/dev/null
-  "$KUBECTL" rollout status deployment/productcatalogservice -n "$NS" --timeout=180s >/dev/null || fail "健康 revision 未完成滚动"
-  say "ROLLBACK_DONE elapsed=$(( $(epoch) - trb ))s image=$(deploy_image)"
+  image=$(deploy_image)
+  if [ "$image" = "$BAD" ]; then
+    say "ROLLBACK start image=$image"
+    "$KUBECTL" rollout undo deployment/productcatalogservice -n "$NS" >/dev/null
+    "$KUBECTL" rollout status deployment/productcatalogservice -n "$NS" --timeout=180s >/dev/null || fail "健康 revision 未完成滚动"
+    say "ROLLBACK_DONE elapsed=$(( $(epoch) - trb ))s image=$(deploy_image)"
+  elif [ "$image" = "$HEALTHY" ]; then
+    # 已经回退过（注入失败兜底、或操作者先复位）：再 undo 会把服务切回坏版本。
+    say "ROLLBACK_SKIPPED image=$image 已是健康镜像"
+  else
+    fail "当前镜像既不是坏版本也不是健康版本：$image"
+  fi
   healthy_pod=""
   for _ in $(seq 1 60); do
     healthy_pod=$("$KUBECTL" get pods -n "$NS" -l app=productcatalogservice --no-headers -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[0].image | awk -v img="$HEALTHY" '$2==img{print $1; exit}')

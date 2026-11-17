@@ -228,26 +228,32 @@ class LangChainInvestigation:
         if "request_action" in allowed or leaked:
             raise ReadOnlyViolation(f"子 Agent 工具越界：{leaked or ['request_action']}")
         backend = self._skill_backend()
+        middleware: list[Any] = [
+            ReadOnlyGuardMiddleware(allowed),
+            BudgetMiddleware(
+                configured_timeout=self._settings.model_timeout_seconds,
+                max_retries=self._settings.model_max_retries,
+            ),
+        ]
+        if self._use_methodology:
+            middleware.extend(
+                [
+                    SkillReadMiddleware(),
+                    FilesystemMiddleware(
+                        backend=backend,
+                        tools=["read_file"],
+                        tool_token_limit_before_evict=None,
+                        human_message_token_limit_before_evict=None,
+                        offload_binary_content=False,
+                    ),
+                    SkillsMiddleware(backend=backend, sources=["/"]),
+                ]
+            )
         return create_agent(
             self._model,
             tools=READ_ONLY_TOOLS,
             system_prompt=SUBAGENT_PROMPT,
-            middleware=[
-                ReadOnlyGuardMiddleware(allowed),
-                SkillReadMiddleware(),
-                BudgetMiddleware(
-                    configured_timeout=self._settings.model_timeout_seconds,
-                    max_retries=self._settings.model_max_retries,
-                ),
-                FilesystemMiddleware(
-                    backend=backend,
-                    tools=["read_file"],
-                    tool_token_limit_before_evict=None,
-                    human_message_token_limit_before_evict=None,
-                    offload_binary_content=False,
-                ),
-                SkillsMiddleware(backend=backend, sources=["/"]),
-            ],
+            middleware=middleware,
             context_schema=AgentContext,
         ).with_config({"recursion_limit": 100})
 
@@ -258,6 +264,7 @@ class LangChainInvestigation:
         signal_skills: Sequence[SkillSpec] = (),
     ):
         backend = self._skill_backend()
+        # 委派是能力而不是方法论：两条臂都保留，只是 generic 臂的子调查不带 Skill。
         subagent = SubAgentMiddleware(
             backend=backend,
             subagents=[
@@ -295,9 +302,9 @@ class LangChainInvestigation:
                         offload_binary_content=False,
                     ),
                     SkillsMiddleware(backend=backend, sources=["/"]),
-                    subagent,
                 ]
             )
+        middleware.append(subagent)
         return create_agent(
             self._model,
             tools=AGENT_TOOLS,

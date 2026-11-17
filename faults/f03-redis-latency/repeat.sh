@@ -31,10 +31,17 @@ redis_restarts() { "$KUBECTL" -n "$NS" get pods -l app=redis-cart -o jsonpath='{
 home_time() { curl -s -o /dev/null -w '%{time_total}' --max-time 10 "http://127.0.0.1:${PF_PORT}/" 2>/dev/null || echo 0; }
 cart_time() { curl -s -o /dev/null -w '%{http_code}:%{time_total}' --max-time 10 "http://127.0.0.1:${PF_PORT}/cart" 2>/dev/null || echo 000:0; }
 
+# 确认自己起的转发进程活着，避免端口被别的服务占用时读到别人的响应。
 start_port_forward() {
+  : >"$PF_LOG"
   "$KUBECTL" -n "$NS" port-forward svc/frontend "${PF_PORT}:80" --address 127.0.0.1 >"$PF_LOG" 2>&1 &
   pf=$!
-  for _ in $(seq 1 30); do [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${PF_PORT}/" 2>/dev/null)" = "200" ] && return 0; sleep 1; done
+  for _ in $(seq 1 30); do
+    kill -0 "$pf" 2>/dev/null || return 1
+    grep -q "Forwarding from" "$PF_LOG" 2>/dev/null || { sleep 1; continue; }
+    [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${PF_PORT}/" 2>/dev/null)" = "200" ] && return 0
+    sleep 1
+  done
   return 1
 }
 stop_port_forward() { [ -n "${pf:-}" ] && kill "$pf" 2>/dev/null || true; }

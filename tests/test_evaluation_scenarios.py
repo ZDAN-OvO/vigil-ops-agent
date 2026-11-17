@@ -78,14 +78,61 @@ def test_parse_result_without_result_line_is_none():
     assert parse_result("VERIFIED something\n") is None
 
 
-def test_evidence_check_needs_both_tool_and_keyword():
+def test_evidence_check_needs_both_tool_and_fact():
+    oom_data = {
+        "items": [
+            {
+                "name": "p",
+                "containers": [{"last_terminated": {"reason": "OOMKilled"}}],
+            }
+        ]
+    }
     facts = [
-        SupportFact("obs-1", "kubernetes.list_pods", "app=x", "no match here"),
-        SupportFact("obs-2", "kubernetes.list_deployments", "app=x", "OOMKilled"),
+        SupportFact("obs-1", "kubernetes.list_pods", "app=x", "", data={"items": []}),
+        SupportFact("obs-2", "kubernetes.list_deployments", "app=x", "", data=oom_data),
     ]
     assert EvidenceCheck("a", ("kubernetes.list_pods",)).matched_by(facts)
-    assert not EvidenceCheck("b", ("kubernetes.list_pods",), ("OOMKilled",)).matched_by(facts)
+    assert not EvidenceCheck("b", ("kubernetes.list_pods",), fact="oom_killed").matched_by(facts)
     assert not EvidenceCheck("c", ("kubernetes.list_events",)).matched_by(facts)
+
+
+def test_business_failure_needs_a_low_value_not_just_a_query_name():
+    low = {"series": [{"labels": {}, "points": [[1.0, 0.0]]}]}
+    high = {"series": [{"labels": {}, "points": [[1.0, 1.0]]}]}
+    probe = SupportFact("obs-1", "prometheus.query_range", 'probe_success{job="x"}', "", data=low)
+    ok = SupportFact("obs-2", "prometheus.query_range", 'probe_success{job="x"}', "", data=high)
+    latency = SupportFact(
+        "obs-3", "prometheus.query_range", 'probe_duration_seconds{job="x"}', "", data=low
+    )
+    check = EvidenceCheck("业务失败", ("prometheus.query_range",), fact="business_failure")
+    assert check.matched_by([probe])
+    assert not check.matched_by([ok])
+    assert not check.matched_by([latency])
+
+
+def test_latency_elevated_uses_the_value():
+    slow = {"series": [{"labels": {}, "points": [[1.0, 0.42]]}]}
+    fast = {"series": [{"labels": {}, "points": [[1.0, 0.007]]}]}
+    check = EvidenceCheck("延迟事实", ("prometheus.query_range",), fact="latency_elevated")
+    assert check.matched_by(
+        [SupportFact("o", "prometheus.query_range", "probe_duration_seconds", "", data=slow)]
+    )
+    assert not check.matched_by(
+        [SupportFact("o", "prometheus.query_range", "probe_duration_seconds", "", data=fast)]
+    )
+
+
+def test_http_5xx_reads_log_lines():
+    data = {"items": [{"pod": "p", "lines": ['"GET /work HTTP/1.1" 500 24']}]}
+    check = EvidenceCheck("业务 5xx", ("kubernetes.list_logs",), fact="http_5xx")
+    assert check.matched_by([SupportFact("o", "kubernetes.list_logs", "app=x", "", data=data)])
+    ok = {"items": [{"pod": "p", "lines": ['"GET /work HTTP/1.1" 200 2']}]}
+    assert not check.matched_by([SupportFact("o", "kubernetes.list_logs", "app=x", "", data=ok)])
+
+
+def test_unknown_fact_name_is_a_programming_error():
+    with pytest.raises(ScenarioError):
+        EvidenceCheck("x", ("kubernetes.list_pods",), fact="nope").matched_by([])
 
 
 def test_run_verb_parses_a_successful_result(tmp_path):

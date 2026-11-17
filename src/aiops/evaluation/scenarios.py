@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,38 +28,100 @@ class ScenarioError(RuntimeError):
     """场景定义或脚本输出不符合约定。"""
 
 
-@dataclass(frozen=True)
-class EvidenceCheck:
-    """一条必需的证据检查：至少一条支持观测满足工具与关键词条件。
-
-    用工具名而不是自由文本判断“有没有真的看过”，用关键词判断“看到的是不是
-    这台机器的故障机制”。两个条件都和解法无关，因此对三条臂完全一样。
-    """
-
-    name: str
-    tools: tuple[str, ...]
-    contains: tuple[str, ...] = ()
-
-    def matched_by(self, facts: list[SupportFact]) -> bool:
-        for fact in facts:
-            if fact.tool not in self.tools:
-                continue
-            if not self.contains:
-                return True
-            haystack = f"{fact.expression} {fact.summary}"
-            if any(token in haystack for token in self.contains):
-                return True
-        return False
+# 证据事实判定：看观测里真正取到的值，而不是只看查询名字。
+# 查询名字可以随便写，值不能随便编；失败时一律按“没满足”处理。
+HTTP_5XX = re.compile(r'"[A-Z]+ [^"]*" 5\d\d')
+LATENCY_FLOOR_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
 class SupportFact:
-    """一条被标为 supporting 的观测，连同它来自哪个工具、什么参数。"""
+    """一条被标为 supporting 的观测，连同它来自哪个工具、什么参数、取到什么数据。"""
 
     observation_id: str
     tool: str
     expression: str
     summary: str
+    data: Any = None
+
+    def prometheus_values(self) -> list[float]:
+        """取每条序列最后一个采样点；解析不出来就当作没有。"""
+        if not isinstance(self.data, dict):
+            return []
+        values: list[float] = []
+        for series in self.data.get("series") or []:
+            points = series.get("points") or []
+            if points and isinstance(points[-1][1], int | float):
+                values.append(float(points[-1][1]))
+        return values
+
+    def items(self) -> list[dict[str, Any]]:
+        if not isinstance(self.data, dict):
+            return []
+        return [item for item in self.data.get("items") or [] if isinstance(item, dict)]
+
+
+def _fact_business_failure(fact: SupportFact) -> bool:
+    """入口探针真的掉下来了：表达式是 probe_success，且取到的值 < 1。"""
+    if "probe_success" not in fact.expression:
+        return False
+    return any(value < 1 for value in fact.prometheus_values())
+
+
+def _fact_latency_elevated(fact: SupportFact) -> bool:
+    """入口延迟真的偏高：表达式是 probe_duration，且取到的值超过基线量级。"""
+    if "probe_duration" not in fact.expression:
+        return False
+    return any(value >= LATENCY_FLOOR_SECONDS for value in fact.prometheus_values())
+
+
+def _fact_oom_killed(fact: SupportFact) -> bool:
+    for pod in fact.items():
+        for container in pod.get("containers") or []:
+            last = container.get("last_terminated") or {}
+            if last.get("reason") == "OOMKilled":
+                return True
+    return False
+
+
+def _fact_http_5xx(fact: SupportFact) -> bool:
+    for pod in fact.items():
+        for line in pod.get("lines") or []:
+            if HTTP_5XX.search(str(line)):
+                return True
+    return False
+
+
+FACT_CHECKS = {
+    "business_failure": _fact_business_failure,
+    "latency_elevated": _fact_latency_elevated,
+    "oom_killed": _fact_oom_killed,
+    "http_5xx": _fact_http_5xx,
+}
+
+
+@dataclass(frozen=True)
+class EvidenceCheck:
+    """一条必需的证据检查：至少一条支持观测满足工具与事实条件。
+
+    工具名回答“有没有真的看过这类对象”，事实判定回答“看到的是不是这台机器的
+    异常”。两者都和具体解法无关，因此对三条臂完全一样。
+    """
+
+    name: str
+    tools: tuple[str, ...]
+    fact: str = ""
+
+    def matched_by(self, facts: list[SupportFact]) -> bool:
+        check = FACT_CHECKS.get(self.fact)
+        if self.fact and check is None:
+            raise ScenarioError(f"未定义的事实判定器：{self.fact}")
+        for item in facts:
+            if item.tool not in self.tools:
+                continue
+            if check is None or check(item):
+                return True
+        return False
 
 
 @dataclass(frozen=True)
@@ -80,8 +144,8 @@ class ScenarioSpec:
     conclusion_groups: tuple[tuple[str, ...], ...] = ()
     # 支持观测必须覆盖的证据检查。
     evidence_checks: tuple[EvidenceCheck, ...] = ()
-    # 复位后需要多等一会儿的额外秒数（真实告警清空、滚动更新）。
-    settle_seconds: int = 0
+    # preflight 是否会创建资源（目前只有 A01 先部署再检查）。
+    preflight_creates: bool = False
     notes: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -124,7 +188,7 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         ),
         evidence_checks=(
             EvidenceCheck("发布对象", ("kubernetes.list_deployments",)),
-            EvidenceCheck("业务失败", ("prometheus.query_range", "kubernetes.list_logs")),
+            EvidenceCheck("业务失败", ("prometheus.query_range",), fact="business_failure"),
         ),
     ),
     ScenarioSpec(
@@ -141,7 +205,7 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
             ("OOM", "内存", "memory"),
             ("限额", "规格", "limit", "不足", "过低", "太小"),
         ),
-        evidence_checks=(EvidenceCheck("OOM 事实", ("kubernetes.list_pods",), ("OOMKilled",)),),
+        evidence_checks=(EvidenceCheck("OOM 事实", ("kubernetes.list_pods",), fact="oom_killed"),),
     ),
     ScenarioSpec(
         id="f03-redis-latency",
@@ -158,7 +222,7 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
             ("延迟", "变慢", "链路", "依赖"),
         ),
         evidence_checks=(
-            EvidenceCheck("延迟事实", ("prometheus.query_range",), ("probe_duration",)),
+            EvidenceCheck("延迟事实", ("prometheus.query_range",), fact="latency_elevated"),
         ),
     ),
     ScenarioSpec(
@@ -180,8 +244,9 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         ),
         evidence_checks=(
             EvidenceCheck("Pod 平台状态", ("kubernetes.list_pods",)),
-            EvidenceCheck("业务 5xx", ("kubernetes.list_logs",), ("500",)),
+            EvidenceCheck("业务 5xx", ("kubernetes.list_logs",), fact="http_5xx"),
         ),
+        preflight_creates=True,
         notes=(
             "动作验证场景；规则允许的自动执行路径只有这里会真的写集群。",
             "恢复判定必须同时满足新 Pod UID、ReplicaSet 与模板不变。",
@@ -217,9 +282,35 @@ def _environment(settings: Settings) -> dict[str, str]:
     env = dict(os.environ)
     if settings.kubeconfig is not None:
         env["KUBECONFIG"] = str(settings.kubeconfig)
-    if settings.kube_context:
-        env["VIGIL_KUBE_CONTEXT"] = settings.kube_context
     return env
+
+
+def check_kube_context(settings: Settings) -> str:
+    """确认场景脚本与调查落在同一个 context。
+
+    脚本只认 KUBECONFIG 的当前 context，调查运行时还能再指定 VIGIL_KUBE_CONTEXT；
+    两者不一致时，注入和取证会落在不同集群。这里直接拒绝，不做猜测。
+    """
+    env = _environment(settings)
+    completed = subprocess.run(
+        ["kubectl", "config", "current-context"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    current = completed.stdout.strip()
+    if completed.returncode != 0 or not current:
+        raise ScenarioError(
+            "无法读取 kubectl 当前 context，拒绝在目标集群未确认时跑实验："
+            f"{completed.stderr.strip()[:200]}"
+        )
+    if settings.kube_context and settings.kube_context != current:
+        raise ScenarioError(
+            f"kubectl 当前 context（{current}）与 VIGIL_KUBE_CONTEXT"
+            f"（{settings.kube_context}）不一致；先对齐再跑实验"
+        )
+    return current
 
 
 def run_verb(
@@ -280,12 +371,21 @@ def scenario_payload(spec: ScenarioSpec) -> dict[str, Any]:
         "expected_target": spec.expected_target or "",
         "allowed_kinds": list(spec.allowed_kinds),
         "evidence_checks": [
-            {"name": check.name, "tools": list(check.tools), "contains": list(check.contains)}
+            {"name": check.name, "tools": list(check.tools), "fact": check.fact}
             for check in spec.evidence_checks
         ],
         "conclusion_groups": [list(group) for group in spec.conclusion_groups],
         "notes": list(spec.notes),
     }
+
+
+def parse_summary(summary: str) -> Any:
+    """从观测摘要里取回结构化数据；截断或非 JSON 时返回 None。"""
+    first = summary.splitlines()[0] if summary else ""
+    try:
+        return json.loads(first)
+    except ValueError:
+        return None
 
 
 __all__ = [
@@ -295,9 +395,11 @@ __all__ = [
     "ScenarioError",
     "ScenarioSpec",
     "SupportFact",
+    "check_kube_context",
     "VerbOutcome",
     "get_scenario",
     "parse_result",
+    "parse_summary",
     "run_verb",
     "scenario_payload",
 ]

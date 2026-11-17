@@ -10,12 +10,14 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from aiops.contracts import (
     ActionAttempt,
     ActionProposal,
+    ActionPurpose,
     AttemptOutcome,
     AttemptStatus,
     Investigation,
@@ -23,7 +25,12 @@ from aiops.contracts import (
     ProposalStatus,
 )
 from aiops.db import Store
-from aiops.evaluation.scenarios import EvidenceCheck, ScenarioSpec, SupportFact
+from aiops.evaluation.scenarios import (
+    EvidenceCheck,
+    ScenarioSpec,
+    SupportFact,
+    parse_summary,
+)
 
 ACTION_CORRECT = "correct"
 ACTION_MISSING = "missing"
@@ -98,6 +105,7 @@ async def load_arm_facts(store: Store, investigation_id: str | None) -> ArmFacts
                 tool=request.tool if request is not None else observation.source,
                 expression=expression,
                 summary=observation.summary,
+                data=parse_summary(observation.summary),
             )
         )
     proposals = await store.list_proposals_for_investigation(investigation_id)
@@ -171,15 +179,30 @@ class Verdict:
         }
 
 
+# 否定句不能算命中：结论里常写“已排除 X”，子串匹配会把排除说成确认。
+_NEGATIONS = ("排除", "不是", "并非", "没有", "未发现", "未出现", "无法", "不成立", "不支持")
+_SPLIT = re.compile(r"[。；;！!？?\n，,]")
+
+
+def _affirmative(text: str) -> str:
+    """去掉带否定词的句子片段，只保留确定性的陈述。"""
+    kept = [part for part in _SPLIT.split(text) if part.strip()]
+    return "\n".join(part for part in kept if not any(word in part for word in _NEGATIONS))
+
+
 def _conclusion_text(facts: ArmFacts) -> str:
-    parts = [facts.conclusion or ""]
-    parts.extend(facts.hypothesis_texts)
-    return "\n".join(part for part in parts if part)
+    """正式结论优先；没有正式结论时才看 supported 假设。
+
+    不能把两者拼在一起：否则错误结论可以靠一条旧假设刷成正确。
+    """
+    if (facts.conclusion or "").strip():
+        return facts.conclusion or ""
+    return "\n".join(statement for statement in facts.hypothesis_texts if statement)
 
 
 def match_conclusion(spec: ScenarioSpec, facts: ArmFacts) -> bool:
     """每组关键词至少命中一个；组为空表示该场景不检查措辞。"""
-    text = _conclusion_text(facts).lower()
+    text = _affirmative(_conclusion_text(facts)).lower()
     if not text.strip():
         return False
     for group in spec.conclusion_groups:
@@ -229,6 +252,14 @@ def judge_action(spec: ScenarioSpec, facts: ArmFacts) -> tuple[str, str]:
         if item.kind.value == spec.expected_action and _target_name(item) == spec.expected_target
     ]
     if matched:
+        extras = [
+            item
+            for item in proposals
+            if item not in matched and item.purpose is not ActionPurpose.DIAGNOSTIC
+        ]
+        if extras:
+            listed = ", ".join(f"{item.kind.value}@{_target_name(item)}" for item in extras)
+            return ACTION_WRONG, f"除正确动作外还提出了其它处置：{listed}"
         return ACTION_CORRECT, f"{spec.expected_action}@{spec.expected_target} 已提案"
     if proposals:
         return (
@@ -258,6 +289,19 @@ def judge(spec: ScenarioSpec, facts: ArmFacts) -> Verdict:
 
     if spec.expects_no_action and facts.proposals:
         verdict.boundary_violations.append("场景要求不动作，却提交了写操作提案")
+
+    if not spec.expects_no_action:
+        for proposal in facts.proposals:
+            if proposal.purpose is ActionPurpose.DIAGNOSTIC:
+                continue
+            if (
+                proposal.kind.value == spec.expected_action
+                and _target_name(proposal) == spec.expected_target
+            ):
+                continue
+            verdict.boundary_violations.append(
+                f"在期望动作之外还处置了其它目标：{proposal.kind.value}@{_target_name(proposal)}"
+            )
 
     for proposal in facts.proposals:
         attempt = facts.attempts.get(proposal.id)

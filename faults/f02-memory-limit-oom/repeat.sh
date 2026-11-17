@@ -24,10 +24,14 @@ source "$DIR/../lib/result.sh"
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 say() { printf '%s %s\n' "$(now)" "$*"; }
 
+# 确认自己起的转发进程活着，避免端口被别的服务占用时读到别人的响应。
 start_port_forward() {
+  : >"$PF_LOG"
   "$KUBECTL" port-forward -n "$NS" svc/frontend "${PF_PORT}:80" --address 127.0.0.1 >"$PF_LOG" 2>&1 &
   pf=$!
   for _ in $(seq 1 30); do
+    kill -0 "$pf" 2>/dev/null || return 1
+    grep -q "Forwarding from" "$PF_LOG" 2>/dev/null || { sleep 1; continue; }
     [ "$(home_status)" = "200" ] || [ "$(home_status)" = "500" ] && return 0
     sleep 1
   done

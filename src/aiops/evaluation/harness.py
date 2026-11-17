@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -157,60 +158,74 @@ async def execute(
     index: int,
     *,
     settings: Settings,
+    on_record: Callable[[RunRecord], None] | None = None,
 ) -> RunRecord:
     """执行一次完整的对照运行；异常路径也要复位环境并留下记录。"""
     if arm not in ARMS:
         raise ValueError(f"未知对照臂：{arm}")
     record = RunRecord(scenario=spec.id, arm=arm, index=index)
     logger.info("开始 {} {} 第 {} 次", spec.id, arm, index)
+    # 注入前只读；一旦开始注入，无论后续成功或异常都必须复位。
+    cleanup_needed = False
+    try:
+        preflight = run_verb(spec, "preflight", settings=settings)
+        record.phases["preflight"] = _phase(preflight)
+        _dump_output(record.run_id, "preflight", preflight.output)
+        if not preflight.ok:
+            record.invalid_reason = "preflight"
+            cleanup_needed = spec.preflight_creates
+            return record
 
-    preflight = run_verb(spec, "preflight", settings=settings)
-    record.phases["preflight"] = _phase(preflight)
-    _dump_output(record.run_id, "preflight", preflight.output)
-    if not preflight.ok:
-        record.invalid_reason = "preflight"
-        return await _close(store, spec, record, settings, cleanup_needed=False)
+        cleanup_needed = True
+        inject = run_verb(spec, "inject", settings=settings)
+        record.phases["inject"] = _phase(inject)
+        _dump_output(record.run_id, "inject", inject.output)
+        if not inject.ok:
+            record.invalid_reason = "inject"
+            return record
 
-    inject = run_verb(spec, "inject", settings=settings)
-    record.phases["inject"] = _phase(inject)
-    _dump_output(record.run_id, "inject", inject.output)
-    if not inject.ok:
-        record.invalid_reason = "inject"
-        return await _close(store, spec, record, settings, cleanup_needed=True)
+        verify = run_verb(spec, "verify", settings=settings)
+        record.phases["verify"] = _phase(verify)
+        _dump_output(record.run_id, "verify", verify.output)
+        if not verify.ok:
+            record.invalid_reason = "verify"
+            return record
 
-    verify = run_verb(spec, "verify", settings=settings)
-    record.phases["verify"] = _phase(verify)
-    _dump_output(record.run_id, "verify", verify.output)
-    if not verify.ok:
-        record.invalid_reason = "verify"
-        return await _close(store, spec, record, settings, cleanup_needed=True)
+        record.valid = True
+        payload, exit_code, full = _invoke_arm(spec, arm)
+        record.exit_code = exit_code
+        record.output_tail = full[-1500:]
+        _dump_output(record.run_id, f"arm-{arm}", full)
+        if payload is not None:
+            record.investigation_id = str(payload.get("investigation_id") or "") or None
+            record.facts["cli"] = {
+                "status": payload.get("status"),
+                "task": (payload.get("data") or {}).get("task"),
+                "action_ids": (payload.get("data") or {}).get("action_ids"),
+                "evidence_count": (payload.get("data") or {}).get("evidence_count"),
+                "tool_call_count": (payload.get("data") or {}).get("tool_call_count"),
+                "elapsed_seconds": payload.get("_elapsed_seconds"),
+            }
 
-    record.valid = True
-    payload, exit_code, tail = _invoke_arm(spec, arm)
-    record.exit_code = exit_code
-    record.output_tail = tail[-1500:]
-    _dump_output(record.run_id, f"arm-{arm}", tail)
-    if payload is not None:
-        record.investigation_id = str(payload.get("investigation_id") or "") or None
-        record.facts["cli"] = {
-            "status": payload.get("status"),
-            "task": (payload.get("data") or {}).get("task"),
-            "action_ids": (payload.get("data") or {}).get("action_ids"),
-            "evidence_count": (payload.get("data") or {}).get("evidence_count"),
-            "tool_call_count": (payload.get("data") or {}).get("tool_call_count"),
-            "elapsed_seconds": payload.get("_elapsed_seconds"),
-        }
+        recovered = run_verb(spec, "recovered", settings=settings)
+        record.phases["recovered"] = _phase(recovered)
+        _dump_output(record.run_id, "recovered", recovered.output)
+        record.facts["business_healthy_after_arm"] = recovered.ok
 
-    recovered = run_verb(spec, "recovered", settings=settings)
-    record.phases["recovered"] = _phase(recovered)
-    _dump_output(record.run_id, "recovered", recovered.output)
-    record.facts["business_healthy_after_arm"] = recovered.ok
-
-    facts = await load_arm_facts(store, record.investigation_id)
-    verdict = judge(spec, facts)
-    record.verdict = verdict.as_dict()
-    record.facts.update(_fact_summary(facts, verdict))
-    return await _close(store, spec, record, settings, cleanup_needed=True)
+        facts = await load_arm_facts(store, record.investigation_id)
+        verdict = judge(spec, facts)
+        record.verdict = verdict.as_dict()
+        record.facts.update(_fact_summary(facts, verdict))
+        return record
+    except Exception as exc:  # noqa: BLE001 - 单次运行异常不能拖垮整批，也不能吞掉复位
+        logger.exception("运行异常：{} {}", spec.id, arm)
+        record.invalid_reason = record.invalid_reason or "harness_error"
+        record.facts["harness_error"] = f"{type(exc).__name__}: {exc}"[:500]
+        return record
+    finally:
+        await _close(store, spec, record, settings, cleanup_needed=cleanup_needed)
+        if on_record is not None:
+            on_record(record)
 
 
 def _fact_summary(facts: ArmFacts, verdict: Verdict) -> dict[str, Any]:
@@ -254,18 +269,31 @@ async def _close(
     settings: Settings,
     *,
     cleanup_needed: bool,
-) -> RunRecord:
+) -> None:
+    """收尾：只在需要时复位，任何异常都不能盖住原始失败原因。"""
+    if record.finished_at:
+        return
     if cleanup_needed:
-        outcome = run_verb(spec, "cleanup", settings=settings)
-        record.phases["cleanup"] = _phase(outcome)
-        _dump_output(record.run_id, "cleanup", outcome.output)
-        record.environment_restored = outcome.ok
-        if not outcome.ok:
-            logger.error("环境复位失败：{} {}", spec.id, outcome.facts)
+        try:
+            outcome = run_verb(spec, "cleanup", settings=settings)
+            record.phases["cleanup"] = _phase(outcome)
+            _dump_output(record.run_id, "cleanup", outcome.output)
+            record.environment_restored = outcome.ok
+            if not outcome.ok:
+                logger.error("环境复位失败：{} {}", spec.id, outcome.facts)
+        except Exception as exc:  # noqa: BLE001 - 复位失败要留记录，不能再抛
+            logger.exception("环境复位异常：{}", spec.id)
+            record.environment_restored = False
+            record.phases["cleanup"] = {
+                "verb": "cleanup",
+                "ok": False,
+                "returncode": None,
+                "facts": {"reason": "cleanup_exception"},
+                "output_tail": f"{type(exc).__name__}: {exc}"[:1500],
+            }
     else:
         record.environment_restored = True
     record.finished_at = datetime.now(UTC).isoformat()
-    return record
 
 
 # ---------------------------------------------------------------------- 汇总
@@ -321,20 +349,87 @@ def compare(rows: list[dict[str, Any]]) -> list[str]:
         by_scenario.setdefault(row["scenario"], {})[row["arm"]] = row
     notes: list[str] = []
     for scenario, arms in sorted(by_scenario.items()):
-        qualified = [arm for arm, row in arms.items() if row["meets_floor"]]
+        qualified = {arm: row for arm, row in arms.items() if row["meets_floor"]}
         if len(qualified) < 2:
-            notes.append(
-                f"{scenario}：达到门槛的臂不足两个（{', '.join(qualified) or '无'}），"
-                "本轮不构成对照结论"
-            )
+            names = ", ".join(sorted(qualified)) or "无"
+            notes.append(f"{scenario}：达到门槛的臂不足两个（{names}），本轮不构成对照结论")
             continue
-        best = max(arms[arm]["diagnosis_rate"] for arm in qualified)
-        leaders = [arm for arm in qualified if arms[arm]["diagnosis_rate"] == best]
-        notes.append(
-            f"{scenario}：{'/'.join(sorted(leaders))} 达到诊断正确率上限 {best:.2f}；"
-            "恢复与边界要看逐次记录"
-        )
+        compared: set[frozenset[str]] = set()
+        for left in sorted(qualified):
+            for right in sorted(qualified):
+                if left >= right:
+                    continue
+                pair = frozenset({left, right})
+                if pair in compared:
+                    continue
+                compared.add(pair)
+                notes.append(_pair_note(scenario, left, qualified[left], right, qualified[right]))
     return notes
+
+
+def _rate(row: dict[str, Any], key: str) -> float:
+    valid = row["valid"] or 1
+    return row[key] / valid
+
+
+def _metrics(row: dict[str, Any]) -> dict[str, float]:
+    """判定用到的维度；边界与耗时是"越小越好"，其余"越大越好"。"""
+    return {
+        "诊断正确率": _rate(row, "diagnosis_correct"),
+        "确认根因率": _rate(row, "confirmed"),
+        "本臂恢复率": _rate(row, "recovered_by_arm"),
+        "中位耗时": float(row["median_wall_seconds"] or 0),
+        "越界次数": float(row["boundary_violations"]),
+    }
+
+
+_LOWER_IS_BETTER = {"中位耗时", "越界次数"}
+
+
+def _pair_note(
+    scenario: str,
+    left: str,
+    left_row: dict[str, Any],
+    right: str,
+    right_row: dict[str, Any],
+) -> str:
+    """两条臂的支配关系：全维度不更差且至少一项更强，才算有收益。"""
+    left_metrics = _metrics(left_row)
+    right_metrics = _metrics(right_row)
+    better: list[str] = []
+    worse: list[str] = []
+    for name, left_value in left_metrics.items():
+        right_value = right_metrics[name]
+        if left_value == right_value:
+            continue
+        lower_better = name in _LOWER_IS_BETTER
+        left_wins = left_value < right_value if lower_better else left_value > right_value
+        detail = f"{name} {_fmt(name, left_value)} vs {_fmt(name, right_value)}"
+        (better if left_wins else worse).append(detail)
+    if not better and not worse:
+        return f"{scenario}：{left} 与 {right} 在全部维度上相同，不构成收益结论"
+    if better and not worse:
+        return (
+            f"{scenario}：{left} 在全部维度上不劣于 {right} 且更强"
+            f"（{'；'.join(better)}），支持相对收益结论"
+        )
+    if worse and not better:
+        return (
+            f"{scenario}：{right} 在全部维度上不劣于 {left} 且更强"
+            f"（{'；'.join(worse)}），支持相对收益结论"
+        )
+    return (
+        f"{scenario}：{left} 与 {right} 各有强弱（{left} 更强：{'、'.join(better) or '无'}；"
+        f"{right} 更强：{'、'.join(worse) or '无'}），不构成收益结论"
+    )
+
+
+def _fmt(name: str, value: float) -> str:
+    if name in {"中位耗时"}:
+        return f"{value:.1f}s"
+    if name == "越界次数":
+        return f"{int(value)}"
+    return f"{value:.2f}"
 
 
 def _median(values: list[float]) -> float | None:
@@ -378,8 +473,18 @@ def merge_records(
         merged[str(item.get("run_id"))] = item
     ordered = sorted(
         merged.values(),
-        key=lambda item: (item.get("scenario", ""), item.get("arm", ""), item.get("index", 0)),
+        key=lambda item: (
+            item.get("scenario", ""),
+            item.get("arm", ""),
+            item.get("started_at", ""),
+        ),
     )
+    # 分批跑会让同一格的序号重复；按开始时间重排成 1..N，记录才读得懂。
+    counters: dict[tuple[str, str], int] = {}
+    for item in ordered:
+        key = (str(item.get("scenario")), str(item.get("arm")))
+        counters[key] = counters.get(key, 0) + 1
+        item["index"] = counters[key]
     previous = existing.get("batch") or {}
     combined = {
         "date": previous.get("date") or batch.get("date"),

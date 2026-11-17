@@ -78,11 +78,31 @@ def test_compare_refuses_a_conclusion_with_one_qualified_arm():
     assert notes and "不构成对照结论" in notes[0]
 
 
-def test_compare_reports_leaders_when_two_arms_qualify():
+def test_compare_says_equal_arms_are_not_a_gain():
     records = [_record("f01", "rules", i) for i in (1, 2, 3)]
     records += [_record("f01", "agent", i) for i in (1, 2, 3)]
     notes = compare(summarize(records)["rows"])
-    assert "agent/rules" in notes[0] or "rules/agent" in notes[0]
+    assert "在全部维度上相同" in notes[0]
+    assert "不构成收益结论" in notes[0]
+
+
+def test_compare_reports_dominance_when_one_arm_is_better_everywhere():
+    records = [_record("f01", "rules", i) for i in (1, 2, 3)]
+    records += [_record("f01", "agent", i, correct=(i <= 2)) for i in (1, 2, 3)]
+    notes = compare(summarize(records)["rows"])
+    assert any("rules 在全部维度上不劣于 agent" in note for note in notes)
+
+
+def test_compare_reports_mixed_strengths():
+    # 规则臂 2/3 但很快；Agent 臂 3/3 但慢得多：各有强弱，不能宣称收益。
+    fast = [_record("f01", "rules", i, correct=(i <= 2)) for i in (1, 2, 3)]
+    slow = []
+    for i in (1, 2, 3):
+        item = _record("f01", "agent", i)
+        item["facts"]["cli"]["elapsed_seconds"] = 100.0 + i
+        slow.append(item)
+    notes = compare(summarize(fast + slow)["rows"])
+    assert any("各有强弱" in note for note in notes)
 
 
 def test_median_ignores_zero_and_even_counts():
@@ -100,6 +120,7 @@ def test_merge_keeps_one_record_per_run_id_and_unions_batch_metadata():
     merged_batch, records = merge_records(
         first, batch, [_record("f01", "agent", 1), _record("f01", "rules", 1)]
     )
+    assert [item["index"] for item in records] == [1, 1]
     assert merged_batch["date"] == "2026-11-18"
     assert merged_batch["arms"] == ["agent", "rules"]
     assert merged_batch["runs_per_cell"] == 3
@@ -123,3 +144,17 @@ def test_render_markdown_states_thresholds_and_refuses_unsupported_claims():
     assert f"至少 {MIN_VALID_RUNS} 次有效运行" in text
     assert f"{MIN_DIAGNOSIS_RATE:.2f}" in text
     assert "不构成对照结论" in text
+
+
+def test_merge_reindexes_each_cell_by_start_time():
+    first = {
+        "batch": {"date": "2026-11-18"},
+        "records": [
+            {**_record("f01", "rules", 1), "run_id": "a", "started_at": "2026-11-18T01:00:00"},
+            {**_record("f01", "rules", 2), "run_id": "b", "started_at": "2026-11-18T02:00:00"},
+        ],
+    }
+    later = {**_record("f01", "rules", 1), "run_id": "c", "started_at": "2026-11-18T03:00:00"}
+    _, records = merge_records(first, {"date": "2026-11-19"}, [later])
+    assert [item["run_id"] for item in records] == ["a", "b", "c"]
+    assert [item["index"] for item in records] == [1, 2, 3]

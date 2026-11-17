@@ -10,12 +10,28 @@ from aiops.actions.restart_pod import PodRestartAdapter
 from aiops.actions.rollout_undo import RolloutUndoAdapter
 from aiops.agent.engine import LangChainInvestigation
 from aiops.config import Settings
-from aiops.contracts import Incident, Investigation
+from aiops.contracts import (
+    AGENT_RUNTIME_VERSION,
+    GENERIC_RUNTIME_VERSION,
+    Incident,
+    Investigation,
+)
 from aiops.db import Store
-from aiops.investigation.rules import RulesInvestigator
+from aiops.investigation.rules import RULES_RUNTIME_VERSION, RulesInvestigator
 from aiops.investigation.toolbox import Toolbox
 from aiops.tools.kubernetes import KubernetesRead
 from aiops.tools.prometheus import PrometheusClient
+
+ARM_BY_RUNTIME = {
+    AGENT_RUNTIME_VERSION: "agent",
+    GENERIC_RUNTIME_VERSION: "generic",
+    RULES_RUNTIME_VERSION: "rules",
+}
+
+
+def arm_for_runtime(runtime_version: str | None) -> str:
+    """按任务记录里的运行时版本还原对照臂；未知版本按 agent 处理。"""
+    return ARM_BY_RUNTIME.get(runtime_version or "", "agent")
 
 
 def build_executor(
@@ -140,6 +156,8 @@ async def open_agent(
 
 
 __all__ = [
+    "ARM_BY_RUNTIME",
+    "arm_for_runtime",
     "build_executor",
     "open_agent",
     "open_executor",
