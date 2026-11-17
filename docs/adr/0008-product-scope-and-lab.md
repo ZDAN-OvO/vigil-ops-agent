@@ -1,7 +1,7 @@
 # ADR-0008：产品范围、实验环境与故障集
 
 - 状态：已采纳（2026-11-14 由原决策记录合并）
-- 相关：[ADR-0004](0004-controlled-resource-actions.md)、[ADR-0007](0007-skill-tool-subagent-runtime.md)、[路线图](../ROADMAP.md)
+- 相关：[ADR-0004](0004-controlled-resource-actions.md)、[ADR-0007](0007-skill-tool-subagent-runtime.md)、[全局架构](../../ARCHITECTURE.md)
 
 ## 背景
 

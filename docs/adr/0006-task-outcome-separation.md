@@ -1,7 +1,7 @@
 # ADR-0006：任务运行状态与诊断结果分开
 
 - 状态：已采纳（2026-11-11）
-- 相关：[设计文档](../DESIGN.md#59-任务状态与终止)
+- 相关：[全局架构](../../ARCHITECTURE.md)、[ADR-0007](0007-skill-tool-subagent-runtime.md)
 
 ## 背景
 

@@ -270,6 +270,11 @@ async def _run_read(
         "tool": tool_name,
         "status": status.value,
         "observation": summary,
+        "collected_at": result.collected_at.isoformat(),
+        "time_range": {
+            "start": result.time_range.start.isoformat(),
+            "end": result.time_range.end.isoformat(),
+        },
         "raw_ref": result.raw_ref,
         "truncated": result.truncated,
         "error": result.error.model_dump() if result.error else None,
@@ -989,6 +994,16 @@ async def _validate_action_references(ctx: AgentContext, args: RequestActionArgs
         for link in links
         if link.hypothesis_id == hypothesis.id and link.relation == "supporting"
     }
+    relations = {
+        link.observation_id: link.relation for link in links if link.hypothesis_id == hypothesis.id
+    }
+    usable_supporting = sorted(
+        observation_id
+        for observation_id in supporting
+        if observation_id in observations
+        and observations[observation_id].status is ObservationStatus.OK
+        and observations[observation_id].source != "knowledge"
+    )
     calls = {
         f"{ctx.investigation_id}:{item.tool_call_id}": item
         for item in await ctx.store.list_tool_requests(ctx.investigation_id)
@@ -1006,9 +1021,12 @@ async def _validate_action_references(ctx: AgentContext, args: RequestActionArgs
         if item.status is not ObservationStatus.OK:
             return f"观测 {evidence_id} 没有取到数据，不能作为写操作依据"
         if evidence_id not in supporting:
+            relation = relations.get(evidence_id)
+            relation_note = f"（当前关系：{relation}）" if relation else ""
             return (
-                f"观测 {evidence_id} 还没有被判定为支持假设 {hypothesis.id}；"
-                "请先用 assess_evidence 记录 supporting 关系"
+                f"观测 {evidence_id} 还没有被判定为支持假设 {hypothesis.id}{relation_note}；"
+                f"当前支持该假设的观测：{', '.join(usable_supporting) or '无'}。"
+                "请先用 assess_evidence 记录 supporting 关系，或改用上述支持观测"
             )
         call = calls.get(item.tool_call_id)
         params = call.arguments if call else {}

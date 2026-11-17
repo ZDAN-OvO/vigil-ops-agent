@@ -200,7 +200,7 @@ uv run --frozen aiops serve --host 172.20.0.1 --port 8091
 
 ## 9. 受控处置
 
-动作的提案、审批、执行与验证用法见[操作手册](../docs/USAGE.md#4-命令手册)，规则见[设计文档](../docs/DESIGN.md#57-动作请求与风险决策)。
+动作的提案、审批、执行与验证用法见[操作手册](../docs/USAGE.md#4-命令手册)，风险与停止规则见 [ADR-0009](../docs/adr/0009-risk-verification-and-stop.md)。
 
 ## 10. 复位与删除
 

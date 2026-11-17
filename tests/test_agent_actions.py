@@ -196,6 +196,78 @@ def test_action_requires_supporting_evidence_link(ids):
     report, proposals, payloads = asyncio.run(run())
     assert proposals == []
     assert any("还没有被判定为支持假设" in json_message(payload) for payload in payloads)
+    assert any("当前支持该假设的观测：无" in json_message(payload) for payload in payloads)
+
+
+def test_ungrounded_action_lists_usable_supporting_observations(ids):
+    def assess_one(messages):
+        hyp = hypothesis_id(messages)
+        first = observation_ids(messages)[0]
+        return call(
+            "assess_evidence",
+            {
+                "links": [
+                    {
+                        "observation_id": first,
+                        "hypothesis_id": hyp,
+                        "relation": "supporting",
+                        "rationale": "目标 Pod 平台状态异常",
+                    }
+                ],
+                "hypothesis_updates": [
+                    {"hypothesis_id": hyp, "status": "supported", "reason": "平台证据"}
+                ],
+            },
+            "call-assess-one",
+        )
+
+    def request_other(messages):
+        hyp = hypothesis_id(messages)
+        other = observation_ids(messages)[1]
+        return call(
+            "request_action",
+            {
+                "action": "restart_pod",
+                "purpose": "diagnostic",
+                "target_pod": "target-pod",
+                "service": "target-service",
+                "path": "/work",
+                "reason": "Pod 级状态异常，重建可以区分模板问题",
+                "hypothesis_id": hyp,
+                "evidence_ids": [other],
+                "prediction": "重建后新 Pod 的 /work 返回 200",
+                "absence_meaning": "若仍失败则模板或依赖有问题",
+                "business_target": "target-service:/work",
+                "observation_window_seconds": 90,
+            },
+            "call-action-other",
+        )
+
+    responses = [
+        create_hypothesis(),
+        PODS,
+        LOGS,
+        assess_one,
+        request_other,
+        report_call(confirmed=False, conclusion="证据不足"),
+    ]
+
+    async def run():
+        async with agent_case(ids, responses=responses, namespace="vigil-experiment") as case:
+            case.runtime._executor = make_proposal_executor(case.store)
+            await case.runtime.run()
+            observations = await case.store.list_observations(ids["investigation"])
+            return observations, tool_payloads(case.model.seen[-1])
+
+    observations, payloads = asyncio.run(run())
+    supporting_id = observations[0].id
+    message = next(
+        json_message(payload)
+        for payload in payloads
+        if "还没有被判定为支持假设" in json_message(payload)
+    )
+    assert supporting_id in message
+    assert "当前支持该假设的观测" in message
 
 
 def json_message(payload: dict) -> str:
