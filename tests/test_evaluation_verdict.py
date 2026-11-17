@@ -270,6 +270,7 @@ def test_formal_conclusion_wins_over_supported_hypotheses():
 def test_negated_sentence_does_not_count_as_a_match():
     spec = ScenarioSpec(**{**SPEC.__dict__, "conclusion_groups": (("Redis",), ("延迟",))})
     assert not match_conclusion(spec, _facts("已排除 Redis 延迟，问题在 CPU 限流"))
+    assert not match_conclusion(spec, _facts("Redis 链路延迟并不高，实际根因是 CPU 饱和"))
     assert match_conclusion(spec, _facts("延迟来自 Redis 访问链路，不是 CPU 限流"))
 
 

@@ -129,10 +129,10 @@
       }
     ],
     "comparison": [
-      "a01-pod-rebuild：rules 在全部维度上不劣于 agent 且更强（诊断正确率 0.67 vs 1.00；确认根因率 0.67 vs 1.00；本臂恢复率 0.67 vs 1.00；中位耗时 423.4s vs 177.6s），支持相对收益结论",
+      "a01-pod-rebuild：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 0.67 vs rules 1.00；确认根因率 agent 0.67 vs rules 1.00；本臂恢复率 agent 0.67 vs rules 1.00；中位耗时 agent 423.4s vs rules 177.6s），支持相对收益结论",
       "f01-bad-release：达到门槛的臂不足两个（rules），本轮不构成对照结论",
       "f02-memory-limit-oom：达到门槛的臂不足两个（rules），本轮不构成对照结论",
-      "f03-redis-latency：rules 在全部维度上不劣于 agent 且更强（诊断正确率 0.67 vs 1.00；确认根因率 0.33 vs 1.00；中位耗时 196.9s vs 2.3s），支持相对收益结论"
+      "f03-redis-latency：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 0.67 vs rules 1.00；确认根因率 agent 0.33 vs rules 1.00；中位耗时 agent 196.9s vs rules 2.3s），支持相对收益结论"
     ]
   },
   "records": [
@@ -860,7 +860,7 @@
       "exit_code": 0,
       "verdict": {
         "diagnosis_correct": false,
-        "conclusion_matched": true,
+        "conclusion_matched": false,
         "evidence_matched": false,
         "missing_evidence": [
           "Pod 平台状态"

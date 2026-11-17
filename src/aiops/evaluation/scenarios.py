@@ -61,16 +61,31 @@ class SupportFact:
         return [item for item in self.data.get("items") or [] if isinstance(item, dict)]
 
 
+ARITHMETIC = re.compile(r"[+\-*/%]")
+
+
+def _raw_metric(expression: str, metric: str) -> bool:
+    """只接受直接读取指标（可带标签过滤或区间函数）的表达式。
+
+    `1 - probe_success` 这类运算会把 0 变成"健康"，按值判断就会反过来。
+    去掉标签过滤块后仍然出现算术符号的，一律不算原始指标。
+    """
+    if metric not in expression:
+        return False
+    stripped = re.sub(r"\{[^}]*\}", "", expression)
+    return ARITHMETIC.search(stripped) is None
+
+
 def _fact_business_failure(fact: SupportFact) -> bool:
-    """入口探针真的掉下来了：表达式是 probe_success，且取到的值 < 1。"""
-    if "probe_success" not in fact.expression:
+    """入口探针真的掉下来了：原始 probe_success 表达式的取值 < 1。"""
+    if not _raw_metric(fact.expression, "probe_success"):
         return False
     return any(value < 1 for value in fact.prometheus_values())
 
 
 def _fact_latency_elevated(fact: SupportFact) -> bool:
-    """入口延迟真的偏高：表达式是 probe_duration，且取到的值超过基线量级。"""
-    if "probe_duration" not in fact.expression:
+    """入口延迟真的偏高：原始 probe_duration 表达式的取值超过基线量级。"""
+    if not _raw_metric(fact.expression, "probe_duration"):
         return False
     return any(value >= LATENCY_FLOOR_SECONDS for value in fact.prometheus_values())
 
@@ -288,9 +303,13 @@ def _environment(settings: Settings) -> dict[str, str]:
 def check_kube_context(settings: Settings) -> str:
     """确认场景脚本与调查落在同一个 context。
 
-    脚本只认 KUBECONFIG 的当前 context，调查运行时还能再指定 VIGIL_KUBE_CONTEXT；
-    两者不一致时，注入和取证会落在不同集群。这里直接拒绝，不做猜测。
+    脚本与调查都只认显式的 kubeconfig；没有配置时调查会退回默认 ~/.kube/config，
+    与脚本内置的 vigil-lab 默认值不一致。这里直接拒绝，不做猜测。
     """
+    if settings.kubeconfig is None:
+        raise ScenarioError(
+            "未配置 VIGIL_KUBECONFIG：实验必须显式指定 kubeconfig，否则脚本与调查可能落在不同集群"
+        )
     env = _environment(settings)
     completed = subprocess.run(
         ["kubectl", "config", "current-context"],

@@ -82,7 +82,7 @@ def test_compare_says_equal_arms_are_not_a_gain():
     records = [_record("f01", "rules", i) for i in (1, 2, 3)]
     records += [_record("f01", "agent", i) for i in (1, 2, 3)]
     notes = compare(summarize(records)["rows"])
-    assert "在全部维度上相同" in notes[0]
+    assert "在可比较维度上相同" in notes[0]
     assert "不构成收益结论" in notes[0]
 
 
@@ -90,7 +90,7 @@ def test_compare_reports_dominance_when_one_arm_is_better_everywhere():
     records = [_record("f01", "rules", i) for i in (1, 2, 3)]
     records += [_record("f01", "agent", i, correct=(i <= 2)) for i in (1, 2, 3)]
     notes = compare(summarize(records)["rows"])
-    assert any("rules 在全部维度上不劣于 agent" in note for note in notes)
+    assert any("rules 在可比较维度上不劣于 agent" in note for note in notes)
 
 
 def test_compare_reports_mixed_strengths():
@@ -158,3 +158,17 @@ def test_merge_reindexes_each_cell_by_start_time():
     _, records = merge_records(first, {"date": "2026-11-19"}, [later])
     assert [item["run_id"] for item in records] == ["a", "b", "c"]
     assert [item["index"] for item in records] == [1, 2, 3]
+
+
+def test_missing_median_does_not_create_a_false_dominance():
+    fast = [_record("f01", "rules", i) for i in (1, 2, 3)]
+    for item in fast:
+        item["facts"]["cli"]["elapsed_seconds"] = None
+    slow = []
+    for i in (1, 2, 3):
+        item = _record("f01", "agent", i)
+        item["facts"]["cli"]["elapsed_seconds"] = 100.0 + i
+        slow.append(item)
+    notes = compare(summarize(fast + slow)["rows"])
+    assert any("耗时 缺失，未比较" in note for note in notes)
+    assert not any("支持相对收益结论" in note for note in notes)

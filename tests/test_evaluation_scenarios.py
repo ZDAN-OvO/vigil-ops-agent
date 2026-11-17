@@ -179,3 +179,22 @@ def test_scenario_scripts_are_shell_parseable():
             check=False,
         )
         assert completed.returncode == 0, f"{spec.id}: {completed.stderr}"
+
+
+def test_derived_metric_expressions_do_not_count_as_raw_values():
+    inverted = {"series": [{"labels": {}, "points": [[1.0, 0.0]]}]}
+    check = EvidenceCheck("业务失败", ("prometheus.query_range",), fact="business_failure")
+    assert not check.matched_by(
+        [SupportFact("o", "prometheus.query_range", "1 - probe_success", "", data=inverted)]
+    )
+    assert check.matched_by(
+        [
+            SupportFact(
+                "o",
+                "prometheus.query_range",
+                'probe_success{job="frontend-probe"}',
+                "",
+                data=inverted,
+            )
+        ]
+    )

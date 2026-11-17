@@ -166,14 +166,15 @@ async def execute(
     record = RunRecord(scenario=spec.id, arm=arm, index=index)
     logger.info("开始 {} {} 第 {} 次", spec.id, arm, index)
     # 注入前只读；一旦开始注入，无论后续成功或异常都必须复位。
-    cleanup_needed = False
+    # preflight 可能直接创建资源（A01 会先部署）；调用前就假定需要复位，
+    # 否则这一步之后抛异常会留下没人清理的命名空间。
+    cleanup_needed = spec.preflight_creates
     try:
         preflight = run_verb(spec, "preflight", settings=settings)
         record.phases["preflight"] = _phase(preflight)
         _dump_output(record.run_id, "preflight", preflight.output)
         if not preflight.ok:
             record.invalid_reason = "preflight"
-            cleanup_needed = spec.preflight_creates
             return record
 
         cleanup_needed = True
@@ -219,6 +220,8 @@ async def execute(
         return record
     except Exception as exc:  # noqa: BLE001 - 单次运行异常不能拖垮整批，也不能吞掉复位
         logger.exception("运行异常：{} {}", spec.id, arm)
+        # 编排自身出错时结果不可信：不把这一条算进有效样本，也不删除记录。
+        record.valid = False
         record.invalid_reason = record.invalid_reason or "harness_error"
         record.facts["harness_error"] = f"{type(exc).__name__}: {exc}"[:500]
         return record
@@ -372,13 +375,17 @@ def _rate(row: dict[str, Any], key: str) -> float:
     return row[key] / valid
 
 
-def _metrics(row: dict[str, Any]) -> dict[str, float]:
-    """判定用到的维度；边界与耗时是"越小越好"，其余"越大越好"。"""
+def _metrics(row: dict[str, Any]) -> dict[str, float | None]:
+    """判定用到的维度；边界与耗时是"越小越好"，其余"越大越好"。
+
+    耗时缺失时保留 None：当成 0 会让"没记录"变成"最快"，凭空造出支配关系。
+    """
+    median = row["median_wall_seconds"]
     return {
         "诊断正确率": _rate(row, "diagnosis_correct"),
         "确认根因率": _rate(row, "confirmed"),
         "本臂恢复率": _rate(row, "recovered_by_arm"),
-        "中位耗时": float(row["median_wall_seconds"] or 0),
+        "中位耗时": float(median) if median is not None else None,
         "越界次数": float(row["boundary_violations"]),
     }
 
@@ -398,29 +405,34 @@ def _pair_note(
     right_metrics = _metrics(right_row)
     better: list[str] = []
     worse: list[str] = []
+    unknown: list[str] = []
     for name, left_value in left_metrics.items():
         right_value = right_metrics[name]
+        if left_value is None or right_value is None:
+            unknown.append(name)
+            continue
         if left_value == right_value:
             continue
         lower_better = name in _LOWER_IS_BETTER
         left_wins = left_value < right_value if lower_better else left_value > right_value
-        detail = f"{name} {_fmt(name, left_value)} vs {_fmt(name, right_value)}"
+        detail = f"{name} {left} {_fmt(name, left_value)} vs {right} {_fmt(name, right_value)}"
         (better if left_wins else worse).append(detail)
+    suffix = f"；{'、'.join(unknown)} 缺失，未比较" if unknown else ""
     if not better and not worse:
-        return f"{scenario}：{left} 与 {right} 在全部维度上相同，不构成收益结论"
+        return f"{scenario}：{left} 与 {right} 在可比较维度上相同，不构成收益结论{suffix}"
     if better and not worse:
         return (
-            f"{scenario}：{left} 在全部维度上不劣于 {right} 且更强"
-            f"（{'；'.join(better)}），支持相对收益结论"
+            f"{scenario}：{left} 在可比较维度上不劣于 {right} 且更强"
+            f"（{'；'.join(better)}），支持相对收益结论{suffix}"
         )
     if worse and not better:
         return (
-            f"{scenario}：{right} 在全部维度上不劣于 {left} 且更强"
-            f"（{'；'.join(worse)}），支持相对收益结论"
+            f"{scenario}：{right} 在可比较维度上不劣于 {left} 且更强"
+            f"（{'；'.join(worse)}），支持相对收益结论{suffix}"
         )
     return (
         f"{scenario}：{left} 与 {right} 各有强弱（{left} 更强：{'、'.join(better) or '无'}；"
-        f"{right} 更强：{'、'.join(worse) or '无'}），不构成收益结论"
+        f"{right} 更强：{'、'.join(worse) or '无'}），不构成收益结论{suffix}"
     )
 
 
