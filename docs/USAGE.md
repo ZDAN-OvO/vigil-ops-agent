@@ -1,8 +1,8 @@
 # 操作手册：怎样用起来
 
-本文只讲怎么操作、看什么、失败了怎么办。全局结构见[架构](../ARCHITECTURE.md)，实验环境的搭建见[实验环境](../env/README.md)。
+配置 Vigil、发起调查、审批动作，并核查结果。
 
-## 1. 这套东西是什么
+## 1. 操作入口
 
 三条链路，日常用法各不同：
 
@@ -126,79 +126,35 @@ uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 
 调查任务状态看 `report` 与 `data.task`（phase/outcome/termination_code）；`investigations.status` 只表示诊断结论。`data.skills` 记录本轮加载的 Skill 与内容哈希，`data.delegations` 记录只读委派，每条包含委派 ID、子任务 Skill 和 `observation_ids`（该委派返回的观测）。
 
-## 5. 一条完整演练（坏发布，约 6 分钟）
+## 5. 调查与审批
 
-所有写操作都限定在 `vigil-shop`，坏发布的载体是 `productcatalogservice`，回退即复位。场景细节见[坏发布场景](../faults/f01-bad-release/README.md)。
+环境就绪后，手动发起调查并读取报告：
 
-1. **基线**（终端 A/B 已启 port-forward 和 serve）
+```bash
+uv run --frozen aiops investigate --service frontend --symptoms "首页 500"
+uv run --frozen aiops report <inv-id>
+```
 
-   ```bash
-   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8082/         # 200
-   curl -s -G http://127.0.0.1:9090/api/v1/query \
-     --data-urlencode 'query=probe_success{job="frontend-probe"}' | grep -o '"1"'  # 1
-   ```
+告警触发时先启动 `aiops serve`。收到 webhook 后返回 202；同一指纹重复投递返回 `deduplicated`。用 `aiops incidents --limit 3` 找到事件与调查 ID。
 
-2. **注入**
+报告列出假设、观测与缺失证据。等待审批时，核对提案的目标、参数和审计记录，再决定批准或拒绝：
 
-   ```bash
-   kubectl -n vigil-shop set image deployment/productcatalogservice \
-     server=vigil/productcatalogservice:canary-20261104
-   kubectl -n vigil-shop rollout status deploy/productcatalogservice --timeout=180s
-   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8082/         # 500
-   ```
+```bash
+uv run --frozen aiops approvals
+uv run --frozen aiops proposal <act-id>
+uv run --frozen aiops approve <act-id>
+```
 
-   注意容器名是 `server`，不是 `productcatalogservice`；写错会报 `unable to find container named`。
+拒绝提案使用 `aiops reject <act-id>`。没有现成提案时，操作者可以提交回退请求：
 
-3. **等告警自动进链路**（`for: 1m` + `group_wait: 10s`，约 90 秒）
+```bash
+uv run --frozen aiops act --kind rollout-undo \
+  --deployment <deployment> --reason "回退原因" --investigation <inv-id>
+```
 
-   ```bash
-   curl -s http://127.0.0.1:9090/api/v1/alerts | grep -o '"state":"firing"'
-   uv run --frozen aiops incidents --limit 3     # 出现 trigger=alert 的事件和 running 调查
-   ```
+审批有效期由 `VIGIL_ACTION_APPROVAL_TTL_SECONDS` 控制，默认 900 秒。超时、目标 resourceVersion 变化或提案哈希不一致都会拒绝执行，需要重新提案。执行后核查提案中的验证结果；有人工待办时，用 `aiops followups` 查看原因。
 
-   `aiops serve` 日志里应看到 `POST /webhook/alertmanager 202 Accepted`。同一指纹重复投递返回 `deduplicated`，不会重复调查。
-
-4. **看调查结果**（预算 28 次工具调用 / 20 次模型调用 / 600 秒墙钟，通常 2–4 分钟；依据见 [ADR-0011](adr/0011-investigation-budget.md)）
-
-   ```bash
-   uv run --frozen aiops report inv-xxxxxxxx
-   ```
-
-   预算耗尽时状态是 `inconclusive` 并给终止原因，这不算失败；报告会列出假设、证据边界与缺失证据。
-
-5. **提案与审批**
-
-   ```bash
-   uv run --frozen aiops approvals                      # 找目标 Deployment 的提案
-   uv run --frozen aiops proposal act-xxxxxxxx          # 看清目标、revision、审计
-   uv run --frozen aiops approve act-xxxxxxxx           # 退出 0 = 执行并验证通过
-   ```
-
-   没有现成提案时由操作者发起（模型结论不会自动变成写操作）：
-
-   ```bash
-   uv run --frozen aiops act --kind rollout-undo \
-     --deployment productcatalogservice --reason "坏发布回退" \
-     --investigation inv-xxxxxxxx
-   ```
-
-   审批有效期 `VIGIL_ACTION_APPROVAL_TTL_SECONDS`（默认 900 秒）。超时、目标 resourceVersion 变化、提案哈希不一致都会拒绝执行；需要重新提案。
-
-6. **验证恢复并复位**
-
-   ```bash
-   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8082/         # 200
-   curl -s http://127.0.0.1:9090/api/v1/alerts                             # 活动告警清空
-   kubectl -n vigil-shop get rs -l app=productcatalogservice               # 坏 RS 副本 0
-   ```
-
-   如果调查或审批没走完（比如预算耗尽、你拒绝了提案），手工复位：
-
-   ```bash
-   kubectl -n vigil-shop rollout undo deployment/productcatalogservice
-   ```
-
-   手工复位不能算作 Agent 恢复，报告里要分开写。
+故障注入与复位使用[场景操作步骤](../faults/README.md)，操作者复位与 Agent 恢复分别记录。
 
 ## 6. 常见故障
 
@@ -218,7 +174,7 @@ uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 
 - 业务数据：PostgreSQL `vigil` 库。事件/调查/假设/观测/工具账本/委派/提案/审批/执行/审计/待办/runbook 各一张表，迁移文件在 `src/aiops/migrations/`。
 - 运行产物：`runtime/`（`VIGIL_RUNTIME_DIR`），存放大观测的原始文件，不入库。它是临时工作目录，不是证据存档。
-- 验收证据：截图贴在 PR 评论里，运行结论写入 `faults/<场景>/runs/`。本地生成的截图放在 `.evidence/`，该目录不提交。
+- 验收记录：`faults/<场景>/runs/` 保存结论，`.evidence/` 保存不提交的本地截图。
 - 历史遗留：一次演练会在库里留若干 `pending_approval` 提案与 `open` 待办，属正常记录；旧提案过期后再批准会因 `approval_expired` 拒绝。需要干净基线时可以重建库。
 
   > **警告**：下面的命令会删除 `vigil` 库中的全部业务数据和 checkpoint，无法恢复。只在确认不再需要现有记录时执行。
