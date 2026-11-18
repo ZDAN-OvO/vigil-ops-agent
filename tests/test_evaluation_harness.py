@@ -433,7 +433,11 @@ def test_margin_hint_only_fires_on_a_real_one_run_gap():
     assert _margin_hint(big, wide) == ""
 
     same = {"diagnosis_correct": 3, "confirmed": 3, "recovered_by_arm": 3, "valid": 3}
-    assert _margin_hint(same, dict(same)) == "（率值相同，优势只在耗时或成本）"
+    assert _margin_hint(same, dict(same)) == "（率值相同，优势来自率值以外的维度）"
+
+    # 次数一样但分母不同时率值不同，不能说"率值相同"。
+    other_valid = dict(same, valid=4)
+    assert "率值相同" not in _margin_hint(same, other_valid)
 
     one = {"diagnosis_correct": 2, "confirmed": 2, "recovered_by_arm": 1, "valid": 3}
     assert "仅 1 次运行" in _margin_hint(one, same)
@@ -457,3 +461,8 @@ def test_write_markdown_keeps_an_empty_marker_and_the_first_backup(tmp_path):
     marked.write_text(f"# 旧\n\n{MANUAL_MARKER}\n")
     write_markdown(marked, {"date": "2026-11-18", "arms": ["rules"]}, rows)
     assert MANUAL_MARKER in marked.read_text()
+
+    # 备份之后补了空标记：再手写的内容在下次重算时能被接回。
+    path.write_text(path.read_text() + "\n手写的第二段\n")
+    write_markdown(path, {"date": "2026-11-20", "arms": ["rules"]}, rows)
+    assert "手写的第二段" in path.read_text()

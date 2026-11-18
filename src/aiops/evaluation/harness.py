@@ -467,14 +467,14 @@ _RATE_COUNTS = {
 
 def _margin_hint(left_row: dict[str, Any], right_row: dict[str, Any]) -> str:
     """率值只差一次运行就下的强弱判断，句尾必须说明它只是方向。"""
-    diffs = [
-        abs(int(left_row.get(key) or 0) - int(right_row.get(key) or 0))
-        for key in _RATE_COUNTS.values()
-    ]
-    gaps = [value for value in diffs if value > 0]
+    # 比的是率值，不是次数：两臂有效运行数不同时，次数相同不代表率值相同。
+    gaps = []
+    for key in _RATE_COUNTS.values():
+        if _rate(left_row, key) == _rate(right_row, key):
+            continue
+        gaps.append(abs(int(left_row.get(key) or 0) - int(right_row.get(key) or 0)))
     if not gaps:
-        # 率值完全相同、却在别的维度更强：得说清收益来自哪里。
-        return "（率值相同，优势只在耗时或成本）"
+        return "（率值相同，优势来自率值以外的维度）"
     if min(gaps) <= 1:
         return "（率值差距仅 1 次运行，只作方向判断）"
     return ""
@@ -711,6 +711,9 @@ def write_markdown(path: Path, batch: dict[str, Any], summary: dict[str, Any]) -
                 MANUAL_MARKER,
                 backup.name,
             )
+            # 顺手补一个空标记：以后的重算都走"保留手写段"分支，新写的说明
+            # 不会在下次重算时被悄悄丢掉。
+            body = f"{body}\n{MANUAL_MARKER}\n"
     path.write_text(body.rstrip() + "\n")
 
 
