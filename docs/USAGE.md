@@ -2,17 +2,21 @@
 
 配置 Vigil、发起调查、审批动作，并核查结果。
 
-## 1. 操作入口
+## 1. 页面调查
 
-三条链路，日常用法各不同：
+先执行 `uv run --frozen aiops dev db migrate`、`make web-build` 和
+`uv run --frozen aiops doctor`，然后运行 `uv run --frozen aiops serve`。
+打开终端显示的本机地址，默认是 `http://127.0.0.1:8080/`。
 
-| 链路 | 入口 | 谁触发 | 产物 |
-|---|---|---|---|
-| 告警 → 调查 | `aiops serve` + AlertManager | Prometheus 真实告警 | 事件与只读调查 |
-| 手动调查 | `aiops dev investigate` | 你自己 | 事件、调查、Skill 与委派记录、提案 |
-| 受控处置 | `aiops dev act` / `approve` / `resume` | 操作者提交与审批 | 提案、审批、执行尝试、验证结果、审计 |
+1. 选择受影响的服务，描述故障。首页故障选择 `frontend`。
+2. 在对话中补充线索，查看调查进展和证据。线索显示「已送入调查」时会标出调查轮次。
+3. 核对回滚版本、Pod 模板变更、风险和关联证据，再批准或拒绝。
+4. 查看集群写入状态与首页探针结果。拒绝后，本次调查继续取证。
+5. 调查结束后可开始新调查。刷新或重新打开页面会恢复当前会话。
 
-`serve` 运行时，告警调查只取证，开发命令仅可查询或解决待办。停止 `serve` 后，开发调查在 `vigil-experiment` 内可对满足规则的 `restart_pod` 自动执行，其余动作等人工审批。操作者入口 `act`/`approve`/`resume` 写集群，动作只有 `rollout_undo`（回退到上一 revision）和 `restart_pod`（重建 Pod）两种。实验命名空间之外默认拒绝。
+出现「处置结果待核实」时，到实验集群核实，再执行
+`aiops dev followup resolve <待办 ID> --note "<核实结论>"`。记录会显示在页面。
+服务运行期间，告警只取证。命令行演练和审批需要停止服务，页面会话的审批始终在页面完成。
 
 ## 2. 前置：先确认环境活着
 
@@ -36,7 +40,7 @@ curl -s http://127.0.0.1:3425/v1/models | head -c 200
 
 `kubectl` 默认不读 `~/.kube/vigil-lab.yaml`，但 `aiops` 通过 `VIGIL_KUBECONFIG` 读它，两者互不影响。`repeat.sh` 等脚本会自己 export，不必依赖 shell 环境。
 
-宿主机端口被别的项目占用时先看 `ss -ltnp | grep <端口>`：本机 8081 被另一个前端项目占用，因此 webhook 用 8091、前端 port-forward 用 8082。
+宿主机端口被别的项目占用时先看 `ss -ltnp | grep <端口>`：本机 8081 被另一个前端项目占用，因此 webhook 用 8091、示例商店的 port-forward 用 8082，Vigil 页面用 8080。
 
 ### 需要时启动的服务
 
@@ -68,6 +72,11 @@ VIGIL_MODEL_NAME=auto/deepseek-v4.1-flash
 VIGIL_WEBHOOK_TOKEN=<与 vigil-monitoring/vigil-webhook-token 相同>
 VIGIL_WEBHOOK_HOST=0.0.0.0   # 集群经 docker 网关 172.20.0.1 访问宿主机
 VIGIL_WEBHOOK_PORT=8091
+VIGIL_WEB_HOST=127.0.0.1
+VIGIL_WEB_PORT=8080
+VIGIL_WEB_OPERATOR=web-operator
+VIGIL_ACTION_APPROVAL_TTL_SECONDS=900
+VIGIL_VERIFY_PROBE_QUERY=probe_http_status_code{job="frontend-probe"}
 ```
 
 密码和 token 只放在 `.env`；需要重取时：
@@ -84,7 +93,7 @@ kubectl -n vigil-monitoring get secret vigil-webhook-token -o jsonpath='{.data.t
 迁移同时删除旧 `hypothesis_revisions` 与 `tool_calls` 表，见 [0011 迁移](../src/aiops/migrations/0011_skills_and_delegations.sql)。迁移前的导出应覆盖需要保留的旧记录。
 
 ```bash
-uv run --frozen aiops dev db status   # 期望列出 0001_init … 0011_skills_and_delegations
+uv run --frozen aiops dev db status   # 期望列出 0001_init … 0013_web_conversation
 uv run --frozen aiops dev db migrate  # 幂等；升级后先跑这个
 ```
 
@@ -112,8 +121,8 @@ uv run --frozen aiops dev db migrate  # 幂等；升级后先跑这个
 | `aiops dev cancel <inv-id>` | 请求取消运行中的单 Agent 任务；等待审批时直接终止 | 否 |
 | `aiops dev followups` / `aiops dev followup <fol-id>` | 异常执行留下的人工待办 | 否 |
 | `aiops dev knowledge list` / `knowledge import --path <文件或目录>` | 结构化 runbook 查询与登记 | 否 |
-| `aiops serve` | 启动 AlertManager webhook | 否 |
-| `aiops doctor` | 检查数据库、模型网关、集群与 Prometheus | 否 |
+| `aiops serve` | 启动本机页面与独立告警接入 | 页面批准后可执行回滚 |
+| `aiops doctor` | 检查数据库、模型网关、集群、Prometheus、业务探针、准入规则与页面文件 | 否 |
 
 除 `serve`、`doctor`、`knowledge` 外，表中命令支持 `--output json`，便于脚本消费。
 
@@ -134,7 +143,7 @@ uv run --frozen aiops dev db migrate  # 幂等；升级后先跑这个
 
 记录人工核实结果用 `aiops dev followup resolve <fol-id> --note <核实说明>`。
 
-## 5. 调查与审批
+## 5. 命令行演练
 
 环境就绪后，手动发起调查并读取报告：
 

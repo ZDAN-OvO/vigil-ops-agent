@@ -668,3 +668,370 @@ def test_web_cli_cannot_mutate_page_investigation_after_serve_stops(web_dsn, mon
         result = CliRunner().invoke(app, ["dev", *args])
         assert result.exit_code == 1, args
         assert "页面" in result.output
+
+
+def test_closed_followup_before_recovery_supplies_readonly_conclusion(web_dsn):
+    from aiops.contracts import ActionFollowup, AttemptOutcome
+    from aiops.web.lifecycle import recover_conversation
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            conv, _, _, proposal = await seed_work(store, proposal_status="executing")
+            attempt = await seed_execution(store, proposal, "uncertain")
+            followup = ActionFollowup(
+                id="fol-closed-first",
+                proposal_id=proposal.id,
+                attempt_id=attempt.id,
+                cluster=proposal.target.cluster,
+                namespace=proposal.target.namespace,
+                target_kind=proposal.target.kind,
+                target_name=proposal.target.name,
+                outcome=AttemptOutcome.UNKNOWN,
+                reason="未知",
+                evidence={},
+                created_at=datetime.now(UTC),
+            )
+            await store.finish_attempt(
+                attempt.id,
+                proposal_id=proposal.id,
+                proposal_status=ProposalStatus.UNKNOWN,
+                status=AttemptStatus.UNKNOWN,
+                result=None,
+                verification=None,
+                finished_at=datetime.now(UTC),
+                followup=followup,
+            )
+            await store.resolve_followup(followup.id, actor="tester", note="现场已核实")
+            assert await recover_conversation(store, conv, "new") == "closed_after_action"
+            current = await store.get_current_conversation()
+            assert current["finished_at"] and not current["interrupted"]
+            assert (await store.get_proposal(proposal.id)).status is ProposalStatus.FAILED
+            async with store._pool.connection() as conn:
+                cur = await conn.execute(
+                    "SELECT content FROM conversation_messages "
+                    "WHERE conversation_id = %s AND kind = 'conclusion'",
+                    (conv,),
+                )
+                assert "现场已核实" in (await cur.fetchone())["content"]
+
+    asyncio.run(scenario())
+
+
+def test_recovery_prior_not_sent_does_not_hide_unready_new_proposal(web_dsn):
+    from actions_support import make_proposal
+
+    from aiops.web.lifecycle import recover_conversation
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            conv, inv, _, first = await seed_work(store, proposal_status="executing")
+            attempt = await seed_execution(store, first, "not_sent")
+            key = "vigil-lab/vigil-shop/Deployment/productcatalogservice"
+            await store.finish_attempt(
+                attempt.id,
+                proposal_id=first.id,
+                proposal_status=ProposalStatus.FAILED,
+                status=AttemptStatus.FAILED,
+                result={"stage": "done"},
+                verification=None,
+                finished_at=datetime.now(UTC),
+                target_lock_key=key,
+            )
+            assert not await store.target_is_locked(key)
+            second = make_proposal(
+                id="act-second", investigation_id=inv.id, created_at=datetime.now(UTC)
+            )
+            policy = RiskDecision(
+                proposal_id=second.id,
+                disposition=RiskDisposition.APPROVAL,
+                policy_version="test",
+                reasons=["测试"],
+                requires_compensation=False,
+            )
+            await store.save_proposal(second, policy)
+            await store.set_task_waiting(inv.id, proposal_id=second.id)
+            assert await recover_conversation(store, conv, "new") == "interrupted"
+            assert (await store.get_proposal(second.id)).status is ProposalStatus.REJECTED
+            third = second.model_copy(update={"id": "act-third"})
+            await store.save_proposal(third, policy.model_copy(update={"proposal_id": third.id}))
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("read_only", "action", "disabled", "expected"),
+    [
+        (True, "rollout_undo", False, "告警调查只取证"),
+        (True, "restart_pod", False, "告警调查只取证"),
+        (False, "restart_pod", False, "本次调查不支持该动作"),
+        (False, "rollout_undo", True, "已被人工拒绝处置"),
+    ],
+)
+def test_web_request_action_scope(web_dsn, read_only, action, disabled, expected):
+    from investigation_support import FakeToolbox, ScriptedChatModel
+
+    from aiops.agent.engine import LangChainInvestigation
+    from aiops.agent.schemas import RequestActionArgs
+    from aiops.agent.tools import request_action_core
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            incident, investigation = new_investigation()
+            conv = await store.create_conversation("create", incident, investigation)
+            async with store._pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE investigation_tasks SET actions_disabled = %s "
+                    "WHERE investigation_id = %s",
+                    (disabled, investigation.id),
+                )
+            worker = LangChainInvestigation(
+                settings=Settings(database_url=web_dsn, model_name="test"),
+                store=store,
+                dsn=web_dsn,
+                incident=incident,
+                investigation=investigation,
+                toolbox=FakeToolbox(),
+                executor=None,
+                model=ScriptedChatModel(responses=[]),
+                read_only=read_only,
+                conversation_id=None if read_only else conv.id,
+            )
+            _, context = await worker._open_context()
+            await context.budget.start()
+            result = await request_action_core(
+                context,
+                "test-scope",
+                RequestActionArgs(
+                    action=action,
+                    target_deployment="productcatalogservice",
+                    target_pod="test",
+                    service="frontend",
+                    reason="测试",
+                    hypothesis_id="test",
+                    evidence_ids=["test"],
+                ),
+            )
+            assert expected in result
+            assert await store.count_proposals_for_investigation(investigation.id) == 0
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("state", ["sending", "sent"])
+def test_serve_opens_http_only_after_stale_page_write_is_recovered(web_dsn, tmp_path, state):
+    import os
+    import socket
+
+    import httpx
+    from test_cli import cli_command, running_command, wait_for_file
+
+    async def seed():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            _, _, _, proposal = await seed_work(store, proposal_status="executing")
+            await seed_execution(store, proposal, state)
+
+    asyncio.run(seed())
+    with socket.socket() as socket_probe:
+        socket_probe.bind(("127.0.0.1", 0))
+        port = socket_probe.getsockname()[1]
+    env = {
+        **os.environ,
+        "VIGIL_DATABASE_URL": web_dsn,
+        "VIGIL_RUNTIME_DIR": str(tmp_path),
+        "VIGIL_WEB_HOST": "127.0.0.1",
+        "VIGIL_WEB_PORT": str(port),
+    }
+    log = tmp_path / "serve.log"
+    with running_command(
+        cli_command("serve", "--host", "127.0.0.1", "--port", "0"), env, log
+    ) as proc:
+        base = f"http://127.0.0.1:{port}"
+        wait_for_file(log, f"Uvicorn running on {base}", proc)
+        response = httpx.get(f"{base}/api/conversations/current", timeout=5)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["conversation"]["finished"]
+        assert result["conversation"]["page_state"] == "needs_verification"
+        assert result["outcome"]["send_state"] == ("sent" if state == "sent" else "uncertain")
+        assert result["outcome"]["verification_reason"] == "interrupted"
+        assert len(result["followups"]) == 1
+
+
+@pytest.mark.parametrize("missing", ["ownership", "card_hash", "human_approval"])
+def test_serve_executor_refuses_unapproved_or_unowned_write(web_dsn, tmp_path, missing):
+    from actions_support import FakeAdapter, FakePrometheus, make_proposal, rollout_plan
+
+    from aiops.actions.executor import ActionExecutor, proposal_hash
+    from aiops.actions.rollout_undo import ActionError
+    from aiops.contracts import Approval, ApprovalDecision
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            if missing == "ownership":
+                proposal = make_proposal(status=ProposalStatus.APPROVED)
+                await store.save_proposal(
+                    proposal,
+                    RiskDecision(
+                        proposal_id=proposal.id,
+                        disposition=RiskDisposition.APPROVAL,
+                        policy_version="test",
+                        reasons=["测试"],
+                        requires_compensation=False,
+                    ),
+                )
+            else:
+                _, _, _, proposal = await seed_work(store, proposal_status="approved")
+            await store.save_approval(
+                Approval(
+                    id="apr-scope",
+                    proposal_id=proposal.id,
+                    decision=ApprovalDecision.APPROVED,
+                    actor="policy:test" if missing == "human_approval" else "web-operator",
+                    card_hash=None if missing == "card_hash" else "fixed",
+                    reason="测试",
+                    decided_at=datetime.now(UTC),
+                    proposal_hash=proposal_hash(proposal),
+                )
+            )
+            adapter = FakeAdapter(rollout_plan())
+            executor = ActionExecutor(
+                store=store,
+                adapter=adapter,
+                prometheus=FakePrometheus([]),
+                runtime_path=tmp_path,
+                cluster="vigil-lab",
+                namespace="vigil-shop",
+                serve_instance="old-instance",
+            )
+            with pytest.raises(ActionError) as caught:
+                await executor.execute_authorized(proposal.id)
+            assert caught.value.code == "web_approval_required"
+            assert not adapter.calls
+            assert await store.get_attempt(proposal.id) is None
+
+    asyncio.run(scenario())
+
+
+def test_web_rollout_autorule_requires_human_decision(web_dsn, tmp_path, monkeypatch):
+    from actions_support import FakeAdapter, FakePrometheus, rollout_plan
+
+    from aiops.actions import executor as actions
+
+    def allow(proposal, **kwargs):
+        return RiskDecision(
+            proposal_id=proposal.id,
+            disposition=RiskDisposition.AUTO,
+            policy_version="test",
+            reasons=["模拟自动规则"],
+            requires_compensation=False,
+        )
+
+    monkeypatch.setattr(actions, "decide", allow)
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            incident, investigation = new_investigation()
+            await store.create_conversation("create", incident, investigation)
+            adapter = FakeAdapter(rollout_plan())
+            executor = actions.ActionExecutor(
+                store=store,
+                adapter=adapter,
+                prometheus=FakePrometheus([]),
+                runtime_path=tmp_path,
+                cluster="vigil-lab",
+                namespace="vigil-shop",
+                serve_instance="test-instance",
+            )
+            proposal, decision = await executor.propose_rollback(
+                deployment="productcatalogservice",
+                reason="模拟回滚",
+                actor="model-agent",
+                investigation_id=investigation.id,
+            )
+            assert decision.disposition is RiskDisposition.APPROVAL
+            assert proposal.status is ProposalStatus.PENDING_APPROVAL
+            assert await store.get_approval(proposal.id) is None
+            assert not adapter.calls
+
+    asyncio.run(scenario())
+
+
+def test_web_failed_sent_update_is_recovered_at_terminal_close(web_dsn):
+    from aiops.contracts import TaskOutcome
+    from aiops.web.snapshot import read_snapshot
+
+    async def scenario():
+        settings = Settings(database_url=web_dsn)
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            _, inv, _, proposal = await seed_work(store, proposal_status="executing")
+            attempt = await seed_execution(store, proposal, "sending")
+            # 模拟集群已成功返回，但保存 sent 的服务连接失败。
+            await store.finish_task(
+                inv.id,
+                outcome=TaskOutcome.ABORTED,
+                termination_code="store_failure",
+                finished_at=datetime.now(UTC),
+            )
+            snapshot = await read_snapshot(store, settings)
+            assert snapshot.conversation.finished
+            assert snapshot.conversation.page_state == "needs_verification"
+            assert snapshot.outcome.send_state == "uncertain"
+            assert (await store.get_followup_by_attempt(attempt.id)).status.value == "open"
+
+    asyncio.run(scenario())
+
+
+def test_web_checkpoint_recovery_confirms_hint_once(web_dsn):
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from langgraph.graph import END, START, StateGraph
+
+    from aiops.web.hints import HintState
+    from aiops.web.runner import ConversationRunner
+
+    async def scenario():
+        settings = Settings(database_url=web_dsn)
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            incident, inv = new_investigation()
+            conv = await store.create_conversation("create", incident, inv)
+            hint = await store.append_conversation_message("hint", conv.id, "已查到的信息")
+            runner = ConversationRunner(store, settings)
+            await store.claim_web_work(conv.id, "crashed-instance")
+            async with AsyncPostgresSaver.from_conn_string(web_dsn) as saver:
+                await saver.setup()
+                graph = StateGraph(HintState)
+                graph.add_node(
+                    "reply",
+                    lambda _: {
+                        "logical_round": 1,
+                        "successful_round": 1,
+                        "hint_rounds": {hint.id: 1},
+                    },
+                )
+                graph.add_edge(START, "reply")
+                graph.add_edge("reply", END)
+                await graph.compile(checkpointer=saver).ainvoke(
+                    {"messages": []},
+                    {"configurable": {"thread_id": inv.id}},
+                    durability="sync",
+                )
+            assert len(await store.pending_conversation_hints(conv.id)) == 1
+            await runner.startup()
+            await runner.recover_current()
+            events = await store.list_conversation_events(conv.id)
+            assert sum(event["kind"] == "hint_delivered" for event in events) == 1
+            async with store._pool.connection() as conn:
+                cur = await conn.execute(
+                    "SELECT delivery, delivered_round FROM conversation_messages WHERE id = %s",
+                    (hint.id,),
+                )
+                assert (await cur.fetchone()) == {"delivery": "delivered", "delivered_round": 1}
+
+    asyncio.run(scenario())

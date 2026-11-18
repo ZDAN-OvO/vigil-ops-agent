@@ -261,3 +261,47 @@ def test_sse_replays_only_events_after_last_event_id(web_dsn):
             assert FAKE_TOKEN.encode() not in payload
 
     asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not DSN, reason="未配置 VIGIL_DATABASE_URL")
+def test_open_followup_resolved_during_running_investigation(web_dsn):
+    from aiops.web.snapshot import read_snapshot
+
+    async def scenario():
+        settings = Settings(database_url=web_dsn)
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            _, _, _, proposal = await seed_work(store, proposal_status="executing")
+            attempt = await seed_execution(store, proposal, "sent")
+            followup = ActionFollowup(
+                id="fol-running",
+                proposal_id=proposal.id,
+                attempt_id=attempt.id,
+                cluster=proposal.target.cluster,
+                namespace=proposal.target.namespace,
+                target_kind=proposal.target.kind,
+                target_name=proposal.target.name,
+                outcome=AttemptOutcome.UNKNOWN,
+                reason="待核实",
+                evidence={},
+                created_at=datetime.now(UTC),
+            )
+            await store.finish_attempt(
+                attempt.id,
+                proposal_id=proposal.id,
+                proposal_status=ProposalStatus.UNKNOWN,
+                status=AttemptStatus.UNKNOWN,
+                result={"stage": "done", "verification_done": True},
+                verification=None,
+                finished_at=datetime.now(UTC),
+                followup=followup,
+            )
+            pending = await read_snapshot(store, settings)
+            assert pending.conversation.page_state == "needs_verification"
+            await store.resolve_followup(followup.id, actor="tester", note="已核实")
+            snapshot = await read_snapshot(store, settings)
+            assert snapshot.conversation.page_state == "investigating"
+            assert not snapshot.conversation.finished
+            assert snapshot.followups[0].resolution == "已核实"
+
+    asyncio.run(scenario())
