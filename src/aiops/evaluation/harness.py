@@ -608,16 +608,32 @@ def merge_records(
     return combined, ordered
 
 
+def _anchor_list(anchors: Any) -> list[dict[str, Any]]:
+    """把一次或多次合并过的锚点读成列表。"""
+    if not isinstance(anchors, dict):
+        return []
+    variants = anchors.get("variants")
+    if isinstance(variants, list):
+        return [item for item in variants if isinstance(item, dict)]
+    return [{key: value for key, value in anchors.items() if key != "mix"}]
+
+
 def _merge_anchors(existing: Any, incoming: Any) -> dict[str, Any]:
-    """分批跑也要留锚点：不同锚点不能静默丢掉，得让读者看见版本混了。"""
-    if not existing:
-        return dict(incoming or {})
-    if not incoming or existing == incoming:
-        return dict(existing)
-    merged = dict(existing)
-    merged["mixed"] = True
-    merged["also"] = dict(incoming)
-    return merged
+    """分批跑也要留锚点：不同锚点不能静默丢掉，得让读者看见版本混了。
+
+    三次以上分批（A、B、C）时，中间的版本同样要留着，所以存列表而不是
+    "当前 + also"两层。
+    """
+    variants = _anchor_list(existing)
+    for candidate in _anchor_list(incoming):
+        if candidate not in variants:
+            variants.append(candidate)
+    if not variants:
+        return {}
+    if len(variants) == 1:
+        return dict(variants[0])
+    # 首尾各占一份时最容易只留两个：这里显式按出现顺序全部列出。
+    return {"mix": True, "head": variants[0].get("git_head"), "variants": variants}
 
 
 def write_records(path: Path, batch: dict[str, Any], records: list[dict[str, Any]]) -> None:
@@ -735,6 +751,16 @@ def render_markdown(batch: dict[str, Any], summary: dict[str, Any]) -> str:
         f"- 环境复位：{'全部成功' if batch.get('environment_restored') else '有失败，见逐次记录'}",
     ]
     anchor = batch.get("anchors") or {}
+    if anchor.get("mix"):
+        variants = anchor.get("variants") or []
+        lines.append(
+            f"- 代码锚点：混用了 {len(variants)} 个版本 —— "
+            + "、".join(
+                f"git {item.get('git_head', 'unknown')}（{item.get('records', '?')} 条记录）"
+                for item in variants
+            )
+        )
+        anchor = variants[0] if variants else {}
     if anchor:
         lines += [
             f"- 代码锚点：git {anchor.get('git_head', 'unknown')}"

@@ -44,12 +44,18 @@ class SupportFact:
     summary: str
     data: Any = None
 
-    def prometheus_values(self) -> list[float]:
-        """取每条序列最后一个采样点；解析不出来就当作没有。"""
+    def prometheus_values(self, job: str = "") -> list[float]:
+        """取每条序列最后一个采样点；解析不出来就当作没有。
+
+        给了 job 就只取这个 job 的序列：别的 job 的异常值不是本场景的异常。
+        序列上没有 job 标签时无法确认归属，同样不算。
+        """
         if not isinstance(self.data, dict):
             return []
         values: list[float] = []
         for series in self.data.get("series") or []:
+            if job and (series.get("labels") or {}).get("job") != job:
+                continue
             points = series.get("points") or []
             if points and isinstance(points[-1][1], int | float):
                 values.append(float(points[-1][1]))
@@ -93,21 +99,21 @@ def _raw_metric(expression: str, metric: str) -> bool:
     return False
 
 
-def _fact_business_failure(fact: SupportFact) -> bool:
-    """入口探针真的掉下来了：原始 probe_success 表达式的取值 < 1。"""
+def _fact_business_failure(fact: SupportFact, job: str = "") -> bool:
+    """入口探针真的掉下来了：本场景探针的原始 probe_success 取值 < 1。"""
     if not _raw_metric(fact.expression, "probe_success"):
         return False
-    return any(value < 1 for value in fact.prometheus_values())
+    return any(value < 1 for value in fact.prometheus_values(job))
 
 
-def _fact_latency_elevated(fact: SupportFact) -> bool:
-    """入口延迟真的偏高：原始 probe_duration 表达式的取值超过基线量级。"""
+def _fact_latency_elevated(fact: SupportFact, job: str = "") -> bool:
+    """入口延迟真的偏高：本场景探针的原始 probe_duration 取值超过基线量级。"""
     if not _raw_metric(fact.expression, "probe_duration_seconds"):
         return False
-    return any(value >= LATENCY_FLOOR_SECONDS for value in fact.prometheus_values())
+    return any(value >= LATENCY_FLOOR_SECONDS for value in fact.prometheus_values(job))
 
 
-def _fact_oom_killed(fact: SupportFact) -> bool:
+def _fact_oom_killed(fact: SupportFact, job: str = "") -> bool:
     for pod in fact.items():
         for container in pod.get("containers") or []:
             last = container.get("last_terminated") or {}
@@ -116,7 +122,7 @@ def _fact_oom_killed(fact: SupportFact) -> bool:
     return False
 
 
-def _fact_http_5xx(fact: SupportFact) -> bool:
+def _fact_http_5xx(fact: SupportFact, job: str = "") -> bool:
     for pod in fact.items():
         for line in pod.get("lines") or []:
             if HTTP_5XX.search(str(line)):
@@ -160,7 +166,7 @@ class EvidenceCheck:
                 jobs = item.series_jobs()
                 if jobs and self.job not in jobs:
                     continue
-            if check is None or check(item):
+            if check is None or check(item, self.job):
                 return True
         return False
 

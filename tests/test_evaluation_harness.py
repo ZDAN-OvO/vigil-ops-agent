@@ -372,9 +372,23 @@ def test_merge_keeps_anchors_and_marks_mixed_versions():
     first = {"batch": {"date": "2026-11-18", "anchors": {"git_head": "aaa", "model": "m"}}}
     batch = {"date": "2026-11-20", "anchors": {"git_head": "bbb", "model": "m"}}
     merged, _ = merge_records(first, batch, [])
-    assert merged["anchors"]["git_head"] == "aaa"
-    assert merged["anchors"]["mixed"] is True
-    assert merged["anchors"]["also"]["git_head"] == "bbb"
+    assert merged["anchors"]["mix"] is True
+    assert [item["git_head"] for item in merged["anchors"]["variants"]] == ["aaa", "bbb"]
+
+    # 三次分批（A、B、C）时中间的版本不能丢。
+    third = {"date": "2026-11-21", "anchors": {"git_head": "ccc", "model": "m"}}
+    merged, _ = merge_records({"batch": merged}, third, [])
+    assert [item["git_head"] for item in merged["anchors"]["variants"]] == [
+        "aaa",
+        "bbb",
+        "ccc",
+    ]
+    again, _ = merge_records({"batch": merged}, batch, [])
+    assert [item["git_head"] for item in again["anchors"]["variants"]] == [
+        "aaa",
+        "bbb",
+        "ccc",
+    ]
 
     same, _ = merge_records(
         first, {"date": "2026-11-20", "anchors": {"git_head": "aaa", "model": "m"}}, []
@@ -466,3 +480,15 @@ def test_write_markdown_keeps_an_empty_marker_and_the_first_backup(tmp_path):
     path.write_text(path.read_text() + "\n手写的第二段\n")
     write_markdown(path, {"date": "2026-11-20", "arms": ["rules"]}, rows)
     assert "手写的第二段" in path.read_text()
+
+
+def test_empty_arm_facts_do_not_claim_zero_cost():
+    """没有调查记录时，成本是未知而不是 0。"""
+    from aiops.evaluation.verdict import ArmFacts
+
+    empty = ArmFacts.empty()
+    assert empty.tool_calls is None
+    assert empty.model_calls is None
+    assert empty.approvals is None
+    rows = summarize([_record("f01", "rules", i) for i in (1, 2, 3)])
+    assert rows["rows"][0]["median_tool_calls"] != 0

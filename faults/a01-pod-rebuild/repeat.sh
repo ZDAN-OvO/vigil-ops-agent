@@ -146,7 +146,19 @@ deploy() {
   kget get deploy "$DEPLOY" >/dev/null && fail "已存在 $DEPLOY"
   # apply 失败不等于没建：只有对象真的出现了才登记 created，避免按"可能建过"就清理。
   "$KUBECTL" apply -f "$DIR/manifests.yaml" >/dev/null || {
-    kget get deploy "$DEPLOY" >/dev/null && CREATED=1
+    # 清单里有三类对象；只查 Deployment 会漏掉"Service/ConfigMap 建了、
+    # Deployment 没建"的半成品，那种情况同样必须清理。
+    local found=""
+    local object
+    for object in "deploy/$DEPLOY" "service/$DEPLOY" "configmap/$DEPLOY-poison"; do
+      if "$KUBECTL" -n "$NS" get "$object" >/dev/null 2>&1; then
+        found="$found $object"
+      fi
+    done
+    if [ -n "$found" ]; then
+      CREATED=1
+      say "PARTIAL_CREATED objects=${found# }"
+    fi
     fail "清单应用失败"
   }
   CREATED=1

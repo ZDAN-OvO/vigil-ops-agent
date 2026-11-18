@@ -353,7 +353,8 @@ def test_evidence_from_another_job_is_not_evidence():
         )
     ]
     assert not judge(spec, _facts("回退 demo", supporting=foreign)).evidence_matched
-    scoped = [
+    # 值必须出现在目标 job 的序列上；没有 job 标签就无法确认归属，不算证据。
+    unlabelled = [
         SupportFact(
             "obs-y",
             "prometheus.query_range",
@@ -362,7 +363,37 @@ def test_evidence_from_another_job_is_not_evidence():
             data={"series": [{"labels": {}, "points": [[1.0, 0.0]]}]},
         )
     ]
+    assert not judge(spec, _facts("回退 demo", supporting=unlabelled)).evidence_matched
+    scoped = [
+        SupportFact(
+            "obs-y",
+            "prometheus.query_range",
+            'probe_success{job="frontend-probe"}',
+            "",
+            data={"series": [{"labels": {"job": "frontend-probe"}, "points": [[1.0, 0.0]]}]},
+        )
+    ]
     assert judge(spec, _facts("回退 demo", supporting=scoped)).evidence_matched
+
+
+def test_a_healthy_target_series_is_not_vetoed_by_another_jobs_spike():
+    """目标探针正常、旁边有别的 job 掉了，不能算本场景的业务失败。"""
+    check = EvidenceCheck(
+        "业务失败", ("prometheus.query_range",), fact="business_failure", job="frontend-probe"
+    )
+    fact = SupportFact(
+        "obs-z",
+        "prometheus.query_range",
+        'probe_success{job=~"frontend-.*"}',
+        "",
+        data={
+            "series": [
+                {"labels": {"job": "frontend-probe"}, "points": [[1.0, 1.0]]},
+                {"labels": {"job": "frontend-backup"}, "points": [[1.0, 0.0]]},
+            ]
+        },
+    )
+    assert not check.matched_by([fact])
 
 
 def test_snapshot_roundtrip_keeps_the_verdict():

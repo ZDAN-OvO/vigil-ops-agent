@@ -119,9 +119,11 @@ class ArmFacts:
             supporting=[],
             proposals=[],
             attempts={},
-            approvals=0,
-            tool_calls=0,
-            model_calls=0,
+            # 没有调查记录就没有成本事实：写 0 会把"没有数据"说成"零成本"，
+            # 汇总时就会凭空得出成本优势。
+            approvals=None,
+            tool_calls=None,
+            model_calls=None,
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -280,7 +282,8 @@ async def load_arm_facts(store: Store, investigation_id: str | None) -> ArmFacts
         attempts=attempts,
         approvals=approvals,
         tool_calls=len(requests),
-        model_calls=task.used_model_calls if task is not None else 0,
+        # 任务缺失时模型调用次数未知，不能当 0。
+        model_calls=task.used_model_calls if task is not None else None,
         status=investigation.status.value,
     )
 
