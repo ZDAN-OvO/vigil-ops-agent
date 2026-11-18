@@ -85,7 +85,7 @@ wait_for_endpoints() {
 }
 
 deploy() {
-  "$DIR/repeat.sh" deploy
+  "$DIR/repeat.sh" deploy || return $?
   wait_for_endpoints
   say "ENDPOINTS_READY pod=$(active_pod || true)"
 }

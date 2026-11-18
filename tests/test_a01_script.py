@@ -264,7 +264,7 @@ def test_preflight_refuses_when_a_manifest_object_already_exists(tmp_path):
         + 'if [ "$1" = "apply" ]; then exit 0; fi\n'
         + 'if [ "$1" = "-n" ]; then\n'
         + '  case "$4" in\n'
-        + "    service/*) exit 0 ;;\n"
+        + "    service/rebuild-demo) exit 0 ;;\n"
         + "  esac\n"
         + "  echo 'Error from server (NotFound)' >&2; exit 1\n"
         + "fi\n"
@@ -276,6 +276,44 @@ def test_preflight_refuses_when_a_manifest_object_already_exists(tmp_path):
     assert "已存在" in result.stdout
     assert "created=0" in result.stdout
     assert "apply" not in calls
+
+
+def test_preflight_rejects_deployment_override_before_accessing_cluster(tmp_path):
+    result, calls = run_preflight(
+        tmp_path,
+        OWNER_STUB
+        + 'if [ "$4" = "service/rebuild-demo" ]; then exit 0; fi\n'
+        + 'if [ "$1" = "apply" ]; then exit 1; fi\n'
+        + "echo 'Error from server (NotFound)' >&2; exit 1\n",
+        DEPLOY="other",
+    )
+
+    assert result.returncode != 0
+    assert calls == ""
+    assert "DEPLOY 必须与 manifests.yaml 一致" in result.stdout
+    assert "created=0" in result.stdout
+
+
+def test_v06_deploy_stops_when_repeat_deploy_fails(tmp_path):
+    result, calls = run_v06(
+        tmp_path,
+        OWNER_STUB
+        + 'if [ "$3 $4" = "get pods" ]; then\n'
+        + '  echo \'{"items": [{"metadata": {"name": "pod-old"}}]}\'; exit 0\n'
+        + "fi\n"
+        + 'if [ "$3 $4" = "get pod" ] || [ "$3 $4" = "get endpoints" ]; then\n'
+        + "  echo 10.0.0.1; exit 0\n"
+        + "fi\n"
+        + 'if [ "$4" = "service/rebuild-demo" ]; then exit 0; fi\n'
+        + "echo 'Error from server (NotFound)' >&2; exit 1\n",
+        "deploy",
+        VIGIL_KUBE_CONTEXT="",
+    )
+
+    assert result.returncode != 0
+    assert "清单对象已存在" in result.stdout
+    assert "get pods" not in calls
+    assert "ENDPOINTS_READY" not in result.stdout
 
 
 def test_preflight_registers_a_partial_creation_after_apply_fails(tmp_path):

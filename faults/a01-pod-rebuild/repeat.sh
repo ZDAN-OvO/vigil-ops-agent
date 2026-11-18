@@ -384,8 +384,9 @@ cleanup() {
 }
 
 trap stop_port_forward EXIT
-# 清单里写死命名空间；允许覆盖 NS 会让所有权检查和实际删除目标不一致。
+# 清单固定了命名空间和名称，预检、部署和清理必须针对同一组资源。
 [ "$NS" = "vigil-experiment" ] || fail "NS 必须与 manifests.yaml 一致：vigil-experiment"
+[ "$DEPLOY" = "rebuild-demo" ] || fail "DEPLOY 必须与 manifests.yaml 一致：rebuild-demo"
 case "${1:-}" in
   preflight | deploy) deploy ;;
   recovered) recovered ;;
