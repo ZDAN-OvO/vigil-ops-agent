@@ -25,11 +25,11 @@
 改动：
 - `src/aiops/cli.py`：顶层只保留 `serve`、`doctor`；其余命令（含 `db`、`lab` 子组）移入隐藏的 `dev` 子组，行为不变。
 - 新增进程文件锁 `runtime/vigil.lock`（`fcntl.flock` 排他，持有到进程退出）。`serve` 与 A.2 列出的 `dev` 写命令取锁；`dev followup resolve` 不取锁。
-- `serve` 启动前检查任何来源的未决执行记录（`intent` / `executing` / `sending`），有则拒绝启动。
+- `serve` 启动顺序按 DESIGN A.2「启动顺序与未决写入」三步：命令行来源或归属不明的未决执行 → 拒绝启动；页面会话的未决执行 → 开放监听前按 A.6 第 3 行只写库恢复为待核实；再查一次，通过才开放监听。M1 先实现第 1、3 步与"无页面会话时即拒绝"的判断（M2 前还没有会话表，所有未决执行都视为不属于页面会话）；第 2 步的恢复逻辑在 M4 接入，并补"页面执行崩溃后重启"测试。
 - 更新 `README.md`、`docs/USAGE.md`、`Makefile` 的 `help` 及所有脚本（`faults/**/repeat.sh`、`scripts/`）中对旧命令的调用，改为 `aiops dev ...`。
 - `doctor` 先提供骨架：数据库、模型网关、集群、Prometheus 检查与修复提示；探针、mutating webhook、页面文件检查在 M3/M6 补齐。
 
-测试（A.15「推进者」中与锁相关的部分）：`aiops --help` 只列 `serve`/`doctor`；`serve` 运行时 `dev approve` 被拒；写命令运行时 `serve` 启动失败；锁随进程不随数据库连接；存在未决执行记录时 `serve` 拒绝启动；现有 `test_cli.py` 全部迁移到 `dev` 路径后仍绿。
+测试（A.15「推进者」中与锁相关的部分）：`aiops --help` 只列 `serve`/`doctor`；`serve` 运行时 `dev approve` 被拒；写命令运行时 `serve` 启动失败；锁随进程不随数据库连接；存在命令行来源的未决执行记录时 `serve` 拒绝启动；现有 `test_cli.py` 全部迁移到 `dev` 路径后仍绿。
 
 完成标准：上述测试绿；`grep -rn "aiops \(investigate\|approve\|resume\|act\|lab\|db\)" README.md docs scripts faults` 只剩 `aiops dev ...` 形式（运行记录 `faults/*/runs/` 中的历史原文不改）。
 
@@ -68,7 +68,7 @@
 
 测试（A.15）：审批、拒绝、动作范围、推进者（租约续约、交接顺序、`serve` 停止后 dev 仍不能操作页面调查）、恢复（A.6 每一行及列出的崩溃点）、并发、待办、线索。
 
-完成标准：测试绿；恢复表每一行有一个命名清晰的测试（`test_recovery_row_<n>_...`）。
+完成标准：测试绿；恢复表每一行有一个命名清晰的测试（`test_recovery_row_<n>_...`）；页面执行在 `sending` / `sent` 后崩溃，新 `serve` 开放监听前恢复为待核实且未发出集群写请求，然后启动成功。
 
 ### M5 Web API、快照、SSE 与过滤（A.1 路由隔离、A.10–A.13）
 
