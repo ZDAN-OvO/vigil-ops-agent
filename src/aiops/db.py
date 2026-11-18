@@ -3,9 +3,12 @@
 checkpoint 表由 LangGraph 官方 saver 自己管理，不与这里的迁移混用。
 """
 
+import hashlib
+import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Self
@@ -66,6 +69,18 @@ class DuplicateAttempt(RuntimeError):
     """同一提案已有执行记录，不得再次写入。"""
 
 
+class ConversationConflict(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class WebRequestResult:
+    id: str
+    replayed: bool = False
+
+
 def migration_files() -> list[Path]:
     return sorted(MIGRATIONS_DIR.glob("*.sql"))
 
@@ -119,28 +134,31 @@ class Store:
 
     async def save_incident(self, incident: Incident) -> None:
         async with self._pool.connection() as conn:
-            await conn.execute(
-                """
-                INSERT INTO incidents (
-                    id, environment, cluster, namespace, service, trigger, symptoms,
-                    time_start, time_end, alert_ids, alert_names, context
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    incident.id,
-                    incident.environment,
-                    incident.cluster,
-                    incident.namespace,
-                    incident.service,
-                    incident.trigger,
-                    incident.symptoms,
-                    incident.time_range.start,
-                    incident.time_range.end,
-                    incident.alert_ids,
-                    incident.alert_names,
-                    incident.context,
-                ),
-            )
+            return await self._insert_incident(conn, incident)
+
+    async def _insert_incident(self, conn: psycopg.AsyncConnection, incident: Incident) -> None:
+        await conn.execute(
+            """
+            INSERT INTO incidents (
+                id, environment, cluster, namespace, service, trigger, symptoms,
+                time_start, time_end, alert_ids, alert_names, context
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                incident.id,
+                incident.environment,
+                incident.cluster,
+                incident.namespace,
+                incident.service,
+                incident.trigger,
+                incident.symptoms,
+                incident.time_range.start,
+                incident.time_range.end,
+                incident.alert_ids,
+                incident.alert_names,
+                incident.context,
+            ),
+        )
 
     async def get_incident(self, incident_id: str) -> Incident | None:
         async with self._pool.connection() as conn:
@@ -164,35 +182,40 @@ class Store:
 
     async def create_investigation(self, investigation: Investigation) -> None:
         async with self._pool.connection() as conn:
-            await conn.execute(
-                """
-                INSERT INTO investigations (
-                    id, incident_id, parent_run_id, status, model, policy_version,
-                    budget_tool_calls, budget_model_calls, budget_wall_clock_seconds,
-                    budget_action_seconds, used_tool_calls, used_model_calls, conclusion,
-                    termination_reason, started_at, finished_at, skills
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    investigation.id,
-                    investigation.incident_id,
-                    investigation.parent_run_id,
-                    investigation.status.value,
-                    investigation.model,
-                    investigation.policy_version,
-                    investigation.budget.max_tool_calls,
-                    investigation.budget.max_model_calls,
-                    investigation.budget.max_wall_clock_seconds,
-                    investigation.budget.max_action_seconds,
-                    investigation.usage.tool_calls,
-                    investigation.usage.model_calls,
-                    investigation.conclusion,
-                    investigation.termination_reason,
-                    investigation.started_at,
-                    investigation.finished_at,
-                    Jsonb([item.model_dump(mode="json") for item in investigation.skills]),
-                ),
-            )
+            return await self._insert_investigation(conn, investigation)
+
+    async def _insert_investigation(
+        self, conn: psycopg.AsyncConnection, investigation: Investigation
+    ) -> None:
+        await conn.execute(
+            """
+            INSERT INTO investigations (
+                id, incident_id, parent_run_id, status, model, policy_version,
+                budget_tool_calls, budget_model_calls, budget_wall_clock_seconds,
+                budget_action_seconds, used_tool_calls, used_model_calls, conclusion,
+                termination_reason, started_at, finished_at, skills
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                investigation.id,
+                investigation.incident_id,
+                investigation.parent_run_id,
+                investigation.status.value,
+                investigation.model,
+                investigation.policy_version,
+                investigation.budget.max_tool_calls,
+                investigation.budget.max_model_calls,
+                investigation.budget.max_wall_clock_seconds,
+                investigation.budget.max_action_seconds,
+                investigation.usage.tool_calls,
+                investigation.usage.model_calls,
+                investigation.conclusion,
+                investigation.termination_reason,
+                investigation.started_at,
+                investigation.finished_at,
+                Jsonb([item.model_dump(mode="json") for item in investigation.skills]),
+            ),
+        )
 
     async def find_recent_incident(self, fingerprints: Sequence[str], *, since) -> Incident | None:
         """按告警指纹取最近的事件，用于基本去重。"""
@@ -402,6 +425,7 @@ class Store:
                     hypothesis.update_reason,
                 ),
             )
+            await self._notify_investigation(conn, hypothesis.investigation_id, "evidence")
 
     async def get_hypothesis(self, hypothesis_id: str) -> Hypothesis | None:
         async with self._pool.connection() as conn:
@@ -624,6 +648,7 @@ class Store:
                     proposal.observation_window_seconds,
                 ),
             )
+            await self._notify_investigation(conn, proposal.investigation_id, "proposal")
         except psycopg.errors.UniqueViolation as exc:
             raise DuplicateProposal("同一目标版本已有进行中的提案") from exc
 
@@ -750,8 +775,8 @@ class Store:
             """
             INSERT INTO approvals (
                 id, proposal_id, proposal_hash, actor, decision, reason,
-                decided_at, expires_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                decided_at, expires_at, card_hash
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 approval.id,
@@ -762,6 +787,7 @@ class Store:
                 approval.reason,
                 approval.decided_at,
                 approval.expires_at,
+                approval.card_hash,
             ),
         )
 
@@ -783,33 +809,37 @@ class Store:
             reason=row["reason"],
             decided_at=row["decided_at"],
             expires_at=row["expires_at"],
+            card_hash=row["card_hash"],
         )
 
     async def save_attempt(self, attempt: ActionAttempt) -> None:
         async with self._pool.connection() as conn:
-            try:
-                await conn.execute(
-                    """
-                    INSERT INTO action_attempts (
-                        id, proposal_id, status, idempotency_key, snapshot, request,
-                        result, verification, started_at, finished_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        attempt.id,
-                        attempt.proposal_id,
-                        attempt.status.value,
-                        attempt.idempotency_key,
-                        Jsonb(attempt.snapshot),
-                        Jsonb(attempt.request),
-                        Jsonb(attempt.result) if attempt.result is not None else None,
-                        Jsonb(attempt.verification) if attempt.verification is not None else None,
-                        attempt.started_at,
-                        attempt.finished_at,
-                    ),
-                )
-            except psycopg.errors.UniqueViolation as exc:
-                raise DuplicateAttempt("该提案已有执行记录") from exc
+            await self._insert_attempt(conn, attempt)
+
+    async def _insert_attempt(self, conn: psycopg.AsyncConnection, attempt: ActionAttempt) -> None:
+        try:
+            await conn.execute(
+                """
+                INSERT INTO action_attempts (
+                    id, proposal_id, status, idempotency_key, snapshot, request,
+                    result, verification, started_at, finished_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    attempt.id,
+                    attempt.proposal_id,
+                    attempt.status.value,
+                    attempt.idempotency_key,
+                    Jsonb(attempt.snapshot),
+                    Jsonb(attempt.request),
+                    Jsonb(attempt.result) if attempt.result is not None else None,
+                    Jsonb(attempt.verification) if attempt.verification is not None else None,
+                    attempt.started_at,
+                    attempt.finished_at,
+                ),
+            )
+        except psycopg.errors.UniqueViolation as exc:
+            raise DuplicateAttempt("该提案已有执行记录") from exc
 
     async def update_attempt(
         self,
@@ -825,13 +855,15 @@ class Store:
                 """
                 UPDATE action_attempts
                    SET status = %s,
-                       result = COALESCE(%s, result),
+                       result = CASE WHEN %s::jsonb IS NULL THEN result
+                                     ELSE COALESCE(result, '{}'::jsonb) || %s::jsonb END,
                        verification = COALESCE(%s, verification),
                        finished_at = COALESCE(%s, finished_at)
                  WHERE id = %s
                 """,
                 (
                     status.value,
+                    Jsonb(result) if result is not None else None,
                     Jsonb(result) if result is not None else None,
                     Jsonb(verification) if verification is not None else None,
                     finished_at,
@@ -840,6 +872,71 @@ class Store:
             )
             if cursor.rowcount != 1:
                 raise LookupError(f"执行记录不存在：{attempt_id}")
+            await self._notify_attempt(conn, attempt_id)
+
+    async def get_conversation_for_investigation(self, investigation_id: str) -> dict | None:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT * FROM conversations WHERE investigation_id = %s", (investigation_id,)
+            )
+            return await cur.fetchone()
+
+    async def register_rollback_sending(
+        self, attempt: ActionAttempt, *, investigation_id: str | None, instance_id: str | None
+    ) -> bool:
+        """持有任务行锁时核对执行归属，然后在同一事务中登记发写请求。"""
+        async with self._pool.connection() as conn:
+            if instance_id is not None:
+                cur = await conn.execute(
+                    """
+                    SELECT investigation_id FROM investigation_tasks
+                     WHERE investigation_id = %s AND phase = 'running'
+                       AND lease_owner = %s AND lease_expires_at > clock_timestamp()
+                     FOR UPDATE
+                    """,
+                    (investigation_id, instance_id),
+                )
+                if await cur.fetchone() is None:
+                    return False
+                cur = await conn.execute(
+                    """
+                    SELECT 1 FROM web_work w JOIN conversations c ON c.id = w.conversation_id
+                     WHERE c.investigation_id = %s AND c.finished_at IS NULL
+                       AND w.state = 'running' AND w.instance_id = %s AND w.proposal_id = %s
+                    """,
+                    (investigation_id, instance_id, attempt.proposal_id),
+                )
+                if await cur.fetchone() is None:
+                    return False
+            cur = await conn.execute(
+                """
+                UPDATE action_proposals SET status = 'executing'
+                 WHERE id = %s AND status = 'approved'
+                """,
+                (attempt.proposal_id,),
+            )
+            if not cur.rowcount:
+                return False
+            await self._insert_attempt(conn, attempt)
+            await self._notify_attempt(conn, attempt.id)
+            return True
+
+    async def record_not_sent(
+        self, attempt: ActionAttempt, *, proposal_status: ProposalStatus, target_lock_key: str
+    ) -> None:
+        """写前失败的记录和目标解锁一起提交。"""
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "UPDATE action_proposals SET status = %s WHERE id = %s AND status = 'approved'",
+                (proposal_status.value, attempt.proposal_id),
+            )
+            if cur.rowcount:
+                await self._insert_attempt(conn, attempt)
+            await conn.execute(
+                "DELETE FROM action_locks WHERE target_key = %s AND proposal_id = %s",
+                (target_lock_key, attempt.proposal_id),
+            )
+            await self._notify_attempt(conn, attempt.id)
 
     async def finish_attempt(
         self,
@@ -852,6 +949,7 @@ class Store:
         verification: dict | None,
         finished_at,
         followup: ActionFollowup | None = None,
+        target_lock_key: str | None = None,
     ) -> None:
         """执行记录、提案状态和待办同一事务落库，避免只写一半。"""
         async with self._pool.connection() as conn:
@@ -860,13 +958,15 @@ class Store:
                     """
                     UPDATE action_attempts
                        SET status = %s,
-                           result = COALESCE(%s, result),
+                           result = CASE WHEN %s::jsonb IS NULL THEN result
+                                         ELSE COALESCE(result, '{}'::jsonb) || %s::jsonb END,
                            verification = COALESCE(%s, verification),
                            finished_at = COALESCE(%s, finished_at)
                      WHERE id = %s
                     """,
                     (
                         status.value,
+                        Jsonb(result) if result is not None else None,
                         Jsonb(result) if result is not None else None,
                         Jsonb(verification) if verification is not None else None,
                         finished_at,
@@ -881,6 +981,12 @@ class Store:
                 )
                 if followup is not None:
                     await self._insert_followup(conn, followup)
+                elif target_lock_key is not None:
+                    await conn.execute(
+                        "DELETE FROM action_locks WHERE target_key = %s AND proposal_id = %s",
+                        (target_lock_key, proposal_id),
+                    )
+                await self._notify_attempt(conn, attempt_id)
 
     async def _insert_followup(
         self, conn: psycopg.AsyncConnection, followup: ActionFollowup
@@ -981,6 +1087,16 @@ class Store:
             raise ValueError("解决待办必须记录操作者与说明")
         async with self._pool.connection() as conn:
             async with conn.transaction():
+                cur = await conn.execute(
+                    """
+                    SELECT t.investigation_id
+                      FROM action_followups f JOIN action_proposals p ON p.id = f.proposal_id
+                      JOIN investigation_tasks t USING (investigation_id)
+                     WHERE f.id = %s FOR UPDATE OF t
+                    """,
+                    (followup_id,),
+                )
+                await cur.fetchone()
                 cursor = await conn.execute(
                     """
                     UPDATE action_followups
@@ -1018,6 +1134,23 @@ class Store:
                         datetime.now(UTC),
                         Jsonb({"followup_id": followup_id, "note": note}),
                     ),
+                )
+                await conn.execute(
+                    "UPDATE action_proposals SET status = 'failed' "
+                    "WHERE id = %s AND status = 'unknown'",
+                    (row["proposal_id"],),
+                )
+                await conn.execute(
+                    "DELETE FROM action_locks WHERE proposal_id = %s", (row["proposal_id"],)
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO conversation_events (conversation_id, kind)
+                    SELECT c.id, 'followup' FROM conversations c
+                    JOIN action_proposals p USING (investigation_id)
+                    WHERE p.id = %s
+                    """,
+                    (row["proposal_id"],),
                 )
         return _followup_from_row(row)
 
@@ -1057,26 +1190,29 @@ class Store:
     async def create_task(self, task: InvestigationTask) -> bool:
         """新建任务记录；已存在时返回 False，不覆写历史用量。"""
         async with self._pool.connection() as conn:
-            cursor = await conn.execute(
-                """
-                INSERT INTO investigation_tasks (
-                    investigation_id, phase, runtime_version, calendar_started_at,
-                    used_model_calls, used_tool_calls, investigation_seconds, action_seconds
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (investigation_id) DO NOTHING
-                """,
-                (
-                    task.investigation_id,
-                    task.phase.value,
-                    task.runtime_version,
-                    task.calendar_started_at,
-                    task.used_model_calls,
-                    task.used_tool_calls,
-                    task.investigation_seconds,
-                    task.action_seconds,
-                ),
-            )
-            return cursor.rowcount == 1
+            return await self._insert_task(conn, task)
+
+    async def _insert_task(self, conn: psycopg.AsyncConnection, task: InvestigationTask) -> bool:
+        cursor = await conn.execute(
+            """
+            INSERT INTO investigation_tasks (
+                investigation_id, phase, runtime_version, calendar_started_at,
+                used_model_calls, used_tool_calls, investigation_seconds, action_seconds
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (investigation_id) DO NOTHING
+            """,
+            (
+                task.investigation_id,
+                task.phase.value,
+                task.runtime_version,
+                task.calendar_started_at,
+                task.used_model_calls,
+                task.used_tool_calls,
+                task.investigation_seconds,
+                task.action_seconds,
+            ),
+        )
+        return cursor.rowcount == 1
 
     async def get_task(self, investigation_id: str) -> InvestigationTask | None:
         async with self._pool.connection() as conn:
@@ -1164,12 +1300,16 @@ class Store:
                    SET phase = 'waiting_approval',
                        proposal_id = %s,
                        paused_at = now(),
-                       lease_owner = NULL,
-                       lease_expires_at = NULL,
+                       lease_owner = CASE WHEN EXISTS (
+                           SELECT 1 FROM conversations c WHERE c.investigation_id = %s
+                       ) THEN lease_owner END,
+                       lease_expires_at = CASE WHEN EXISTS (
+                           SELECT 1 FROM conversations c WHERE c.investigation_id = %s
+                       ) THEN lease_expires_at END,
                        updated_at = now()
                  WHERE investigation_id = %s AND phase <> 'terminal'
                 """,
-                (proposal_id, investigation_id),
+                (proposal_id, investigation_id, investigation_id, investigation_id),
             )
             if cursor.rowcount != 1:
                 raise LookupError(f"任务不存在或已结束：{investigation_id}")
@@ -1197,7 +1337,15 @@ class Store:
         recovered_at=None,
         proposal_id: str | None = None,
     ) -> None:
+        from aiops.web.lifecycle import _lock_conversation, close_conversation
+
         async with self._pool.connection() as conn:
+            current = await conn.execute(
+                "SELECT id FROM conversations WHERE investigation_id = %s", (investigation_id,)
+            )
+            conversation = await current.fetchone()
+            if conversation:
+                conversation = await _lock_conversation(conn, conversation["id"])
             cursor = await conn.execute(
                 """
                 UPDATE investigation_tasks
@@ -1223,6 +1371,8 @@ class Store:
             )
             if cursor.rowcount != 1:
                 raise LookupError(f"任务不存在：{investigation_id}")
+            if conversation:
+                await close_conversation(self, conn, conversation)
 
     async def record_recovery(self, investigation_id: str, *, at) -> None:
         async with self._pool.connection() as conn:
@@ -1247,6 +1397,137 @@ class Store:
             )
             return cursor.rowcount == 1
 
+    async def has_unfinished_attempt(self, *, non_web_only: bool = False) -> bool:
+        """开放监听前检查未决执行，旧表记录按最保守的归属判断。"""
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT 1 FROM action_attempts a
+                JOIN action_proposals p ON p.id = a.proposal_id
+                LEFT JOIN conversations c ON c.investigation_id = p.investigation_id
+                WHERE (
+                        a.status IN ('intent', 'executing')
+                        OR a.result->>'send_state' = 'sending'
+                        -- adopt-pending 转出的命令行中断执行，待办关闭前仍算未决。
+                        OR (c.id IS NULL AND EXISTS (
+                            SELECT 1 FROM action_followups f
+                             WHERE f.attempt_id = a.id AND f.status = 'open'
+                               AND f.evidence->>'adopted' = 'true'))
+                      )
+                  AND (NOT %s OR c.id IS NULL)
+                LIMIT 1
+                """,
+                (non_web_only,),
+            )
+            return await cursor.fetchone() is not None
+
+    async def adopt_unfinished_attempts(self) -> list[str]:
+        """把命令行来源或归属不明、已无进程推进的未决执行转成人工待办。
+
+        调用方必须已持有推进者进程锁，保证原写命令进程已退出。只写数据库：执行记录与提案记为
+        unknown，原 result 保留并补 interrupted 标记，目标锁保留到待办关闭；不发集群请求。
+        """
+        created: list[str] = []
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                cur = await conn.execute(
+                    """
+                    SELECT a.id AS attempt_id, a.result, p.id AS proposal_id, p.cluster,
+                           p.namespace, p.target_kind, p.target_name
+                      FROM action_attempts a
+                      JOIN action_proposals p ON p.id = a.proposal_id
+                      LEFT JOIN conversations c ON c.investigation_id = p.investigation_id
+                     WHERE (a.status IN ('intent', 'executing')
+                            OR a.result->>'send_state' = 'sending')
+                       AND c.id IS NULL
+                     FOR UPDATE OF a, p
+                    """
+                )
+                for row in await cur.fetchall():
+                    sent = (row["result"] or {}).get("send_state") == "sent"
+                    marker = {
+                        "send_state": "sent" if sent else "uncertain",
+                        "verification": "unknown",
+                        "verification_reason": "interrupted",
+                    }
+                    await conn.execute(
+                        "UPDATE action_attempts SET status = 'unknown', "
+                        "result = COALESCE(result, '{}'::jsonb) || %s::jsonb, "
+                        "finished_at = COALESCE(finished_at, now()) WHERE id = %s",
+                        (Jsonb(marker), row["attempt_id"]),
+                    )
+                    await conn.execute(
+                        "UPDATE action_proposals SET status = 'unknown' WHERE id = %s",
+                        (row["proposal_id"],),
+                    )
+                    exists = await conn.execute(
+                        "SELECT 1 FROM action_followups WHERE attempt_id = %s",
+                        (row["attempt_id"],),
+                    )
+                    if await exists.fetchone() is None:
+                        followup_id = f"fol-{uuid.uuid4().hex[:12]}"
+                        await conn.execute(
+                            """
+                            INSERT INTO action_followups (
+                                id, proposal_id, attempt_id, cluster, namespace, target_kind,
+                                target_name, outcome, reason, evidence, status, created_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'unknown', %s, %s, 'open', now())
+                            """,
+                            (
+                                followup_id,
+                                row["proposal_id"],
+                                row["attempt_id"],
+                                row["cluster"],
+                                row["namespace"],
+                                row["target_kind"],
+                                row["target_name"],
+                                "命令行执行中断，写入结果未明，请人工核实",
+                                Jsonb({"result": row["result"], "adopted": True, **marker}),
+                            ),
+                        )
+                        created.append(followup_id)
+        return created
+
+    async def renew_web_lease(self, investigation_id: str, instance_id: str) -> bool:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE investigation_tasks
+                   SET lease_expires_at = clock_timestamp() + interval '300 seconds'
+                 WHERE investigation_id = %s AND lease_owner = %s
+                   AND lease_expires_at > clock_timestamp() AND phase <> 'terminal'
+                """,
+                (investigation_id, instance_id),
+            )
+            return bool(cursor.rowcount)
+
+    async def pending_conversation_hints(self, conversation_id: str) -> list[dict]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                """
+                SELECT id, content FROM conversation_messages
+                 WHERE conversation_id = %s AND delivery = 'received'
+                 ORDER BY created_at, id
+                """,
+                (conversation_id,),
+            )
+            return await cur.fetchall()
+
+    async def confirm_conversation_hints(self, conversation_id: str, delivered: dict[str, int]):
+        async with self._pool.connection() as conn:
+            changed = False
+            for message_id, round_number in delivered.items():
+                cur = await conn.execute(
+                    """
+                    UPDATE conversation_messages SET delivery = 'delivered', delivered_round = %s
+                     WHERE conversation_id = %s AND id = %s AND delivery = 'received'
+                    """,
+                    (round_number, conversation_id, message_id),
+                )
+                changed |= bool(cur.rowcount)
+            if changed:
+                await self._insert_conversation_event(conn, conversation_id, "hint_delivered")
+
     async def task_has_write_intent(self, investigation_id: str) -> bool:
         """是否存在已发出或结果未知的写意图；用于中断后禁止接管重放。"""
         async with self._pool.connection() as conn:
@@ -1262,6 +1543,224 @@ class Store:
                 (investigation_id,),
             )
             return await cursor.fetchone() is not None
+
+    # ---- 页面会话、请求防重和工作领取 ----
+
+    async def _claim_web_request(
+        self,
+        conn: psycopg.AsyncConnection,
+        request_id: str,
+        operation: str,
+        resource_id: str | None,
+        body: dict,
+        response_id: str,
+    ) -> WebRequestResult:
+        canonical = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        body_hash = hashlib.sha256(canonical.encode()).hexdigest()
+        cur = await conn.execute(
+            """
+            INSERT INTO web_requests (request_id, operation, resource_id, body_hash, response_id)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (request_id) DO NOTHING
+            """,
+            (request_id, operation, resource_id, body_hash, response_id),
+        )
+        if cur.rowcount:
+            return WebRequestResult(response_id)
+        cur = await conn.execute("SELECT * FROM web_requests WHERE request_id = %s", (request_id,))
+        saved = await cur.fetchone()
+        if saved is None or (saved["operation"], saved["resource_id"], saved["body_hash"]) != (
+            operation,
+            resource_id,
+            body_hash,
+        ):
+            raise ConversationConflict("idempotency_conflict")
+        return WebRequestResult(saved["response_id"], replayed=True)
+
+    async def create_conversation(
+        self, request_id: str, incident: Incident, investigation: Investigation
+    ) -> WebRequestResult:
+        conversation_id = f"conv-{uuid.uuid4().hex}"
+        async with self._pool.connection() as conn:
+            result = await self._claim_web_request(
+                conn,
+                request_id,
+                "create",
+                None,
+                {"service": incident.service, "symptoms": incident.symptoms},
+                conversation_id,
+            )
+            if result.replayed:
+                return result
+            await self._insert_incident(conn, incident)
+            await self._insert_investigation(conn, investigation)
+            await self._insert_task(
+                conn,
+                InvestigationTask(
+                    investigation_id=investigation.id,
+                    phase=TaskPhase.RUNNING,
+                    calendar_started_at=investigation.started_at,
+                ),
+            )
+            saved = await conn.execute(
+                """
+                INSERT INTO conversations (id, investigation_id) VALUES (%s, %s)
+                ON CONFLICT ((true)) WHERE finished_at IS NULL DO NOTHING
+                """,
+                (conversation_id, investigation.id),
+            )
+            if not saved.rowcount:
+                raise ConversationConflict("conversation_active")
+            await self._insert_conversation_message(
+                conn, conversation_id, f"msg-{uuid.uuid4().hex}", "initial", incident.symptoms
+            )
+            await conn.execute(
+                "INSERT INTO web_work (conversation_id, kind) VALUES (%s, 'start')",
+                (conversation_id,),
+            )
+            return result
+
+    async def _insert_conversation_message(
+        self,
+        conn: psycopg.AsyncConnection,
+        conversation_id: str,
+        message_id: str,
+        kind: str,
+        content: str,
+    ) -> None:
+        await conn.execute(
+            """
+            INSERT INTO conversation_messages (id, conversation_id, role, kind, content, delivery)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                message_id,
+                conversation_id,
+                "agent" if kind == "conclusion" else "user",
+                kind,
+                content,
+                "received" if kind == "hint" else None,
+            ),
+        )
+        await self._insert_conversation_event(conn, conversation_id, "message")
+
+    async def append_conversation_message(
+        self, request_id: str, conversation_id: str, content: str
+    ) -> WebRequestResult:
+        message_id = f"msg-{uuid.uuid4().hex}"
+        async with self._pool.connection() as conn:
+            result = await self._claim_web_request(
+                conn, request_id, "message", conversation_id, {"content": content}, message_id
+            )
+            if result.replayed:
+                return result
+            cur = await conn.execute(
+                "SELECT finished_at FROM conversations WHERE id = %s FOR UPDATE",
+                (conversation_id,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                raise ConversationConflict("not_found")
+            if row["finished_at"] is not None:
+                raise ConversationConflict("conversation_finished")
+            await self._insert_conversation_message(
+                conn, conversation_id, message_id, "hint", content
+            )
+            return result
+
+    async def get_current_conversation(self) -> dict | None:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT * FROM conversations ORDER BY created_at DESC, id DESC LIMIT 1"
+            )
+            return await cur.fetchone()
+
+    async def _notify_investigation(
+        self, conn: psycopg.AsyncConnection, investigation_id: str | None, kind: str
+    ) -> None:
+        if investigation_id is not None:
+            await conn.execute(
+                """
+                INSERT INTO conversation_events (conversation_id, kind)
+                SELECT id, %s FROM conversations WHERE investigation_id = %s
+                """,
+                (kind, investigation_id),
+            )
+
+    async def _notify_attempt(self, conn: psycopg.AsyncConnection, attempt_id: str) -> None:
+        await conn.execute(
+            """
+            INSERT INTO conversation_events (conversation_id, kind)
+            SELECT c.id, 'execution' FROM conversations c
+            JOIN action_proposals p USING (investigation_id)
+            JOIN action_attempts a ON a.proposal_id = p.id WHERE a.id = %s
+            """,
+            (attempt_id,),
+        )
+
+    async def _insert_conversation_event(
+        self, conn: psycopg.AsyncConnection, conversation_id: str, kind: str
+    ) -> None:
+        await conn.execute(
+            "INSERT INTO conversation_events (conversation_id, kind) VALUES (%s, %s)",
+            (conversation_id, kind),
+        )
+
+    async def list_conversation_events(
+        self, conversation_id: str, *, after: int = 0, limit: int = 100
+    ) -> list[dict]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                """
+                SELECT id, kind, created_at FROM conversation_events
+                 WHERE conversation_id = %s AND id > %s
+                 ORDER BY id LIMIT %s
+                """,
+                (conversation_id, after, limit),
+            )
+            return await cur.fetchall()
+
+    async def claim_web_work(
+        self, conversation_id: str, instance_id: str, *, lease_seconds: int = 300
+    ) -> dict | None:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                """
+                SELECT t.investigation_id, t.phase,
+                       lease_owner IS NOT NULL AND lease_expires_at > now() AS leased
+                  FROM investigation_tasks t
+                  JOIN conversations c USING (investigation_id)
+                 WHERE c.id = %s AND c.finished_at IS NULL
+                 FOR UPDATE OF t
+                """,
+                (conversation_id,),
+            )
+            task = await cur.fetchone()
+            if task is None or task["phase"] == "terminal" or task["leased"]:
+                return None
+            cur = await conn.execute(
+                """
+                UPDATE web_work
+                   SET state = 'running', instance_id = %s, started_at = now()
+                 WHERE conversation_id = %s AND state = 'queued'
+                 RETURNING *
+                """,
+                (instance_id, conversation_id),
+            )
+            work = await cur.fetchone()
+            if work is None:
+                return None
+            await conn.execute(
+                """
+                UPDATE investigation_tasks
+                   SET lease_owner = %s, lease_expires_at = now() + make_interval(secs => %s),
+                       updated_at = now()
+                 WHERE investigation_id = %s
+                """,
+                (instance_id, lease_seconds, task["investigation_id"]),
+            )
+            await self._insert_conversation_event(conn, conversation_id, "state")
+            return work | {"investigation_id": task["investigation_id"]}
 
     # ---- 观测与假设—证据关系 ----
 
@@ -1290,6 +1789,7 @@ class Store:
                     observation.time_range.end,
                 ),
             )
+            await self._notify_investigation(conn, observation.investigation_id, "evidence")
 
     async def get_observation(self, observation_id: str) -> Observation | None:
         async with self._pool.connection() as conn:
@@ -1346,6 +1846,7 @@ class Store:
                     link.rationale,
                 ),
             )
+            await self._notify_investigation(conn, link.investigation_id, "evidence")
 
     async def list_hypothesis_evidence(self, investigation_id: str) -> list[HypothesisEvidence]:
         async with self._pool.connection() as conn:
@@ -1466,6 +1967,8 @@ class Store:
                     request.started_at,
                 ),
             )
+            if cursor.rowcount:
+                await self._notify_investigation(conn, request.investigation_id, "progress")
             return cursor.rowcount == 1
 
     async def get_tool_request(
@@ -1521,6 +2024,7 @@ class Store:
             )
             if cursor.rowcount != 1:
                 raise LookupError(f"工具请求不存在：{tool_call_id}")
+            await self._notify_investigation(conn, investigation_id, "progress")
 
     async def list_tool_requests(self, investigation_id: str) -> list[ToolRequest]:
         async with self._pool.connection() as conn:
@@ -1635,6 +2139,8 @@ def _task_from_row(row: dict) -> InvestigationTask:
         outcome=row["outcome"],
         termination_code=row["termination_code"],
         proposal_id=row["proposal_id"],
+        ready_proposal_id=row["ready_proposal_id"],
+        actions_disabled=row["actions_disabled"],
         runtime_version=row["runtime_version"],
         used_model_calls=row["used_model_calls"],
         used_tool_calls=row["used_tool_calls"],

@@ -2,17 +2,21 @@
 
 配置 Vigil、发起调查、审批动作，并核查结果。
 
-## 1. 操作入口
+## 1. 页面调查
 
-三条链路，日常用法各不同：
+先执行 `uv run --frozen aiops dev db migrate`、`make web-build` 和
+`uv run --frozen aiops doctor`，然后运行 `uv run --frozen aiops serve`。
+打开终端显示的本机地址，默认是 `http://127.0.0.1:8080/`。
 
-| 链路 | 入口 | 谁触发 | 产物 |
-|---|---|---|---|
-| 告警 → 调查 | `aiops serve` + AlertManager | Prometheus 真实告警 | 事件、调查、提案；满足自动规则时可执行 Pod 重建 |
-| 手动调查 | `aiops investigate` | 你自己 | 事件、调查、Skill 与委派记录、提案 |
-| 受控处置 | `aiops act` / `approve` / `resume` | 操作者提交与审批 | 提案、审批、执行尝试、验证结果、审计 |
+1. 选择受影响的服务，描述故障。首页故障选择 `frontend`。
+2. 在对话中补充线索，查看调查进展和证据。线索显示「已送入调查」时会标出调查轮次。
+3. 核对回滚版本、Pod 模板变更、风险和关联证据，再批准或拒绝。
+4. 查看集群写入状态与首页探针结果。拒绝后，本次调查继续取证。
+5. 调查结束后可开始新调查。刷新或重新打开页面会恢复当前会话。
 
-调查默认只读；单 Agent 在 `vigil-experiment` 内可对满足规则的 `restart_pod` 自动执行，其余动作等人工审批。操作者入口 `act`/`approve`/`resume` 写集群，动作只有 `rollout_undo`（回退到上一 revision）和 `restart_pod`（重建 Pod）两种。实验命名空间之外默认拒绝。
+出现「处置结果待核实」时，到实验集群核实，再执行
+`aiops dev followup resolve <待办 ID> --note "<核实结论>"`。记录会显示在页面。
+服务运行期间，告警只取证。命令行演练和审批需要停止服务，页面会话的审批始终在页面完成。
 
 ## 2. 前置：先确认环境活着
 
@@ -36,7 +40,7 @@ curl -s http://127.0.0.1:3425/v1/models | head -c 200
 
 `kubectl` 默认不读 `~/.kube/vigil-lab.yaml`，但 `aiops` 通过 `VIGIL_KUBECONFIG` 读它，两者互不影响。`repeat.sh` 等脚本会自己 export，不必依赖 shell 环境。
 
-宿主机端口被别的项目占用时先看 `ss -ltnp | grep <端口>`：本机 8081 被另一个前端项目占用，因此 webhook 用 8091、前端 port-forward 用 8082。
+宿主机端口被别的项目占用时先看 `ss -ltnp | grep <端口>`：本机 8081 被另一个前端项目占用，因此 webhook 用 8091、示例商店的 port-forward 用 8082，Vigil 页面用 8080。
 
 ### 需要时启动的服务
 
@@ -68,6 +72,11 @@ VIGIL_MODEL_NAME=auto/deepseek-v4.1-flash
 VIGIL_WEBHOOK_TOKEN=<与 vigil-monitoring/vigil-webhook-token 相同>
 VIGIL_WEBHOOK_HOST=0.0.0.0   # 集群经 docker 网关 172.20.0.1 访问宿主机
 VIGIL_WEBHOOK_PORT=8091
+VIGIL_WEB_HOST=127.0.0.1
+VIGIL_WEB_PORT=8080
+VIGIL_WEB_OPERATOR=web-operator
+VIGIL_ACTION_APPROVAL_TTL_SECONDS=900
+VIGIL_VERIFY_PROBE_QUERY=probe_http_status_code{job="frontend-probe"}
 ```
 
 密码和 token 只放在 `.env`；需要重取时：
@@ -84,35 +93,38 @@ kubectl -n vigil-monitoring get secret vigil-webhook-token -o jsonpath='{.data.t
 迁移同时删除旧 `hypothesis_revisions` 与 `tool_calls` 表，见 [0011 迁移](../src/aiops/migrations/0011_skills_and_delegations.sql)。迁移前的导出应覆盖需要保留的旧记录。
 
 ```bash
-uv run --frozen aiops db status   # 期望列出 0001_init … 0011_skills_and_delegations
-uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
+uv run --frozen aiops dev db status   # 期望列出 0001_init … 0013_web_conversation
+uv run --frozen aiops dev db migrate  # 幂等；升级后先跑这个
 ```
 
 ## 4. 命令手册
 
+`aiops --help` 列出服务与自检，`aiops dev --help` 列出开发命令。
+
 | 命令 | 作用 | 写集群 |
 |---|---|---|
-| `aiops status` | 版本与能力范围，不探测集群 | 否 |
-| `aiops lab scenarios` | 列出对照评估的场景与判定口径 | 否 |
-| `aiops lab run` | 按场景跑对照实验并写记录 | 是（通过场景脚本） |
-| `aiops lab summarize` / `lab rescore` | 汇总已有记录 / 按当前口径重算 | 否 |
-| `aiops db status` / `db migrate` | 迁移状态 / 应用缺失迁移 | 否 |
-| `aiops investigate --service --symptoms [--arm]` | 跑一次调查；`--arm` 选对照臂（默认 `agent`） | 仅自动允许的实验命名空间 `restart_pod` |
-| `aiops incidents [--limit N]` | 最近事件与关联调查 | 否 |
-| `aiops report <inv-id>` | 已存结论、假设、Skill、委派与观测条数 | 否 |
-| `aiops act --kind rollout-undo --deployment X --reason "..."` | 提交回退提案 | 自动允许时当场执行 |
-| `aiops act --kind restart-pod --pod P --service S --reason "..."` | 提交重建提案 | 实验命名空间自动执行 |
-| `aiops approvals [--status]` | 待审批提案列表 | 否 |
-| `aiops proposal <act-id>` | 单个提案 + 审批 + 执行 + 审计 + 待办 | 否 |
-| `aiops approve <act-id> [--defer]` | 批准并执行；`--defer` 只记录审批 | 是 |
-| `aiops resume <act-id>` | 执行已批准未执行的提案 | 是 |
-| `aiops reject <act-id>` | 拒绝，不写集群 | 否 |
-| `aiops cancel <inv-id>` | 请求取消运行中的单 Agent 任务；等待审批时直接终止 | 否 |
-| `aiops followups` / `followup <fol-id>` | 异常执行留下的人工待办 | 否 |
-| `aiops knowledge list` / `knowledge import --path <文件或目录>` | 结构化 runbook 查询与登记 | 否 |
-| `aiops serve` | 启动 AlertManager webhook | 否 |
+| `aiops dev status` | 版本与能力范围，不探测集群 | 否 |
+| `aiops dev lab scenarios` | 列出对照评估的场景与判定口径 | 否 |
+| `aiops dev lab run` | 按场景跑对照实验并写记录 | 是（通过场景脚本） |
+| `aiops dev lab summarize` / `lab rescore` | 汇总已有记录 / 按当前口径重算 | 否 |
+| `aiops dev db status` / `db migrate` | 迁移状态 / 应用缺失迁移 | 否 |
+| `aiops dev investigate --service --symptoms [--arm]` | 跑一次调查；`--arm` 选对照臂（默认 `agent`） | 仅自动允许的实验命名空间 `restart_pod` |
+| `aiops dev incidents [--limit N]` | 最近事件与关联调查 | 否 |
+| `aiops dev report <inv-id>` | 已存结论、假设、Skill、委派与观测条数 | 否 |
+| `aiops dev act --kind rollout-undo --deployment X --reason "..."` | 提交回退提案 | 自动允许时当场执行 |
+| `aiops dev act --kind restart-pod --pod P --service S --reason "..."` | 提交重建提案 | 实验命名空间自动执行 |
+| `aiops dev approvals [--status]` | 待审批提案列表 | 否 |
+| `aiops dev proposal <act-id>` | 单个提案 + 审批 + 执行 + 审计 + 待办 | 否 |
+| `aiops dev approve <act-id> [--defer]` | 批准并执行；`--defer` 只记录审批 | 是 |
+| `aiops dev resume <act-id>` | 执行已批准未执行的提案 | 是 |
+| `aiops dev reject <act-id>` | 拒绝，不写集群 | 否 |
+| `aiops dev cancel <inv-id>` | 请求取消运行中的单 Agent 任务；等待审批时直接终止 | 否 |
+| `aiops dev followups` / `aiops dev followup <fol-id>` | 异常执行留下的人工待办 | 否 |
+| `aiops dev knowledge list` / `knowledge import --path <文件或目录>` | 结构化 runbook 查询与登记 | 否 |
+| `aiops serve` | 启动本机页面与独立告警接入 | 页面批准后可执行回滚 |
+| `aiops doctor` | 检查数据库、模型网关、集群、Prometheus、业务探针、准入规则与页面文件 | 否 |
 
-除 `serve`、`knowledge` 外，表中命令支持 `--output json`，便于脚本消费。
+除 `serve`、`doctor`、`knowledge` 外，表中命令支持 `--output json`，便于脚本消费。
 
 ### 退出码
 
@@ -129,33 +141,37 @@ uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 
 调查任务状态看 `report` 与 `data.task`（phase/outcome/termination_code）；`investigations.status` 只表示诊断结论。`data.skills` 记录本轮加载的 Skill 与内容哈希，`data.delegations` 记录只读委派，每条包含委派 ID、子任务 Skill 和 `observation_ids`（该委派返回的观测）。
 
-## 5. 调查与审批
+记录人工核实结果用 `aiops dev followup resolve <fol-id> --note <核实说明>`。
+
+`serve` 提示存在命令行来源的未决执行而拒绝启动时，先运行 `aiops dev adopt-pending` 把它们转成待办，到集群核实后再 `followup resolve`。
+
+## 5. 命令行演练
 
 环境就绪后，手动发起调查并读取报告：
 
 ```bash
-uv run --frozen aiops investigate --service frontend --symptoms "首页 500"
-uv run --frozen aiops report <inv-id>
+uv run --frozen aiops dev investigate --service frontend --symptoms "首页 500"
+uv run --frozen aiops dev report <inv-id>
 ```
 
-告警触发时先启动 `aiops serve`。收到 webhook 后返回 202；同一指纹重复投递返回 `deduplicated`。用 `aiops incidents --limit 3` 找到事件与调查 ID。
+告警触发时先启动 `aiops serve`。收到 webhook 后返回 202；同一指纹重复投递返回 `deduplicated`。用 `aiops dev incidents --limit 3` 找到事件与调查 ID。
 
 报告列出假设、观测与缺失证据。等待审批时，核对提案的目标、参数和审计记录，再决定批准或拒绝：
 
 ```bash
-uv run --frozen aiops approvals
-uv run --frozen aiops proposal <act-id>
-uv run --frozen aiops approve <act-id>
+uv run --frozen aiops dev approvals
+uv run --frozen aiops dev proposal <act-id>
+uv run --frozen aiops dev approve <act-id>
 ```
 
-拒绝提案使用 `aiops reject <act-id>`。没有现成提案时，操作者可以提交回退请求：
+拒绝提案使用 `aiops dev reject <act-id>`。没有现成提案时，操作者可以提交回退请求：
 
 ```bash
-uv run --frozen aiops act --kind rollout-undo \
+uv run --frozen aiops dev act --kind rollout-undo \
   --deployment <deployment> --reason "回退原因" --investigation <inv-id>
 ```
 
-审批有效期由 `VIGIL_ACTION_APPROVAL_TTL_SECONDS` 控制，默认 900 秒。超时、目标 resourceVersion 变化或提案哈希不一致都会拒绝执行，需要重新提案。执行后核查提案中的验证结果；有人工待办时，用 `aiops followups` 查看原因。
+审批有效期由 `VIGIL_ACTION_APPROVAL_TTL_SECONDS` 控制，默认 900 秒。超时、目标 resourceVersion 变化或提案哈希不一致都会拒绝执行，需要重新提案。执行后核查提案中的验证结果；有人工待办时，用 `aiops dev followups` 查看原因。
 
 故障注入与复位使用[场景操作步骤](../faults/README.md)，操作者复位与 Agent 恢复分别记录。
 
@@ -171,7 +187,7 @@ uv run --frozen aiops act --kind rollout-undo \
 | 模型调用失败 | 网关模型 ID 已下线 | `curl 127.0.0.1:3425/v1/models` 重新选别名 |
 | `unable to find container named` | 用了 Deployment 名当容器名 | 先 `kubectl get deploy X -o jsonpath='{.spec.template.spec.containers[*].name}'` |
 | `approval_expired` / `target_drift` | 审批过期或目标已变 | 重新 `act` 提案，不复用旧授权 |
-| 执行后出现 followup 而非 verified | 动作没改善或样本不足 | `aiops followups` 看原因，人工核实 |
+| 执行后出现 followup 而非 verified | 动作没改善或样本不足 | `aiops dev followups` 看原因，人工核实 |
 
 ## 7. 数据在哪、怎么清
 
@@ -184,15 +200,15 @@ uv run --frozen aiops act --kind rollout-undo \
 
   ```bash
   docker exec vigil-postgres psql -U vigil -d vigil -c 'drop schema public cascade; create schema public;'
-  uv run --frozen aiops db migrate
+  uv run --frozen aiops dev db migrate
   ```
 
 ## 8. 自检
 
 ```bash
-uv run --frozen aiops db status
-uv run --frozen aiops investigate --service frontend --symptoms "冒烟"
-uv run --frozen aiops report <上一步返回的 inv-id>
+uv run --frozen aiops dev db status
+uv run --frozen aiops dev investigate --service frontend --symptoms "冒烟"
+uv run --frozen aiops dev report <上一步返回的 inv-id>
 uv run --frozen python scripts/skill_runtime_gate.py
 ```
 
@@ -213,7 +229,7 @@ uv run --frozen python scripts/skill_runtime_gate.py
 ### 先看场景与口径
 
 ```bash
-uv run --frozen aiops lab scenarios
+uv run --frozen aiops dev lab scenarios
 ```
 
 它会打印每个场景的真值类别、期望动作和证据检查项。**场景真值只给评估者看**，
@@ -223,10 +239,10 @@ uv run --frozen aiops lab scenarios
 
 ```bash
 # 单场景单臂，先确认链路通
-uv run --frozen aiops lab run --scenario a01-pod-rebuild --arm rules --runs 1
+uv run --frozen aiops dev lab run --scenario a01-pod-rebuild --arm rules --runs 1
 
 # 正式批次：全部场景、三条臂、每格 3 次
-uv run --frozen aiops lab run --runs 3
+uv run --frozen aiops dev lab run --runs 3
 ```
 
 默认记录写到 `faults/runs/<日期>-comparison.json`，同时生成同名 `.md` 汇总。
@@ -243,8 +259,8 @@ uv run --frozen aiops lab run --runs 3
 ### 读记录与重算
 
 ```bash
-uv run --frozen aiops lab summarize --record faults/runs/2026-11-18-comparison.json
-uv run --frozen aiops lab rescore --record faults/runs/2026-11-18-comparison.json
+uv run --frozen aiops dev lab summarize --record faults/runs/2026-11-18-comparison.json
+uv run --frozen aiops dev lab rescore --record faults/runs/2026-11-18-comparison.json
 ```
 
 `lab rescore` 只按当前判定口径重算已有记录，不重跑实验，也不改实验事实。改了词表或门槛

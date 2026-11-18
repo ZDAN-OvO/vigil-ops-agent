@@ -1,6 +1,7 @@
 # Vigil 全局架构
 
-Vigil 在同一进程内组织接入、调查与受控处置。
+Vigil 在同一进程内组织接入、调查与受控处置。Web 服务只监听本机，
+和告警服务使用不同的应用与监听口。React 页面从 PostgreSQL 快照读取当前会话，SSE 提醒页面刷新。
 
 ## 架构约束
 
@@ -14,7 +15,7 @@ Vigil 在同一进程内组织接入、调查与受控处置。
 
 ```mermaid
 flowchart TD
-    A[接入：AlertManager webhook / CLI] --> B[任务入口：Incident 与去重]
+    A[接入：页面 / AlertManager webhook / CLI] --> B[任务入口：Incident 与去重]
     B --> C[主 Agent 调查循环]
     S[排查方法 Skill] --> C
     K[Runbook 查询] --> C
@@ -34,6 +35,7 @@ flowchart TD
 
 | 模块 | 源码入口 | 依赖与职责边界 |
 |---|---|---|
+| 本机对话 | [web/](src/aiops/web)、[web/src/](web/src) | FastAPI 页面接口、React 工作区、请求防重、会话后台队列、结构化审批与恢复 |
 | 接入与操作 | [cli.py](src/aiops/cli.py)、[webhook.py](src/aiops/webhook.py) | 校验输入、鉴权、去重和命令输出；通过 factory 装配调查或操作者执行器 |
 | 调查 | [agent/](src/aiops/agent)、[factory.py](src/aiops/investigation/factory.py) | 编排模型、预算、假设、证据与终态；依赖工具、Store 和动作执行器 |
 | 排查能力 | [skills.py](src/aiops/skills.py)、[registry.py](src/aiops/tools/registry.py)、[toolbox.py](src/aiops/investigation/toolbox.py) | 装配 Skill 与工具；委派共享预算和观测，只有只读能力 |
@@ -43,6 +45,13 @@ flowchart TD
 | 对照评估 | [evaluation/](src/aiops/evaluation)、[rules.py](src/aiops/investigation/rules.py) | 场景动词编排、判定口径、规则基线与汇总；故障机制仍在 `faults/`，评估不直接改集群 |
 
 运行状态与诊断结果独立记录：任务结束不等于查明根因，动作执行不等于业务恢复。业务数据结构和枚举定义在 `contracts.py`，数据库约束定义在 `migrations/`。
+
+## 页面推进与中断
+
+`serve` 与开发写命令使用进程文件锁。页面工作在 PostgreSQL 中领取并续租。
+调查等待审批时，先持久化 LangGraph 中断存档，再开放卡片决策并归还租约。
+审批记录将决定与回滚内容绑定。执行器在发送前登记写意图，明确拒绝、成功返回和结果未知分别落库。
+重启后按存档和执行记录判断是否等待、只读收尾或生成待办。
 
 ## 后续扩展边界
 
@@ -54,5 +63,4 @@ flowchart TD
 | 知识检索 | 输入查询、服务、文档范围和条数，输出条目类型、内容、来源、页码、版本和检索分数 |
 | 历史事故 | 保存症状、根因、解决方法、证据和确认状态；未经验证的结论不能自动变成可信知识 |
 | 文本 PDF | 保存文档 ID、哈希、版本、页码和 chunk；导入可重复，更新替换旧版本，删除后不再召回；扫描件和复杂版式明确拒绝。embedding 模型、维度和距离属于索引约定，换模型要重建 |
-| 执行中断协调 | 重启后根据持久化的执行意图核实真实资源状态，能核实的收敛，不能核实的保持未知并升级 |
 | 外部通用 Agent 对照 | 同一故障集与同一权限，只换执行体；需要外部 Agent CLI 与独立预算评估 |

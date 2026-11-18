@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     webhook_port: int = 8081
     dedup_minutes: int = 10
 
+    web_host: Literal["127.0.0.1", "::1"] = "127.0.0.1"
+    web_port: int = 8080
+    web_dev_origin: str | None = None
+    web_operator: str = "web-operator"
+    verify_probe_query: str = 'probe_http_status_code{job="frontend-probe"}'
+
     # 受控执行的时间窗，同样是临时默认值。
     action_rollout_timeout_seconds: float = 180.0
     action_verify_seconds: int = 135

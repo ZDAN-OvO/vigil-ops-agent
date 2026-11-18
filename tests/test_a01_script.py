@@ -117,7 +117,7 @@ def test_v06_guarded_commands_refuse_when_namespace_owner_cannot_be_read(tmp_pat
     assert "无法读取命名空间" in result.stdout + result.stderr
     assert "patch" not in calls
     assert "exec" not in calls
-    assert "aiops act" not in calls
+    assert "aiops dev act" not in calls
 
 
 @pytest.mark.parametrize(
@@ -139,7 +139,7 @@ def test_v06_guarded_commands_refuse_a_namespace_owned_by_someone_else(tmp_path,
     assert "不属于 V06 实验" in result.stdout + result.stderr
     assert "patch" not in calls
     assert "exec" not in calls
-    assert "aiops act" not in calls
+    assert "aiops dev act" not in calls
 
 
 def test_v06_refuses_a_context_mismatch(tmp_path):
@@ -189,7 +189,7 @@ def test_v06_fails_closed_when_settings_cannot_be_read(tmp_path):
     assert result.returncode != 0
     assert "无法读取 Settings" in result.stdout + result.stderr
     assert "patch" not in calls
-    assert "aiops act" not in calls
+    assert "aiops dev act" not in calls
 
 
 def test_v06_reports_a_missing_namespace(tmp_path):

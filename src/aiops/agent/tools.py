@@ -900,9 +900,10 @@ def _action_feedback(
     attempt: ActionAttempt | None,
     *,
     followup_ids: list[str],
-    write_sent: bool,
 ) -> dict[str, Any]:
     verification = (attempt.verification if attempt else None) or {}
+    send_state = (attempt.result or {}).get("send_state") if attempt else "not_sent"
+    write_sent = {"not_sent": False, "sent": True}.get(send_state)
     disposition = decision.disposition.value if decision is not None else "recorded"
     reasons = decision.reasons if decision is not None else ["读取已保存的执行结果"]
     return {
@@ -914,6 +915,7 @@ def _action_feedback(
         "target": f"{proposal.target.namespace}/{proposal.target.kind}/{proposal.target.name}",
         "policy": {"disposition": disposition, "reasons": reasons},
         "write_sent": write_sent,
+        "send_state": send_state,
         "prediction": proposal.prediction,
         "observation_window_seconds": proposal.observation_window_seconds,
         "request_result": attempt.result if attempt else None,
@@ -993,9 +995,7 @@ async def _execute_and_feedback(
         await ctx.budget.end_action()
 
     followups = await _followup_ids(ctx, proposal.id)
-    feedback = _action_feedback(
-        ctx, proposal, decision, attempt, followup_ids=followups, write_sent=True
-    )
+    feedback = _action_feedback(ctx, proposal, decision, attempt, followup_ids=followups)
     message = _dump(feedback)
     if (
         attempt is not None
@@ -1182,8 +1182,31 @@ async def request_action_core(
     cached = await prepare_request(ctx, call_id, "request_action", args.model_dump())
     if cached is not None:
         return cached
-    if cached is not None:
-        return cached
+
+    existing = await ctx.store.get_tool_request(ctx.investigation_id, call_id)
+    if existing is not None and existing.state is ToolRequestState.ACTION_PENDING:
+        return await _resume_pending_action(ctx, call_id, existing)
+
+    rejected = None
+    if ctx.read_only:
+        rejected = "当前运行模式下告警调查只取证"
+    elif ctx.conversation_id:
+        task = await ctx.store.get_task(ctx.investigation_id)
+        if task is None or task.actions_disabled:
+            rejected = "本次调查已被人工拒绝处置，只能继续取证"
+        elif args.action != "rollout_undo":
+            rejected = "本次调查不支持该动作"
+    if rejected:
+        message = _error("action_disabled", rejected)
+        await _finish_request(
+            ctx,
+            call_id,
+            state=ToolRequestState.REJECTED,
+            message=message,
+            error_code="action_disabled",
+        )
+        return message
+
     if ctx.progress.recovered:
         message = _error(
             "business_recovered",
@@ -1197,10 +1220,6 @@ async def request_action_core(
             error_code="business_recovered",
         )
         return message
-
-    existing = await ctx.store.get_tool_request(ctx.investigation_id, call_id)
-    if existing is not None and existing.state is ToolRequestState.ACTION_PENDING:
-        return await _resume_pending_action(ctx, call_id, existing)
 
     problem = await _validate_action_references(ctx, args)
     if problem is not None:
@@ -1301,9 +1320,7 @@ async def request_action_core(
         "disposition": decision.disposition.value,
     }
     if decision.disposition is RiskDisposition.DENY:
-        feedback = _action_feedback(
-            ctx, proposal, decision, None, followup_ids=[], write_sent=False
-        )
+        feedback = _action_feedback(ctx, proposal, decision, None, followup_ids=[])
         feedback["status"] = "denied"
         message = _dump(feedback)
         await _finish_request(
@@ -1407,7 +1424,6 @@ async def _resume_pending_action(ctx: AgentContext, call_id: str, request: ToolR
             None,
             attempt,
             followup_ids=await _followup_ids(ctx, proposal.id),
-            write_sent=True,
         )
         feedback["status"] = "replayed"
         message = _dump(feedback)

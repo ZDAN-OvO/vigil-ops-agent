@@ -17,7 +17,7 @@ from loguru import logger
 from aiops.actions.outcome import SampleSummary, classify_outcome
 from aiops.actions.policy import decide, target_key
 from aiops.actions.restart_pod import PodPlan, PodRestartAdapter
-from aiops.actions.rollout_undo import ActionError, RolloutUndoAdapter
+from aiops.actions.rollout_undo import ActionError, RolloutPlan, RolloutUndoAdapter
 from aiops.contracts import (
     ActionAttempt,
     ActionFollowup,
@@ -192,6 +192,7 @@ class ActionExecutor:
         verify_grace_seconds: float | None = None,
         probe_expression: str = 'probe_http_status_code{job="frontend-probe"}',
         io_timeout_seconds: float = 10.0,
+        serve_instance: str | None = None,
     ) -> None:
         self._store = store
         self._adapter = adapter
@@ -212,6 +213,7 @@ class ActionExecutor:
         )
         self._probe_expression = probe_expression
         self._io_timeout = io_timeout_seconds
+        self._serve_instance = serve_instance
         self._min_samples = _min_samples_for(verify_seconds, sample_seconds)
 
     async def propose_rollback(
@@ -285,7 +287,10 @@ class ActionExecutor:
             ),
             parameters={
                 "from_revision": plan.current_revision,
-                "to_revision": plan.target_revision,
+                **plan.pinned_parameters,
+                "changes": plan.changes,
+                "probe_query": self._probe_expression,
+                "current_image": plan.current_image,
                 "target_image": plan.target_image,
                 "from_memory_limit": plan.current_memory_limit,
                 "to_memory_limit": plan.target_memory_limit,
@@ -310,6 +315,8 @@ class ActionExecutor:
         )
         key = target_key(self._cluster, namespace, "Deployment", deployment)
         decision = decide(proposal, target_busy=await self._store.target_is_locked(key))
+        if self._serve_instance and decision.disposition is RiskDisposition.AUTO:
+            decision = decision.model_copy(update={"disposition": RiskDisposition.APPROVAL})
         proposal = proposal.model_copy(update={"status": _initial_status(decision)})
         approval = await self._persist(proposal, decision)
         await self._audit_safe(
@@ -801,12 +808,23 @@ class ActionExecutor:
             raise ActionError("already_executed", "提案已有执行记录，不重复写")
         if approval.decision is not ApprovalDecision.APPROVED:
             raise ActionError("no_approval", "拒绝记录不能用于执行")
-        if approval.expires_at is not None and datetime.now(UTC) > approval.expires_at:
-            raise await self._fail(
-                proposal, "expired", "审批已过期，需重新提案", ProposalStatus.EXPIRED
-            )
-        if approval.proposal_hash != proposal_hash(proposal):
-            raise await self._fail(proposal, "hash_mismatch", "审批后提案内容已变化，授权失效")
+        conversation = (
+            await self._store.get_conversation_for_investigation(proposal.investigation_id)
+            if proposal.investigation_id
+            else None
+        )
+        if self._serve_instance:
+            if (
+                not conversation
+                or conversation["finished_at"] is not None
+                or proposal.kind is not ActionKind.ROLLOUT_UNDO
+                or proposal.target.namespace != self._namespace
+                or not approval.card_hash
+                or approval.actor.startswith("policy:")
+            ):
+                raise ActionError("web_approval_required", "服务只执行经当前页面人工批准的回滚")
+        elif conversation is not None:
+            raise ActionError("web_owned", "页面会话的提案只能在页面执行")
 
         key = target_key(
             proposal.target.cluster,
@@ -815,146 +833,196 @@ class ActionExecutor:
             proposal.target.name,
         )
         if not await self._store.acquire_lock(key, proposal.id):
-            # 目标忙不是本提案的失败，保留原状态，避免覆盖正在执行的进程。
             await self._audit(
                 proposal.id, "action-executor", "action.blocked", {"code": "target_busy"}
             )
             raise ActionError("target_busy", "目标已有未完成的执行，本次不重放")
+        if proposal.kind is ActionKind.ROLLOUT_UNDO:
+            return await self._execute_rollout(proposal, approval, key)
         try:
-            if proposal.kind is ActionKind.RESTART_POD:
-                return await self._execute_restart(proposal, approval)
-            return await self._execute_rollout(proposal, approval)
+            await self._require_approval_valid(proposal, approval)
+            if approval.proposal_hash != proposal_hash(proposal):
+                raise await self._fail(proposal, "hash_mismatch", "审批后提案内容已变化，授权失效")
+            return await self._execute_restart(proposal, approval)
         finally:
             await self._store.release_lock(key, proposal.id)
 
-    async def _execute_rollout(self, proposal: ActionProposal, approval: Approval) -> ActionAttempt:
-        try:
-            plan = await asyncio.to_thread(
-                self._adapter.plan, proposal.target.namespace, proposal.target.name
-            )
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-
-        if (
-            plan.deployment_uid != proposal.target.uid
-            or plan.resource_version != proposal.target.resource_version
-        ):
-            raise await self._fail(proposal, "drift", "审批后目标资源已变化，需重新提案")
-
-        # 没有动作前基线就无法判断执行后是没改善还是变差，必须在写操作之前拿到。
-        try:
-            baseline = await self._business_baseline()
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-
-        # 基线窗口很长，期间目标可能漂移或授权过期，写前必须再核对一次。
-        try:
-            plan = await asyncio.to_thread(
-                self._adapter.plan, proposal.target.namespace, proposal.target.name
-            )
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-        if (
-            plan.deployment_uid != proposal.target.uid
-            or plan.resource_version != proposal.target.resource_version
-        ):
-            raise await self._fail(proposal, "drift", "基线期间目标资源已变化，需重新提案")
-        await self._require_approval_valid(proposal, approval)
-
-        # dry-run 不是写操作；通过后再用最终状态核对一次，才落执行意图。
-        try:
-            await asyncio.to_thread(
-                self._adapter.apply, plan, dry_run=True, proposal_id=proposal.id
-            )
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-        try:
-            plan = await asyncio.to_thread(
-                self._adapter.plan, proposal.target.namespace, proposal.target.name
-            )
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-        if (
-            plan.deployment_uid != proposal.target.uid
-            or plan.resource_version != proposal.target.resource_version
-        ):
-            raise await self._fail(proposal, "drift", "dry-run 后目标资源已变化，需重新提案")
-        await self._require_approval_valid(proposal, approval)
-
-        attempt = ActionAttempt(
+    def _rollout_attempt(self, proposal: ActionProposal, approval: Approval) -> ActionAttempt:
+        return ActionAttempt(
             id=f"att-{uuid.uuid4().hex[:12]}",
             proposal_id=proposal.id,
-            status=AttemptStatus.INTENT,
+            status=AttemptStatus.EXECUTING,
             idempotency_key=proposal.idempotency_key,
             snapshot={
-                "uid": plan.deployment_uid,
-                "resource_version": plan.resource_version,
-                "from_revision": plan.current_revision,
-                "to_revision": plan.target_revision,
-                "current_image": plan.current_image,
-                "target_image": plan.target_image,
+                "uid": proposal.target.uid,
+                "resource_version": proposal.target.resource_version,
+                "from_revision": proposal.parameters.get("from_revision"),
+                "to_revision": proposal.parameters.get("to_revision"),
+                "current_image": proposal.parameters.get("current_image"),
+                "target_image": proposal.parameters.get("target_image"),
                 "approval_hash": approval.proposal_hash,
-                "baseline": baseline.to_payload(),
             },
             request={
                 "kind": "rollout_undo",
-                "namespace": plan.namespace,
-                "name": plan.name,
-                "revision": plan.target_revision,
+                "namespace": proposal.target.namespace,
+                "name": proposal.target.name,
+                "revision": proposal.parameters.get("to_revision"),
             },
             started_at=datetime.now(UTC),
         )
+
+    @staticmethod
+    def _not_sent(error: ActionError) -> tuple[ProposalStatus, dict]:
+        code = error.code
+        if error.http_status == 409 or code == "not_found":
+            code = "drift"
+        if code not in {
+            "expired",
+            "drift",
+            "revision_changed",
+            "probe_ambiguous",
+            "baseline_unavailable",
+        }:
+            code = "api_rejected"
+        status = ProposalStatus.EXPIRED if code == "expired" else ProposalStatus.FAILED
+        return status, {
+            "send_state": "not_sent",
+            "stage": "done",
+            "not_executed_reason": code,
+            "code": error.code,
+        }
+
+    @staticmethod
+    def _check_expiry(approval: Approval) -> None:
+        if approval.expires_at is not None and datetime.now(UTC) >= approval.expires_at:
+            raise ActionError("expired", "审批已过期，未写集群")
+
+    def _send_rollout(self, plan: RolloutPlan, proposal_id: str, approval: Approval) -> None:
+        # 线程排队可能跨过授权截止时间，适配器也在调用 API 的前一刻检查。
+        self._check_expiry(approval)
+        self._adapter.apply(
+            plan, dry_run=False, proposal_id=proposal_id, expires_at=approval.expires_at
+        )
+
+    async def _execute_rollout(
+        self, proposal: ActionProposal, approval: Approval, key: str
+    ) -> ActionAttempt:
+        attempt = self._rollout_attempt(proposal, approval)
+        expression = proposal.parameters.get("probe_query")
         try:
-            await self._store.save_attempt(attempt)
+            self._check_expiry(approval)
+            if approval.proposal_hash != proposal_hash(proposal):
+                raise ActionError("hash_mismatch", "审批后提案内容已变化，授权失效")
+            if not expression:
+                raise ActionError("revision_changed", "提案未固定验证查询，请重新提案")
+            plan = await asyncio.to_thread(self._adapter.recheck, proposal)
+            baseline = await self._business_baseline(expression)
+            self._check_expiry(approval)
+            plan = await asyncio.to_thread(self._adapter.recheck, proposal)
+            await asyncio.to_thread(
+                self._adapter.apply, plan, dry_run=True, proposal_id=proposal.id
+            )
+            plan = await asyncio.to_thread(self._adapter.recheck, proposal)
+            self._check_expiry(approval)
+        except Exception as exc:  # 尚未登记或发送真实写请求，按未执行收尾。
+            error = (
+                exc if isinstance(exc, ActionError) else ActionError("api_rejected", "写前核对失败")
+            )
+            proposal_status, result = self._not_sent(error)
+            await self._store.record_not_sent(
+                attempt.model_copy(
+                    update={
+                        "status": AttemptStatus.FAILED,
+                        "result": result,
+                        "finished_at": datetime.now(UTC),
+                    }
+                ),
+                proposal_status=proposal_status,
+                target_lock_key=key,
+            )
+            await self._audit_safe(
+                proposal.id,
+                "action-executor",
+                f"action.{proposal_status.value}",
+                {"code": error.code},
+            )
+            raise error from (exc if error is not exc else None)
+
+        attempt.snapshot["baseline"] = baseline.to_payload()
+        attempt.result = {"send_state": "sending", "stage": "applying"}
+        try:
+            sending = await self._store.register_rollback_sending(
+                attempt,
+                investigation_id=proposal.investigation_id,
+                instance_id=self._serve_instance,
+            )
         except DuplicateAttempt as exc:
             raise ActionError("already_executed", str(exc)) from exc
-        await self._store.set_proposal_status(proposal.id, ProposalStatus.EXECUTING)
+        if not sending:
+            await self._store.release_lock(key, proposal.id)
+            raise ActionError("not_approved", "工作或授权已经失效，未写集群")
+
+        try:
+            await asyncio.to_thread(self._send_rollout, plan, proposal.id, approval)
+        except Exception as exc:  # 无法确认服务器是否收到写请求时只记录，不重发。
+            if isinstance(exc, ActionError) and (
+                exc.code == "expired" or 400 <= (exc.http_status or 0) < 500
+            ):
+                status, result = self._not_sent(exc)
+                return await self._finish(
+                    attempt, AttemptStatus.FAILED, status, result=result, target_lock_key=key
+                )
+            return await self._finish(
+                attempt,
+                AttemptStatus.UNKNOWN,
+                ProposalStatus.UNKNOWN,
+                result={"send_state": "uncertain", "stage": "done"},
+                verification=_unknown_verification(baseline, "写请求结果未知，停止等待人工核实"),
+                target_lock_key=key,
+            )
+
         await self._store.update_attempt(
             attempt.id,
             status=AttemptStatus.EXECUTING,
-            result={"stage": "apply_started"},
+            result={"send_state": "sent", "stage": "rolling_out"},
         )
-        # 最后一次校验放在所有数据库 I/O 之后、真正写集群之前。
-        if approval.expires_at is not None and datetime.now(UTC) > approval.expires_at:
-            return await self._finish(
-                attempt,
-                AttemptStatus.FAILED,
-                ProposalStatus.EXPIRED,
-                result={"code": "expired"},
-                verification=_unknown_verification(baseline, "审批在写入前过期，未写集群"),
-            )
         try:
-            await asyncio.to_thread(
-                self._adapter.apply, plan, dry_run=False, proposal_id=proposal.id
-            )
-        except Exception as exc:  # noqa: BLE001 - 结果未知时停止，不重放写请求
-            return await self._finish(
-                attempt,
-                AttemptStatus.UNKNOWN,
-                ProposalStatus.UNKNOWN,
-                result={"stage": "apply", "error": exc.__class__.__name__},
-                verification=_unknown_verification(baseline, "写请求结果未知，停止等待人工核实"),
-            )
-
-        try:
+            matches = await asyncio.to_thread(self._adapter.template_matches, plan)
+            if not matches:
+                return await self._finish(
+                    attempt,
+                    AttemptStatus.UNKNOWN,
+                    ProposalStatus.UNKNOWN,
+                    result={
+                        "stage": "done",
+                        "verification": "unknown",
+                        "verification_done": True,
+                        "verification_reason": "template_mismatch",
+                        "code": "template_mismatch",
+                    },
+                    verification=_unknown_verification(baseline, "写后回读发现 Pod 模板不一致"),
+                    target_lock_key=key,
+                )
             rolled_out = await asyncio.to_thread(
                 self._adapter.wait_rolled_out, plan, self._rollout_timeout
             )
-            # 滚动完成后再等两个抓取周期，避免把恢复前的最后一个样本算进来。
+            await self._store.update_attempt(
+                attempt.id, status=AttemptStatus.EXECUTING, result={"stage": "verifying"}
+            )
+            # 滚动完成后再等两个抓取周期，避免将恢复前的样本算进来。
             await asyncio.sleep(self._verify_grace)
             recovered_from = datetime.now(UTC)
             await asyncio.sleep(self._verify_delay)
-            verification = await self._verify_business(recovered_from)
+            verification = await self._verify_business(recovered_from, expression)
             runtime = await self._runtime_state(proposal)
-        except Exception as exc:  # noqa: BLE001 - 应用后无法核实，停止等待人工
+        except Exception:  # 写已确认，读取或验证失败时交由人工核实。
             return await self._finish(
                 attempt,
                 AttemptStatus.UNKNOWN,
                 ProposalStatus.UNKNOWN,
-                result={"stage": "verify_after_apply", "error": exc.__class__.__name__},
-                verification=_unknown_verification(
-                    baseline, "应用后无法核实业务结果，停止等待人工"
-                ),
+                result={"stage": "done", "verification": "unknown", "verification_done": True},
+                verification=_unknown_verification(baseline, "写入后无法核实业务结果"),
+                target_lock_key=key,
             )
         ready = [pod for pod in runtime.get("pods", []) if pod.get("ready")]
         restarts = sum(int(pod.get("restarts") or 0) for pod in ready)
@@ -1003,8 +1071,17 @@ class ActionExecutor:
             attempt,
             attempt_status,
             proposal_status,
-            result={"stage": "applied", "rolled_out": rolled_out},
+            result={
+                "stage": "done",
+                "rolled_out": rolled_out,
+                "verification": decision.outcome.value,
+                "verification_done": True,
+                "verification_reason": (
+                    "probe_ambiguous" if verification.get("reason") == "probe_ambiguous" else None
+                ),
+            },
             verification=verification,
+            target_lock_key=key,
         )
 
     async def _execute_restart(self, proposal: ActionProposal, approval: Approval) -> ActionAttempt:
@@ -1064,7 +1141,9 @@ class ActionExecutor:
             raise ActionError("already_executed", str(exc)) from exc
         await self._store.set_proposal_status(proposal.id, ProposalStatus.EXECUTING)
         await self._store.update_attempt(
-            attempt.id, status=AttemptStatus.EXECUTING, result={"stage": "apply_started"}
+            attempt.id,
+            status=AttemptStatus.EXECUTING,
+            result={"stage": "apply_started", "send_state": "sending"},
         )
         # 最后一次校验放在所有数据库 I/O 之后、真正写集群之前。
         if approval.expires_at is not None and datetime.now(UTC) > approval.expires_at:
@@ -1072,7 +1151,7 @@ class ActionExecutor:
                 attempt,
                 AttemptStatus.FAILED,
                 ProposalStatus.EXPIRED,
-                result={"code": "expired"},
+                result={"code": "expired", "send_state": "not_sent"},
                 verification=_unknown_verification(baseline, "审批在写入前过期，未写集群"),
             )
         try:
@@ -1084,6 +1163,7 @@ class ActionExecutor:
                 ProposalStatus.UNKNOWN,
                 result={
                     "stage": "apply",
+                    "send_state": "uncertain",
                     "error": exc.__class__.__name__,
                     "code": getattr(exc, "code", None),
                     "message": str(exc)[:200],
@@ -1091,6 +1171,9 @@ class ActionExecutor:
                 verification=_unknown_verification(baseline, "删除结果未知，停止等待人工核实"),
             )
 
+        await self._store.update_attempt(
+            attempt.id, status=AttemptStatus.EXECUTING, result={"send_state": "sent"}
+        )
         # 删除已经发出，之后的任何异常都必须落成 unknown，不能把执行记录留在 executing。
         try:
             new_pod = await asyncio.to_thread(adapter.wait_rebuilt, plan, self._rollout_timeout)
@@ -1265,17 +1348,16 @@ class ActionExecutor:
             )
         return summary
 
-    async def _business_baseline(self) -> SampleSummary:
+    async def _business_baseline(self, expression: str) -> SampleSummary:
         end = datetime.now(UTC)
         start = end - timedelta(seconds=self._verify_seconds)
-        result = await self._query_probe(start, end)
+        result = await self._query_probe(start, end, expression)
         if result.error is not None:
             raise ActionError("baseline_unavailable", f"动作前查询失败：{result.error.code}")
-        points = [
-            point
-            for series in (result.data or {}).get("series", [])
-            for point in series.get("points", [])
-        ]
+        series = (result.data or {}).get("series", [])
+        if len(series) != 1 or result.truncated:
+            raise ActionError("probe_ambiguous", "业务探针没有唯一且完整的序列")
+        points = series[0]["points"]
         valid, unavailable = _probe_points(points)
         if len(valid) < self._min_samples:
             raise ActionError(
@@ -1285,7 +1367,7 @@ class ActionExecutor:
         failed = sum(1 for point in valid if not _probe_ok(point))
         return SampleSummary(samples=len(valid), failed=failed)
 
-    async def _query_probe(self, start: datetime, end: datetime):
+    async def _query_probe(self, start: datetime, end: datetime, expression: str):
         context = ToolContext.create(
             investigation_id=f"action-check-{self._cluster}",
             cluster=self._cluster,
@@ -1295,7 +1377,7 @@ class ActionExecutor:
         )
         return await self._prometheus.query_range(
             context,
-            self._probe_expression,
+            expression,
             TimeRange(start=start, end=end),
             step_seconds=self._sample_seconds,
         )
@@ -1370,11 +1452,11 @@ class ActionExecutor:
         except Exception as exc:  # noqa: BLE001 - 读不到运行态时按未验证处理
             return {"error": exc.__class__.__name__}
 
-    async def _verify_business(self, since: datetime) -> dict[str, Any]:
+    async def _verify_business(self, since: datetime, expression: str) -> dict[str, Any]:
         """只看执行之后的样本；故障窗口内的失败不能算作恢复，也不能算成功。"""
         end = datetime.now(UTC)
         start = max(since, end - timedelta(seconds=self._verify_seconds))
-        result = await self._query_probe(start, end)
+        result = await self._query_probe(start, end, expression)
         if result.error is not None:
             return {
                 "ok": False,
@@ -1383,11 +1465,10 @@ class ActionExecutor:
                 "samples": 0,
                 "failed_samples": 0,
             }
-        points = [
-            point
-            for series in (result.data or {}).get("series", [])
-            for point in series.get("points", [])
-        ]
+        series = (result.data or {}).get("series", [])
+        if len(series) != 1 or result.truncated:
+            return {"ok": False, "reason": "probe_ambiguous"}
+        points = series[0]["points"]
         valid, unavailable = _probe_points(points)
         failed = [point for point in valid if not _probe_ok(point)]
         raw_tail = points[-self._min_samples :]
@@ -1438,6 +1519,7 @@ class ActionExecutor:
         *,
         result: dict[str, Any] | None = None,
         verification: dict[str, Any] | None = None,
+        target_lock_key: str | None = None,
     ) -> ActionAttempt:
         finished_at = datetime.now(UTC)
         proposal = await self._store.get_proposal(attempt.proposal_id)
@@ -1455,6 +1537,7 @@ class ActionExecutor:
             verification=verification,
             finished_at=finished_at,
             followup=followup,
+            target_lock_key=target_lock_key,
         )
         await self._audit(
             attempt.proposal_id,

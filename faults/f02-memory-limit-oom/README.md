@@ -61,8 +61,8 @@ bash faults/f02-memory-limit-oom/repeat.sh restore   # 注入器恢复规格并�
 Agent 链路由告警或手工调查触发，使用：
 
 ```bash
-uv run --frozen aiops investigate --service frontend --symptoms "..." --context "alertname=FrontendProbeFailed"
-uv run --frozen aiops approve <提案 ID> --actor <审批人>
+uv run --frozen aiops dev investigate --service frontend --symptoms "..." --context "alertname=FrontendProbeFailed"
+uv run --frozen aiops dev approve <提案 ID> --actor <审批人>
 ```
 
 ## 5. 已知缺口

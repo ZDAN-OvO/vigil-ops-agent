@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "deepagents==0.7.37",
+    "fastapi>=0.121,<1",
     "httpx>=0.28,<1",
     "kubernetes>=33,<36",
     "langchain>=1.5",

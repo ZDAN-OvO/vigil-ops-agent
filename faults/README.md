@@ -38,7 +38,7 @@ RESULT verb=verify ok=1 probe=0 alert=firing home=500
 退出码非零或 `ok=0`，评估驱动都判该步失败。机制的实现仍只写在场景脚本里；共用的结论
 行函数在 [`lib/result.sh`](lib/result.sh)。
 
-`aiops lab` 按 `preflight → inject → verify → 调查臂 → recovered → cleanup` 跑一次运行，
+`aiops dev lab` 按 `preflight → inject → verify → 调查臂 → recovered → cleanup` 跑一次运行，
 任何一步失败都判无效并写明原因，然后照样复位。对照口径与门槛见
 [ADR-0013](../docs/adr/0013-comparative-evaluation.md)，用法见
 [操作手册](../docs/USAGE.md#9-对照评估)。

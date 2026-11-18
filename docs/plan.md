@@ -15,7 +15,7 @@
 | 规则基线 | R1–R5 规则链与公开阈值，不读场景真值 | [rules.py](../src/aiops/investigation/rules.py) |
 | 通用 Agent 臂 | 同一循环去掉 Skill 与排查方法提示词 | [ADR-0013](adr/0013-comparative-evaluation.md) |
 | 假设来源可区分 | 规则臂写入的假设标 `rules`，与模型假设可回查区分 | [0012 迁移](../src/aiops/migrations/0012_hypothesis_origin_rules.sql) |
-| 记录与重算 | `aiops lab run/rescore/summarize`，判定可复算 | [操作手册](USAGE.md#9-对照评估) |
+| 记录与重算 | `aiops dev lab run/rescore/summarize`，判定可复算 | [操作手册](USAGE.md#9-对照评估) |
 | 第一轮真实对照 | 22 次有效运行（另有 3 次协议不符的臂实现按排除处理并保留记录），环境复位全部成功。规则臂 13/13 诊断正确；Pod 重建与 Redis 延迟两格上规则臂在全部已比较维度不劣于 Agent 臂（诊断正确 3/3 vs 2/3、工具调用 11 vs 27、模型调用 0 vs 17）。通用 Agent 0/3：**其中 2 次提出了正确的重启动作**，1 次缺业务失败证据、1 次结论措辞未命中，另 1 次没形成结论也没提动作。**结论：规则基线有效，方法论收益未证明** | [运行记录](../faults/runs/comparative-2026-11-18.md) |
 
 ## 待完成事项与依赖

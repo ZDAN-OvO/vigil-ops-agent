@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -31,6 +32,7 @@ from aiops.db import Store
 from aiops.evaluation.scenarios import ScenarioSpec, VerbOutcome, get_scenario, run_verb
 from aiops.evaluation.verdict import ArmFacts, Verdict, judge, load_arm_facts
 from aiops.investigation.rules import RULES_RUNTIME_VERSION
+from aiops.process_lock import LAB_LOCK_FD_ENV
 
 SCHEMA_VERSION = 1
 ARMS = ("agent", "generic", "rules")
@@ -101,7 +103,11 @@ def _phase(outcome: VerbOutcome) -> dict[str, Any]:
 
 
 def _invoke_arm(
-    spec: ScenarioSpec, arm: str, *, timeout_seconds: float = ARM_TIMEOUT_SECONDS
+    spec: ScenarioSpec,
+    arm: str,
+    *,
+    timeout_seconds: float = ARM_TIMEOUT_SECONDS,
+    lock_fd: int | None = None,
 ) -> tuple[dict[str, Any] | None, int, str]:
     """跑一条臂；返回值是 CLI 的 JSON 载荷、退出码和输出尾部。
 
@@ -111,6 +117,7 @@ def _invoke_arm(
         sys.executable,
         "-m",
         "aiops.cli",
+        "dev",
         "investigate",
         "--arm",
         arm,
@@ -123,11 +130,17 @@ def _invoke_arm(
         "--output",
         "json",
     ]
+    env = dict(os.environ)
+    env.pop(LAB_LOCK_FD_ENV, None)
+    if lock_fd is not None:
+        env[LAB_LOCK_FD_ENV] = str(lock_fd)
     started = time.monotonic()
     try:
         completed = subprocess.run(
             command,
             cwd=str(PROJECT_ROOT),
+            env=env,
+            pass_fds=(lock_fd,) if lock_fd is not None else (),
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
@@ -163,6 +176,7 @@ async def execute(
     *,
     settings: Settings,
     on_record: Callable[[RunRecord], None] | None = None,
+    lock_fd: int | None = None,
 ) -> RunRecord:
     """执行一次完整的对照运行；异常路径也要复位环境并留下记录。"""
     if arm not in ARMS:
@@ -171,7 +185,7 @@ async def execute(
     logger.info("开始 {} {} 第 {} 次", spec.id, arm, index)
     cleanup_needed = False
     try:
-        preflight = run_verb(spec, "preflight", settings=settings)
+        preflight = run_verb(spec, "preflight", settings=settings, lock_fd=lock_fd)
         # 先登记清理状态再落盘：写输出可能失败，但资源已经建出来了。
         # 预检失败也要看它是否已经建了东西（A01 的预检会先部署）；
         # 只有脚本自报 created=1 才复位，绝不按"场景可能会建"就删。
@@ -181,14 +195,14 @@ async def execute(
         if not preflight.ok:
             record.invalid_reason = "preflight"
             return record
-        inject = run_verb(spec, "inject", settings=settings)
+        inject = run_verb(spec, "inject", settings=settings, lock_fd=lock_fd)
         record.phases["inject"] = _phase(inject)
         _dump_output(record.run_id, "inject", inject.output)
         if not inject.ok:
             record.invalid_reason = "inject"
             return record
 
-        verify = run_verb(spec, "verify", settings=settings)
+        verify = run_verb(spec, "verify", settings=settings, lock_fd=lock_fd)
         record.phases["verify"] = _phase(verify)
         _dump_output(record.run_id, "verify", verify.output)
         if not verify.ok:
@@ -196,7 +210,7 @@ async def execute(
             return record
 
         record.valid = True
-        payload, exit_code, full = _invoke_arm(spec, arm)
+        payload, exit_code, full = _invoke_arm(spec, arm, lock_fd=lock_fd)
         record.exit_code = exit_code
         record.output_tail = full[-1500:]
         _dump_output(record.run_id, f"arm-{arm}", full)
@@ -211,7 +225,7 @@ async def execute(
                 "elapsed_seconds": payload.get("_elapsed_seconds"),
             }
 
-        recovered = run_verb(spec, "recovered", settings=settings)
+        recovered = run_verb(spec, "recovered", settings=settings, lock_fd=lock_fd)
         record.phases["recovered"] = _phase(recovered)
         _dump_output(record.run_id, "recovered", recovered.output)
         record.facts["business_healthy_after_arm"] = recovered.ok
@@ -241,7 +255,7 @@ async def execute(
             record.invalid_reason = record.invalid_reason or "harness_error"
         return record
     finally:
-        await _close(store, spec, record, settings, cleanup_needed=cleanup_needed)
+        await _close(store, spec, record, settings, cleanup_needed=cleanup_needed, lock_fd=lock_fd)
         if on_record is not None:
             on_record(record)
 
@@ -265,13 +279,14 @@ async def _close(
     settings: Settings,
     *,
     cleanup_needed: bool,
+    lock_fd: int | None,
 ) -> None:
     """收尾：只在需要时复位，任何异常都不能盖住原始失败原因。"""
     if record.finished_at:
         return
     if cleanup_needed:
         try:
-            outcome = run_verb(spec, "cleanup", settings=settings)
+            outcome = run_verb(spec, "cleanup", settings=settings, lock_fd=lock_fd)
             record.phases["cleanup"] = _phase(outcome)
             _dump_output(record.run_id, "cleanup", outcome.output)
             record.environment_restored = outcome.ok

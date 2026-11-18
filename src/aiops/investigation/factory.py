@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from asyncio import Event
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -35,12 +36,18 @@ def arm_for_runtime(runtime_version: str | None) -> str:
 
 
 def build_executor(
-    settings: Settings, store: Store, prometheus: PrometheusClient
+    settings: Settings,
+    store: Store,
+    prometheus: PrometheusClient,
+    *,
+    serve_instance: str | None = None,
 ) -> ActionExecutor:
     return ActionExecutor(
         store=store,
         adapter=RolloutUndoAdapter(
-            kubeconfig=settings.kubeconfig, context_name=settings.kube_context
+            kubeconfig=settings.kubeconfig,
+            context_name=settings.kube_context,
+            timeout_seconds=settings.tool_timeout_seconds,
         ),
         restart_adapter=PodRestartAdapter(
             kubeconfig=settings.kubeconfig, context_name=settings.kube_context
@@ -54,12 +61,14 @@ def build_executor(
         sample_seconds=settings.action_sample_seconds,
         approval_ttl_seconds=settings.action_approval_ttl_seconds,
         io_timeout_seconds=settings.tool_timeout_seconds,
+        probe_expression=settings.verify_probe_query,
+        serve_instance=serve_instance,
     )
 
 
 @asynccontextmanager
 async def _open_io(
-    settings: Settings, *, store: Store
+    settings: Settings, *, store: Store, serve_instance: str | None = None
 ) -> AsyncIterator[tuple[Toolbox, ActionExecutor]]:
     """Agent 与规则基线共用同一只读工具和同一个动作执行器。"""
     async with PrometheusClient.connect(
@@ -78,7 +87,7 @@ async def _open_io(
                 ),
                 store,
             ),
-            build_executor(settings, store, prometheus),
+            build_executor(settings, store, prometheus, serve_instance=serve_instance),
         )
 
 
@@ -100,14 +109,23 @@ async def open_runtime(
     incident: Incident,
     investigation: Investigation,
     arm: str = "agent",
+    read_only: bool = False,
+    conversation_id: str | None = None,
+    serve_instance: str | None = None,
+    lease_lost: Event | None = None,
 ) -> AsyncIterator[LangChainInvestigation | RulesInvestigator]:
     """按对照臂装配调查运行时；三条臂共用同一套工具与动作执行器。
 
     `agent`：现有运行时（Skill + 排查方法提示词）；`generic`：同一 create_agent
     循环但去掉 Skill 与方法论；`rules`：固定规则链，不调用模型。
     """
-    async with _open_io(settings, store=store) as (toolbox, executor):
+    async with _open_io(settings, store=store, serve_instance=serve_instance) as (
+        toolbox,
+        executor,
+    ):
         if arm == "rules":
+            if read_only:
+                raise ValueError("规则基线无法以只读模式运行")
             yield RulesInvestigator(
                 store=store,
                 incident=incident,
@@ -128,9 +146,13 @@ async def open_runtime(
             incident=incident,
             investigation=investigation,
             toolbox=toolbox,
-            executor=executor,
+            executor=None if read_only else executor,
             runtime_path=settings.runtime_path,
             arm=arm,
+            read_only=read_only,
+            conversation_id=conversation_id,
+            serve_instance=serve_instance,
+            lease_lost=lease_lost,
         )
 
 
@@ -143,6 +165,10 @@ async def open_agent(
     incident: Incident,
     investigation: Investigation,
     arm: str = "agent",
+    read_only: bool = False,
+    conversation_id: str | None = None,
+    serve_instance: str | None = None,
+    lease_lost: Event | None = None,
 ) -> AsyncIterator[LangChainInvestigation | RulesInvestigator]:
     async with open_runtime(
         settings=settings,
@@ -151,6 +177,10 @@ async def open_agent(
         incident=incident,
         investigation=investigation,
         arm=arm,
+        read_only=read_only,
+        conversation_id=conversation_id,
+        serve_instance=serve_instance,
+        lease_lost=lease_lost,
     ) as runtime:
         yield runtime
 

@@ -1,0 +1,74 @@
+:root {
+  font-family: Inter, "Noto Sans CJK SC", system-ui, sans-serif;
+  color: #192d37;
+  background: #eff3f7;
+  font-synthesis: none;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+p { margin: 0; line-height: 1.65; }
+.shell { width: min(100% - 36px, 860px); margin: 0 auto; }
+.site-header { background: #102930; color: #f6fcfc; border-bottom: 1px solid #26434a; }
+.site-row { height: 66px; display: flex; align-items: center; justify-content: space-between; }
+.brand { display: inline-flex; align-items: center; gap: 10px; font-size: 20px; }
+.mark { display: grid; place-items: center; height: 31px; width: 31px; border-radius: 9px; background: #c8e8dc; color: #185c56; font-weight: 800; font-size: 17px; }
+.connection { color: #dae7e7; display: flex; align-items: center; gap: 9px; font-size: 13px; }
+.connection i { width: 8px; height: 8px; border-radius: 50%; background: #ecc581; }
+.connected i { background: #88d7b0; }
+main.shell { padding-block: 42px 64px; }
+.start-panel, .panel { background: #fff; border: 1px solid #dbe4eb; border-radius: 14px; }
+.start-panel { max-width: 670px; margin: 34px auto 0; box-shadow: 0 14px 50px #1739470c; }
+.start-title { padding: 31px 34px 23px; border-bottom: 1px solid #e8eef2; }
+.start-title p, .workspace-head p, .muted { color: #536974; }
+h1, h2, h3 { margin: 0; }
+h1 { font-size: clamp(25px, 5vw, 34px); letter-spacing: -.025em; margin-bottom: 7px; }
+h2 { font-size: 18px; letter-spacing: -.02em; }
+h3 { font-size: 15px; line-height: 1.55; }
+.start-form, .decision-form, .hint-form { display: grid; gap: 12px; }
+.start-form { padding: 26px 34px 30px; }
+.start-form label, .decision-form label, .hint-form label { font-weight: 600; font-size: 14px; }
+.start-form label:not(:first-child) { margin-top: 3px; }
+.actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+.workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+.workspace-head p { overflow-wrap: anywhere; }
+.workspace-head p span { padding-inline: 6px; }
+.panel { padding: 20px 24px; margin-bottom: 14px; }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
+.section-head .ant-tag { margin: 0; }
+.messages { display: grid; gap: 10px; }
+.message { color: #223d47; border-radius: 10px; background: #f1f6f9; padding: 12px 14px; }
+.message.agent { background: #eaf5ef; }
+.message-meta { display: flex; align-items: baseline; gap: 13px; font-size: 13px; margin-bottom: 5px; }
+.message-meta span { color: #536974; }
+.message p, .observation p, dd { white-space: pre-wrap; overflow-wrap: anywhere; }
+.hint-form, .decision-form { margin-top: 18px; padding-top: 15px; border-top: 1px solid #e8eef2; }
+.hint-form button { justify-self: end; }
+.running { display: flex; align-items: center; gap: 8px; }
+.hypotheses, .details ul { margin: 0; padding-left: 20px; }
+.hypothesis { position: relative; padding: 12px 0; border-top: 1px solid #e8eef2; }
+.hypothesis h3 { margin-bottom: 7px; }
+.observation { margin-top: 8px; padding: 8px 10px; border-left: 3px solid #c9dbdf; background: #f7fafb; }
+.observation small { color: #45636b; }
+.observation p { margin-top: 3px; }
+.target { overflow-wrap: anywhere; font-size: 16px; font-weight: 600; }
+.revision { display: flex; align-items: center; gap: 13px; margin: 10px 0 16px; color: #185c56; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; text-align: left; }
+caption { caption-side: top; padding-block: 7px; font-weight: 600; color: #192d37; }
+th, td { padding: 8px 12px; border: 1px solid #e1e9ed; overflow-wrap: anywhere; min-width: 120px; }
+thead { background: #f4f8fa; }
+.details { display: grid; gap: 8px; margin: 14px 0; }
+.details:only-child { margin: 0; }
+.details > div { display: grid; grid-template-columns: 85px minmax(0, 1fr); line-height: 1.6; }
+dt { color: #536974; font-weight: 600; }
+dd { margin: 0; }
+.evidence-link { display: inline-block; margin-right: 10px; }
+.followup { margin-top: 9px; }
+.loading { text-align: center; padding: 70px 20px; color: #536974; }
+.loading p { margin-top: 12px; }
+@media (max-width: 620px) {
+  .start-panel { margin-top: 8px; }
+  .start-title, .start-form, .panel { padding-inline: 16px; }
+  main.shell { padding-top: 26px; }
+  .workspace-head { align-items: flex-start; }
+}

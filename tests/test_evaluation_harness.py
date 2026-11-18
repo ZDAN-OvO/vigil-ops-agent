@@ -261,12 +261,12 @@ def test_preflight_failure_without_creation_does_not_clean(monkeypatch, tmp_path
 
     verbs: list[str] = []
 
-    def fake_run_verb(spec, verb, *, settings):
+    def fake_run_verb(spec, verb, *, settings, lock_fd=None):
         verbs.append(verb)
         facts = {"created": "0"} if verb == "preflight" else {}
         return VerbOutcome(verb=verb, ok=verb != "preflight", facts=facts, returncode=0, output="")
 
-    async def fake_close(store, spec, record, settings, *, cleanup_needed):
+    async def fake_close(store, spec, record, settings, *, cleanup_needed, lock_fd=None):
         if cleanup_needed:
             record.environment_restored = False
 
@@ -285,11 +285,11 @@ def test_preflight_failure_after_creating_still_cleans(monkeypatch, tmp_path):
 
     cleaned: list[bool] = []
 
-    def fake_run_verb(spec, verb, *, settings):
+    def fake_run_verb(spec, verb, *, settings, lock_fd=None):
         facts = {"created": "1"} if verb == "preflight" else {}
         return VerbOutcome(verb=verb, ok=False, facts=facts, returncode=0, output="")
 
-    async def fake_close(store, spec, record, settings, *, cleanup_needed):
+    async def fake_close(store, spec, record, settings, *, cleanup_needed, lock_fd=None):
         cleaned.append(cleanup_needed)
 
     monkeypatch.setattr(H, "run_verb", fake_run_verb)
@@ -305,17 +305,17 @@ def test_collection_failure_keeps_a_valid_arm_sample(monkeypatch, tmp_path):
     from aiops.evaluation import harness as H
     from aiops.evaluation.scenarios import VerbOutcome
 
-    def fake_run_verb(spec, verb, *, settings):
+    def fake_run_verb(spec, verb, *, settings, lock_fd=None):
         if verb == "recovered":
             raise OSError("采集失败")
         return VerbOutcome(verb=verb, ok=True, facts={}, returncode=0, output="")
 
-    async def fake_close(store, spec, record, settings, *, cleanup_needed):
+    async def fake_close(store, spec, record, settings, *, cleanup_needed, lock_fd=None):
         return None
 
     monkeypatch.setattr(H, "run_verb", fake_run_verb)
     monkeypatch.setattr(H, "_close", fake_close)
-    monkeypatch.setattr(H, "_invoke_arm", lambda spec, arm: (None, 5, "臂失败"))
+    monkeypatch.setattr(H, "_invoke_arm", lambda spec, arm, *, lock_fd=None: (None, 5, "臂失败"))
     monkeypatch.setattr(H, "_dump_output", lambda *a, **kw: None)
     record = asyncio.run(
         H.execute(None, _spec(tmp_path), "rules", 1, settings=object())  # type: ignore[arg-type]
@@ -345,15 +345,15 @@ def test_execute_writes_a_snapshot_and_rescore_never_hits_the_store(monkeypatch,
         allowed_kinds=("restart_pod",),
     )
 
-    def fake_run_verb(inner, verb, *, settings):
+    def fake_run_verb(inner, verb, *, settings, lock_fd=None):
         return VerbOutcome(verb=verb, ok=True, facts={}, returncode=0, output="")
 
-    async def fake_close(store, spec, record, settings, *, cleanup_needed):
+    async def fake_close(store, spec, record, settings, *, cleanup_needed, lock_fd=None):
         return None
 
     monkeypatch.setattr(H, "run_verb", fake_run_verb)
     monkeypatch.setattr(H, "_close", fake_close)
-    monkeypatch.setattr(H, "_invoke_arm", lambda spec, arm: (None, 0, ""))
+    monkeypatch.setattr(H, "_invoke_arm", lambda spec, arm, *, lock_fd=None: (None, 0, ""))
     monkeypatch.setattr(H, "_dump_output", lambda *a, **kw: None)
     record = asyncio.run(H.execute(None, spec, "rules", 1, settings=object()))  # type: ignore[arg-type]
     payload = {"records": [record.as_dict()]}

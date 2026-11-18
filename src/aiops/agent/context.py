@@ -56,6 +56,9 @@ class AgentContext:
     tool_timeout_seconds: float
     model_reserve_seconds: float
     progress: Progress
+    read_only: bool = False
+    conversation_id: str | None = None
+    lease_lost: asyncio.Event | None = None
 
     @property
     def cluster(self) -> str:
