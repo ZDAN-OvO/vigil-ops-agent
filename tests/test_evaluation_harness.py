@@ -422,3 +422,38 @@ def test_write_markdown_backs_up_unmarked_handwritten_content(tmp_path):
     write_markdown(path, {"date": "2026-11-18", "arms": ["rules"]}, rows)
     assert (tmp_path / "r.md.bak").exists()
     assert "手写的说明" not in path.read_text()
+
+
+def test_margin_hint_only_fires_on_a_real_one_run_gap():
+    """某一条率值两臂相同，不代表整体只差一次。"""
+    from aiops.evaluation.harness import _margin_hint
+
+    big = {"diagnosis_correct": 0, "confirmed": 0, "recovered_by_arm": 0, "valid": 3}
+    wide = {"diagnosis_correct": 3, "confirmed": 3, "recovered_by_arm": 0, "valid": 3}
+    assert _margin_hint(big, wide) == ""
+
+    same = {"diagnosis_correct": 3, "confirmed": 3, "recovered_by_arm": 3, "valid": 3}
+    assert _margin_hint(same, dict(same)) == "（率值相同，优势只在耗时或成本）"
+
+    one = {"diagnosis_correct": 2, "confirmed": 2, "recovered_by_arm": 1, "valid": 3}
+    assert "仅 1 次运行" in _margin_hint(one, same)
+
+
+def test_write_markdown_keeps_an_empty_marker_and_the_first_backup(tmp_path):
+    from aiops.evaluation.harness import MANUAL_MARKER, write_markdown
+
+    path = tmp_path / "r.md"
+    path.write_text("# 旧记录\n\n手写说明\n")
+    rows = summarize([_record("f01", "rules", i) for i in (1, 2, 3)])
+    write_markdown(path, {"date": "2026-11-18", "arms": ["rules"]}, rows)
+    assert "手写说明" in (tmp_path / "r.md.bak").read_text()
+
+    # 再写一次：备份不被机器生成的内容冲掉。
+    write_markdown(path, {"date": "2026-11-19", "arms": ["rules"]}, rows)
+    assert "手写说明" in (tmp_path / "r.md.bak").read_text()
+
+    # 带标记（哪怕后面是空的）时保留标记本身。
+    marked = tmp_path / "m.md"
+    marked.write_text(f"# 旧\n\n{MANUAL_MARKER}\n")
+    write_markdown(marked, {"date": "2026-11-18", "arms": ["rules"]}, rows)
+    assert MANUAL_MARKER in marked.read_text()

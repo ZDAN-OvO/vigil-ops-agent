@@ -467,11 +467,15 @@ _RATE_COUNTS = {
 
 def _margin_hint(left_row: dict[str, Any], right_row: dict[str, Any]) -> str:
     """率值只差一次运行就下的强弱判断，句尾必须说明它只是方向。"""
-    counts = [
+    diffs = [
         abs(int(left_row.get(key) or 0) - int(right_row.get(key) or 0))
         for key in _RATE_COUNTS.values()
     ]
-    if counts and min(counts) <= 1:
+    gaps = [value for value in diffs if value > 0]
+    if not gaps:
+        # 率值完全相同、却在别的维度更强：得说清收益来自哪里。
+        return "（率值相同，优势只在耗时或成本）"
+    if min(gaps) <= 1:
         return "（率值差距仅 1 次运行，只作方向判断）"
     return ""
 
@@ -691,15 +695,18 @@ def write_markdown(path: Path, batch: dict[str, Any], summary: dict[str, Any]) -
     body = render_markdown(batch, summary)
     if path.exists():
         previous = path.read_text()
-        manual = _manual_section(previous)
-        if manual:
-            body = f"{body}\n{MANUAL_MARKER}\n{manual}"
+        if MANUAL_MARKER in previous:
+            # 有标记就按标记接回，哪怕标记后面是空的——空标记本身也要留着，
+            # 否则下一次重算又会把它当成"没有标记的文件"。
+            body = f"{body}\n{MANUAL_MARKER}\n{_manual_section(previous)}"
         elif previous.strip() != body.strip():
-            # 旧文件有人手写内容但没有标记：先备份再写，不静默丢掉。
+            # 有人手写内容但没有标记：备份一次再写。已有备份时不再覆盖，
+            # 否则连续重算会把最早的手写版本冲成上一版机器生成的表。
             backup = path.with_suffix(".md.bak")
-            backup.write_text(previous)
+            if not backup.exists():
+                backup.write_text(previous)
             logger.warning(
-                "{} 没有 {} 标记，已把旧内容备份到 {}",
+                "{} 没有 {} 标记，旧内容已备份到 {}",
                 path.name,
                 MANUAL_MARKER,
                 backup.name,
