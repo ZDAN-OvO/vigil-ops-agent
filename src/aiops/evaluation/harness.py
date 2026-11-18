@@ -608,18 +608,24 @@ def merge_records(
     return combined, ordered
 
 
+_WRAPPER_KEYS = {"mix", "mixed", "also", "variants", "head"}
+
+
 def _anchor_list(anchors: Any) -> list[dict[str, Any]]:
-    """把一次或多次合并过的锚点读成列表。"""
+    """把一次或多次合并过的锚点读成列表，旧的两层格式递归展开。"""
     if not isinstance(anchors, dict):
         return []
     variants = anchors.get("variants")
     if isinstance(variants, list):
-        return [item for item in variants if isinstance(item, dict)]
-    # 兼容中间那一版的 {"mixed": true, "also": {...}}：它是两份锚点，不是一个。
+        flattened: list[dict[str, Any]] = []
+        for item in variants:
+            # 列表里可能还嵌着旧格式（A、B 合并后再与 C 合并），同样要拆开。
+            flattened.extend(_anchor_list(item))
+        return flattened
+    current = {key: value for key, value in anchors.items() if key not in _WRAPPER_KEYS}
     also = anchors.get("also")
-    current = {key: value for key, value in anchors.items() if key not in {"mix", "mixed", "also"}}
     if isinstance(also, dict) and also:
-        return [current, also]
+        return [current, *_anchor_list(also)]
     return [current]
 
 
@@ -756,14 +762,27 @@ def render_markdown(batch: dict[str, Any], summary: dict[str, Any]) -> str:
         f"- 环境复位：{'全部成功' if batch.get('environment_restored') else '有失败，见逐次记录'}",
     ]
     anchor = batch.get("anchors") or {}
-    if anchor.get("mix"):
-        variants = anchor.get("variants") or []
-        lines.append(
-            f"- 代码锚点：混用了 {len(variants)} 个版本 —— "
-            + "、".join(f"git {item.get('git_head', 'unknown')}" for item in variants)
-        )
-        anchor = variants[0] if variants else {}
-    if anchor:
+    variants = _anchor_list(anchor)
+    if len(variants) > 1:
+        # 混用多个版本时逐个列出：只展示第一个版本的配置会藏住后面的差异
+        # （git head 相同、模型或脚本指纹不同的情况并不少见）。
+        lines.append(f"- 代码锚点：混用了 {len(variants)} 个版本")
+        for index, item in enumerate(variants, start=1):
+            lines += [
+                f"  - 版本 {index}：git {item.get('git_head', 'unknown')}"
+                f"（工作区{'有' if item.get('git_dirty') == 'yes' else '无'}未提交改动）"
+                + ("（事后补采，非运行时的值）" if item.get("captured_after_the_fact") else ""),
+                f"    - 模型：{item.get('model', 'unknown')}"
+                f"；提示词指纹 {item.get('prompts_sha256', '—')}",
+                "    - 运行时："
+                + "、".join(
+                    f"{key}={value}" for key, value in (item.get("runtimes") or {}).items()
+                ),
+                "    - 场景脚本指纹："
+                + "、".join(f"{key}={value}" for key, value in (item.get("scripts") or {}).items()),
+            ]
+    elif variants:
+        anchor = variants[0]
         lines += [
             f"- 代码锚点：git {anchor.get('git_head', 'unknown')}"
             f"（工作区{'有' if anchor.get('git_dirty') == 'yes' else '无'}未提交改动）"

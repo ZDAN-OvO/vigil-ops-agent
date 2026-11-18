@@ -8,6 +8,8 @@ KUBECTL="${KUBECTL:-kubectl}"
 NS="${NS:-vigil-experiment}"
 NS_OWNER="a01-pod-rebuild"
 DEPLOY="${DEPLOY:-rebuild-demo}"
+# 清单里有哪些对象：创建判定和清理都以这份为准，避免只盯 Deployment。
+MANIFEST_OBJECTS="deploy/$DEPLOY service/$DEPLOY configmap/$DEPLOY-poison"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PF_PORT="${PF_PORT:-8082}"
 PF_LOG="${PF_LOG:-${TMPDIR:-/tmp}/vigil-a01-port-forward.log}"
@@ -143,21 +145,28 @@ ensure_namespace() {
 
 deploy() {
   ensure_namespace
-  kget get deploy "$DEPLOY" >/dev/null && fail "已存在 $DEPLOY"
-  # apply 失败不等于没建：只有对象真的出现了才登记 created，避免按"可能建过"就清理。
+  # 清单三类对象在 apply 之前必须先全空：只查 Deployment 不够（别的对象可能已经
+  # 在那儿），而"apply 失败后能查到"也不等于"这次建的"——那可能是原本就存在的旧
+  # 对象，按它登记 created 会让清理删掉不属于本次实验的东西。
+  local object
+  local existing=""
+  for object in "$MANIFEST_OBJECTS"; do
+    if "$KUBECTL" -n "$NS" get "$object" >/dev/null 2>&1; then
+      existing="$existing $object"
+    fi
+  done
+  [ -z "$existing" ] || fail "已存在${existing}，停止（不会自动清理）"
+  # apply 失败不等于没建：失败后新出现的对象就是这次建的，登记 created 让编排复位。
   "$KUBECTL" apply -f "$DIR/manifests.yaml" >/dev/null || {
-    # 清单里有三类对象；只查 Deployment 会漏掉"Service/ConfigMap 建了、
-    # Deployment 没建"的半成品，那种情况同样必须清理。
-    local found=""
-    local object
-    for object in "deploy/$DEPLOY" "service/$DEPLOY" "configmap/$DEPLOY-poison"; do
+    local created_objects=""
+    for object in "$MANIFEST_OBJECTS"; do
       if "$KUBECTL" -n "$NS" get "$object" >/dev/null 2>&1; then
-        found="$found $object"
+        created_objects="$created_objects $object"
       fi
     done
-    if [ -n "$found" ]; then
+    if [ -n "$created_objects" ]; then
       CREATED=1
-      say "PARTIAL_CREATED objects=${found# }"
+      say "PARTIAL_CREATED objects=${created_objects# }"
     fi
     fail "清单应用失败"
   }

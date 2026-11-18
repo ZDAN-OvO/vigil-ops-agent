@@ -506,3 +506,39 @@ def test_old_two_layer_anchors_expand_into_two_versions():
     }
     merged = _merge_anchors(old, None)
     assert [item["git_head"] for item in merged["variants"]] == ["aaa", "bbb"]
+
+
+def test_legacy_nested_anchors_flatten_recursively():
+    """旧格式 A+B 合并后再与 C 合并：三个版本都要出现。"""
+    from aiops.evaluation.harness import _merge_anchors
+
+    legacy = {"git_head": "A", "mixed": True, "also": {"git_head": "B"}}
+    merged = _merge_anchors(legacy, {"git_head": "C"})
+    assert [item["git_head"] for item in merged["variants"]] == ["A", "B", "C"]
+
+    # 再追加 A 不应该新增版本。
+    again = _merge_anchors(merged, {"git_head": "A"})
+    assert [item["git_head"] for item in again["variants"]] == ["A", "B", "C"]
+
+
+def test_mixed_versions_render_each_configuration():
+    """两个版本 git head 相同、模型不同时，模型差异也要显示出来。"""
+    from aiops.evaluation.harness import render_markdown
+
+    batch = {
+        "date": "2026-11-18",
+        "arms": ["rules"],
+        "scenarios": ["f01"],
+        "runs_per_cell": 3,
+        "anchors": {
+            "mix": True,
+            "variants": [
+                {"git_head": "aaa", "model": "m1", "scripts": {"f01": "s1"}},
+                {"git_head": "aaa", "model": "m2", "scripts": {"f01": "s2"}},
+            ],
+        },
+    }
+    text = render_markdown(batch, summarize([]))
+    assert "混用了 2 个版本" in text
+    assert "m1" in text and "m2" in text
+    assert "s1" in text and "s2" in text
