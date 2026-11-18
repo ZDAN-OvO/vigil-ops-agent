@@ -623,10 +623,8 @@ def _anchor_list(anchors: Any) -> list[dict[str, Any]]:
             flattened.extend(_anchor_list(item))
         return flattened
     current = {key: value for key, value in anchors.items() if key not in _WRAPPER_KEYS}
-    also = anchors.get("also")
-    if isinstance(also, dict) and also:
-        return [current, *_anchor_list(also)]
-    return [current]
+    versions = [current] if current else []
+    return versions + _anchor_list(anchors.get("also"))
 
 
 def _merge_anchors(existing: Any, incoming: Any) -> dict[str, Any]:
@@ -667,7 +665,7 @@ def _show(value: float | None) -> str:
     return "—" if value is None else f"{value:g}"
 
 
-def _git(*args: str) -> str:
+def _git(*args: str) -> str | None:
     try:
         completed = subprocess.run(
             ["git", *args],
@@ -678,8 +676,8 @@ def _git(*args: str) -> str:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return ""
-    return completed.stdout.strip() if completed.returncode == 0 else ""
+        return None
+    return completed.stdout.strip() if completed.returncode == 0 else None
 
 
 def _digest(data: bytes) -> str:
@@ -692,9 +690,12 @@ def anchors(specs: list[ScenarioSpec], model: str) -> dict[str, Any]:
     没有这层锚点，"跑之前冻结"只是一句自述：读者无法确认记录里的场景脚本、
     提示词、规则集和判定口径与提交的是同一版本。
     """
+    git_head = _git("rev-parse", "HEAD")
+    git_status = _git("status", "--porcelain")
+    git_dirty = "unknown" if git_status is None else ("yes" if git_status else "no")
     return {
-        "git_head": _git("rev-parse", "HEAD") or "unknown",
-        "git_dirty": "yes" if _git("status", "--porcelain") else "no",
+        "git_head": git_head or "unknown",
+        "git_dirty": git_dirty,
         "model": model,
         "prompts_sha256": _digest((SYSTEM_PROMPT + GENERIC_SYSTEM_PROMPT).encode()),
         "runtimes": {
@@ -751,6 +752,15 @@ def _manual_section(text: str) -> str:
     return text[index + len(MANUAL_MARKER) :].strip()
 
 
+def _git_anchor_label(anchor: dict[str, Any]) -> str:
+    status = {
+        "yes": "工作区有未提交改动",
+        "no": "工作区无未提交改动",
+    }.get(anchor.get("git_dirty"), "工作区状态未知")
+    captured_after = "（事后补采，非运行时的值）" if anchor.get("captured_after_the_fact") else ""
+    return f"git {anchor.get('git_head', 'unknown')}（{status}）{captured_after}"
+
+
 def render_markdown(batch: dict[str, Any], summary: dict[str, Any]) -> str:
     """生成人读汇总：只陈述计数与门槛，不复述单次结论。"""
     lines = [
@@ -761,17 +771,14 @@ def render_markdown(batch: dict[str, Any], summary: dict[str, Any]) -> str:
         f"- 每次每臂运行次数：{batch.get('runs_per_cell', 0)}",
         f"- 环境复位：{'全部成功' if batch.get('environment_restored') else '有失败，见逐次记录'}",
     ]
-    anchor = batch.get("anchors") or {}
-    variants = _anchor_list(anchor)
+    variants = _anchor_list(batch.get("anchors"))
     if len(variants) > 1:
         # 混用多个版本时逐个列出：只展示第一个版本的配置会藏住后面的差异
         # （git head 相同、模型或脚本指纹不同的情况并不少见）。
         lines.append(f"- 代码锚点：混用了 {len(variants)} 个版本")
         for index, item in enumerate(variants, start=1):
             lines += [
-                f"  - 版本 {index}：git {item.get('git_head', 'unknown')}"
-                f"（工作区{'有' if item.get('git_dirty') == 'yes' else '无'}未提交改动）"
-                + ("（事后补采，非运行时的值）" if item.get("captured_after_the_fact") else ""),
+                f"  - 版本 {index}：{_git_anchor_label(item)}",
                 f"    - 模型：{item.get('model', 'unknown')}"
                 f"；提示词指纹 {item.get('prompts_sha256', '—')}",
                 "    - 运行时："
@@ -784,9 +791,7 @@ def render_markdown(batch: dict[str, Any], summary: dict[str, Any]) -> str:
     elif variants:
         anchor = variants[0]
         lines += [
-            f"- 代码锚点：git {anchor.get('git_head', 'unknown')}"
-            f"（工作区{'有' if anchor.get('git_dirty') == 'yes' else '无'}未提交改动）"
-            + ("（事后补采，非运行时的值）" if anchor.get("captured_after_the_fact") else ""),
+            f"- 代码锚点：{_git_anchor_label(anchor)}",
             f"- 模型：{anchor.get('model', 'unknown')}"
             f"；提示词指纹 {anchor.get('prompts_sha256', '—')}",
             "- 运行时："
@@ -794,6 +799,8 @@ def render_markdown(batch: dict[str, Any], summary: dict[str, Any]) -> str:
             "- 场景脚本指纹："
             + "、".join(f"{key}={value}" for key, value in (anchor.get("scripts") or {}).items()),
         ]
+    else:
+        lines.append("- 代码锚点：未记录")
     lines += [
         "",
         "## 汇总",

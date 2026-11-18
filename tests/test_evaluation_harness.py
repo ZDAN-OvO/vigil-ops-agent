@@ -542,3 +542,36 @@ def test_mixed_versions_render_each_configuration():
     assert "混用了 2 个版本" in text
     assert "m1" in text and "m2" in text
     assert "s1" in text and "s2" in text
+    assert "工作区状态未知" in text
+    assert "工作区无未提交改动" not in text
+
+
+def test_missing_anchors_do_not_become_a_version():
+    from aiops.evaluation.harness import _merge_anchors, render_markdown
+
+    assert "代码锚点：未记录" in render_markdown({"anchors": {}}, summarize([]))
+    recorded = {"git_head": "aaa", "git_dirty": "no"}
+    assert _merge_anchors({}, recorded) == recorded
+    assert _merge_anchors({"mix": True, "variants": [{}, recorded]}, {}) == recorded
+    assert _merge_anchors({"mixed": True, "also": recorded}, {}) == recorded
+
+
+def test_failed_git_status_is_unknown(monkeypatch):
+    from subprocess import CompletedProcess
+
+    from aiops.evaluation import harness
+
+    outcomes = iter(
+        [
+            CompletedProcess([], 0, stdout="abc\n"),
+            CompletedProcess([], 128, stdout=""),
+        ]
+    )
+    monkeypatch.setattr(harness.subprocess, "run", lambda *args, **kwargs: next(outcomes))
+
+    anchor = harness.anchors([], "model")
+    assert anchor["git_head"] == "abc"
+    assert anchor["git_dirty"] == "unknown"
+    text = harness.render_markdown({"anchors": anchor}, summarize([]))
+    assert "工作区状态未知" in text
+    assert "工作区无未提交改动" not in text
