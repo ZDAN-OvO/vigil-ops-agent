@@ -326,6 +326,18 @@ def test_redaction_keeps_digest_only_in_card_image_and_handles_long_input():
     assert "1" * 64 not in other["after"]
     pem = "-----BEGIN PRIVATE KEY-----\nMIIfakekeybody\n-----END PRIVATE KEY-----"
     assert "MIIfakekeybody" not in clean(pem)
+    assert "MIIfakekeybody" not in clean("private_key: " + pem)
+    assert "fake-bearer-value" not in clean("Authorization: Bearer fake-bearer-value")
+    assert "fake-spaced-value" not in clean("api key: fake-spaced-value")
+    known = Redactor(Settings(_env_file=None, model_api_key="registry-secret-xyz"))
+    leaked = known.change(
+        {
+            "path": "containers[server].image",
+            "from": None,
+            "to": f"registry-secret-xyz/app@{digest}",
+        }
+    )
+    assert "registry-secret-xyz" not in leaked["after"] and "1" * 64 in leaked["after"]
     started = time.monotonic()
     clean("-" * 8000 + "=:" * 4000)
     assert time.monotonic() - started < 0.5

@@ -174,7 +174,7 @@ _NOT_EXECUTED = {
     "revision_changed": "历史版本已变化",
     "probe_ambiguous": "业务探针未返回唯一序列",
     "baseline_unavailable": "无法取得业务基线",
-    "api_rejected": "写前核对未通过",
+    "api_rejected": "写前核对未通过或集群拒绝了写请求",
 }
 _VERIFICATION = {
     "improved": "首页探针显示业务已改善",

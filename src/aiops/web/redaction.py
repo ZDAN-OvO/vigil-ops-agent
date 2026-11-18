@@ -29,6 +29,7 @@ SECRET_KEY = re.compile(
     r"(?i)password|passwd|pwd|secret|token|api[-_. ]?key|authorization|access[-_. ]?key"
     r"|private[-_. ]?key|credential"
 )
+API_KEY_SPACED = re.compile(r"""(?i)\bapi key["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)""")
 # 只有卡片变更清单的镜像字段允许显示摘要，且必须是完整的镜像引用。
 IMAGE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]*@sha256:[a-f0-9]{64}$")
 
@@ -58,8 +59,12 @@ class Redactor:
     def __call__(self, text: str) -> str:
         for value in self.known:
             text = text.replace(value, "【已隐藏】")
+        # 先遮整段凭据（Authorization 头、PEM 块），再遮键值；否则键值规则会先吞掉起始标记。
+        for pattern in PATTERNS[:2]:
+            text = pattern.sub("【已隐藏】", text)
         text = KEY_VALUE.sub(_hide_secret_pair, text)
-        for pattern in PATTERNS:
+        text = API_KEY_SPACED.sub("【已隐藏】", text)
+        for pattern in PATTERNS[2:]:
             text = pattern.sub("【已隐藏】", text)
         return text
 
@@ -73,7 +78,9 @@ class Redactor:
             if sensitive:
                 return "已变化"
             if path.endswith(".image") and isinstance(item, str) and IMAGE_REF.match(item):
-                return json.dumps(item)
+                # 只豁免摘要本身，仓库与名称部分照常过滤。
+                name, digest = item.split("@sha256:", 1)
+                return json.dumps(f"{self(name)}@sha256:{digest}", ensure_ascii=False)
             return self(json.dumps(item, ensure_ascii=False, sort_keys=True))
 
         # 涉及整个对象或列表时，键内也可能含敏感内容，整项隐藏。
