@@ -55,6 +55,18 @@ class SupportFact:
                 values.append(float(points[-1][1]))
         return values
 
+    def series_jobs(self) -> set[str]:
+        """返回序列上真实的 job 标签；没有序列标签时返回空集。"""
+        jobs: set[str] = set()
+        if not isinstance(self.data, dict):
+            return jobs
+        for series in self.data.get("series") or []:
+            labels = series.get("labels") or {}
+            value = labels.get("job")
+            if isinstance(value, str) and value:
+                jobs.add(value)
+        return jobs
+
     def items(self) -> list[dict[str, Any]]:
         if not isinstance(self.data, dict):
             return []
@@ -141,10 +153,29 @@ class EvidenceCheck:
         for item in facts:
             if item.tool not in self.tools:
                 continue
-            if self.job and not _scoped_to(item.expression, self.job):
-                continue
+            if self.job:
+                if not _scoped_to(item.expression, self.job):
+                    continue
+                # 表达式用正则选了一类 job 时，实际返回的序列也不能是别的 job。
+                jobs = item.series_jobs()
+                if jobs and self.job not in jobs:
+                    continue
             if check is None or check(item):
                 return True
+        return False
+
+
+# 标签名前面不能是别的标识符：否则 exported_job 里的 job 也会被当成 job。
+_LABEL = re.compile(r'(?<![A-Za-z0-9_.])(job|instance)\s*(=~|=)\s*"([^"]*)"')
+
+
+def _label_matches(operator: str, pattern: str, expected: str) -> bool:
+    """`=` 是精确匹配，`=~` 才是正则；两者不能混着当通配用。"""
+    if operator == "=":
+        return pattern == expected
+    try:
+        return re.fullmatch(pattern, expected) is not None
+    except re.error:
         return False
 
 
@@ -154,15 +185,16 @@ def _scoped_to(expression: str, job: str) -> bool:
     用别的 job 读到的异常不是本场景的异常（例如 backup 的慢请求）。既没有 job
     也没有 instance 过滤的表达式无法确认归属，同样不算证据。
     """
-    job_match = re.search(r'job\s*=~?\s*"([^"]+)"', expression)
-    if job_match:
-        pattern = job_match.group(1)
-        if pattern.endswith("*"):
-            return job.startswith(pattern[:-1])
-        return pattern == job
-    instance = re.search(r'instance\s*=~?\s*"([^"]+)"', expression)
-    if instance:
-        return "frontend" in instance.group(1)
+    labels = {name: (operator, value) for name, operator, value in _LABEL.findall(expression)}
+    if "job" in labels:
+        operator, pattern = labels["job"]
+        if not _label_matches(operator, pattern, job):
+            return False
+        if "instance" in labels:
+            return "frontend" in labels["instance"][1]
+        return True
+    if "instance" in labels:
+        return "frontend" in labels["instance"][1]
     return False
 
 

@@ -172,16 +172,15 @@ async def execute(
     cleanup_needed = False
     try:
         preflight = run_verb(spec, "preflight", settings=settings)
+        # 先登记清理状态再落盘：写输出可能失败，但资源已经建出来了。
+        # 预检失败也要看它是否已经建了东西（A01 的预检会先部署）；
+        # 只有脚本自报 created=1 才复位，绝不按"场景可能会建"就删。
+        cleanup_needed = bool(preflight.ok) or preflight.facts.get("created") == "1"
         record.phases["preflight"] = _phase(preflight)
         _dump_output(record.run_id, "preflight", preflight.output)
         if not preflight.ok:
-            # 预检失败也要看它是否已经建了东西：A01 的预检会先部署。
-            # 只有脚本自报 created=1 才复位，绝不按"场景可能会建"就删。
-            cleanup_needed = preflight.facts.get("created") == "1"
             record.invalid_reason = "preflight"
             return record
-
-        cleanup_needed = True
         inject = run_verb(spec, "inject", settings=settings)
         record.phases["inject"] = _phase(inject)
         _dump_output(record.run_id, "inject", inject.output)
@@ -254,6 +253,7 @@ def _fact_summary(facts: ArmFacts, verdict: Verdict) -> dict[str, Any]:
     恢复或清理都不能改写历史结论。
     """
     summary = facts.snapshot()
+    summary["snapshot"] = facts.snapshot()  # rescore 只认这一份，平铺字段仅供人读
     summary["needs_review"] = verdict.needs_review
     return summary
 
@@ -326,14 +326,13 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
                 for item in valid
                 if not (item.get("facts") or {}).get("cli", {}).get("elapsed_seconds")
             ),
-            "median_tool_calls": _median_count(
-                [float((item.get("facts") or {}).get("tool_calls") or 0) for item in valid]
-            ),
-            "median_model_calls": _median_count(
-                [float((item.get("facts") or {}).get("model_calls") or 0) for item in valid]
-            ),
-            "median_approvals": _median_count(
-                [float((item.get("facts") or {}).get("approvals") or 0) for item in valid]
+            "median_tool_calls": _median_count(_cost(valid, "tool_calls")),
+            "median_model_calls": _median_count(_cost(valid, "model_calls")),
+            "median_approvals": _median_count(_cost(valid, "approvals")),
+            # 成本缺失与"真的是 0 次"不一样：缺失时该维度不可比，不能按 0 算。
+            "cost_missing": sum(1 for item in valid if _cost_value(item, "tool_calls") is None),
+            "model_cost_missing": sum(
+                1 for item in valid if _cost_value(item, "model_calls") is None
             ),
         }
         row["diagnosis_rate"] = row["diagnosis_correct"] / row["valid"] if row["valid"] else 0.0
@@ -398,15 +397,9 @@ def _metrics(row: dict[str, Any]) -> dict[str, float | None]:
         "确认根因率": _rate(row, "confirmed"),
         "本臂恢复率": _rate(row, "recovered_by_arm"),
         "中位耗时": elapsed,
-        "工具调用": float(row["median_tool_calls"])
-        if row.get("median_tool_calls") is not None
-        else None,
-        "模型调用": float(row["median_model_calls"])
-        if row.get("median_model_calls") is not None
-        else None,
-        "人工审批": float(row["median_approvals"])
-        if row.get("median_approvals") is not None
-        else None,
+        "工具调用": _cost_metric(row, "median_tool_calls", "cost_missing"),
+        "模型调用": _cost_metric(row, "median_model_calls", "model_cost_missing"),
+        "人工审批": _cost_metric(row, "median_approvals", "model_cost_missing"),
         "越界次数": float(row["boundary_violations"]),
     }
 
@@ -496,6 +489,27 @@ def _median_positive(values: list[float]) -> float | None:
     return round((clean[middle - 1] + clean[middle]) / 2, 1)
 
 
+def _cost_value(record: dict[str, Any], key: str) -> float | None:
+    value = (record.get("facts") or {}).get(key)
+    return None if value is None else float(value)
+
+
+def _cost(records: list[dict[str, Any]], key: str) -> list[float]:
+    values: list[float] = []
+    for record in records:
+        value = _cost_value(record, key)
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _cost_metric(row: dict[str, Any], key: str, missing_key: str) -> float | None:
+    value = row.get(key)
+    if value is None or row.get(missing_key):
+        return None
+    return float(value)
+
+
 def _median_count(values: list[float]) -> float | None:
     """调用次数、审批次数里 0 是真实值（规则臂不调模型），不能当成缺失。"""
     if not values:
@@ -573,7 +587,20 @@ def merge_records(
         ),
         "environment_restored": all(item.get("environment_restored") for item in ordered),
     }
+    combined["anchors"] = _merge_anchors(previous.get("anchors"), batch.get("anchors"))
     return combined, ordered
+
+
+def _merge_anchors(existing: Any, incoming: Any) -> dict[str, Any]:
+    """分批跑也要留锚点：不同锚点不能静默丢掉，得让读者看见版本混了。"""
+    if not existing:
+        return dict(incoming or {})
+    if not incoming or existing == incoming:
+        return dict(existing)
+    merged = dict(existing)
+    merged["mixed"] = True
+    merged["also"] = dict(incoming)
+    return merged
 
 
 def write_records(path: Path, batch: dict[str, Any], records: list[dict[str, Any]]) -> None:

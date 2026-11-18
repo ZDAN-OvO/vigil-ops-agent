@@ -144,7 +144,11 @@ ensure_namespace() {
 deploy() {
   ensure_namespace
   kget get deploy "$DEPLOY" >/dev/null && fail "已存在 $DEPLOY"
-  "$KUBECTL" apply -f "$DIR/manifests.yaml" >/dev/null || { CREATED=1; fail "清单应用失败"; }
+  # apply 失败不等于没建：只有对象真的出现了才登记 created，避免按"可能建过"就清理。
+  "$KUBECTL" apply -f "$DIR/manifests.yaml" >/dev/null || {
+    kget get deploy "$DEPLOY" >/dev/null && CREATED=1
+    fail "清单应用失败"
+  }
   CREATED=1
   "$KUBECTL" -n "$NS" rollout status deploy/"$DEPLOY" --timeout=120s >/dev/null || fail "Deployment 未就绪"
   read_identity

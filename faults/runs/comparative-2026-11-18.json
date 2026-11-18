@@ -57,6 +57,8 @@
         "median_tool_calls": 27.0,
         "median_model_calls": 17.0,
         "median_approvals": 0.0,
+        "cost_missing": 0,
+        "model_cost_missing": 0,
         "diagnosis_rate": 0.6666666666666666,
         "meets_floor": true
       },
@@ -76,6 +78,8 @@
         "median_tool_calls": 28.0,
         "median_model_calls": 13.0,
         "median_approvals": 0.0,
+        "cost_missing": 0,
+        "model_cost_missing": 0,
         "diagnosis_rate": 0.0,
         "meets_floor": false
       },
@@ -95,6 +99,8 @@
         "median_tool_calls": 11.0,
         "median_model_calls": 0.0,
         "median_approvals": 0.0,
+        "cost_missing": 0,
+        "model_cost_missing": 0,
         "diagnosis_rate": 1.0,
         "meets_floor": true
       },
@@ -114,6 +120,8 @@
         "median_tool_calls": 12.0,
         "median_model_calls": 0.0,
         "median_approvals": 0.0,
+        "cost_missing": 0,
+        "model_cost_missing": 0,
         "diagnosis_rate": 1.0,
         "meets_floor": true
       },
@@ -133,6 +141,8 @@
         "median_tool_calls": 11.0,
         "median_model_calls": 0.0,
         "median_approvals": 0.0,
+        "cost_missing": 0,
+        "model_cost_missing": 0,
         "diagnosis_rate": 1.0,
         "meets_floor": true
       },
@@ -152,6 +162,8 @@
         "median_tool_calls": 29.0,
         "median_model_calls": 12.0,
         "median_approvals": 0.0,
+        "cost_missing": 0,
+        "model_cost_missing": 0,
         "diagnosis_rate": 0.6666666666666666,
         "meets_floor": true
       },
@@ -171,6 +183,8 @@
         "median_tool_calls": 11.0,
         "median_model_calls": 0.0,
         "median_approvals": 0.0,
+        "cost_missing": 0,
+        "model_cost_missing": 0,
         "diagnosis_rate": 1.0,
         "meets_floor": true
       }

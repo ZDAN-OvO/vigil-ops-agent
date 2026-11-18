@@ -28,7 +28,12 @@ def _record(scenario: str, arm: str, index: int, *, valid=True, correct=True, vi
             "needs_review": [],
             "boundary_violations": ["x"] * violations,
         },
-        "facts": {"cli": {"elapsed_seconds": 10.0 + index}},
+        "facts": {
+            "cli": {"elapsed_seconds": 10.0 + index},
+            "tool_calls": 10,
+            "model_calls": 5,
+            "approvals": 0,
+        },
     }
 
 
@@ -317,3 +322,81 @@ def test_collection_failure_keeps_a_valid_arm_sample(monkeypatch, tmp_path):
     )
     assert record.valid is True
     assert record.facts.get("collection_error")
+
+
+def test_execute_writes_a_snapshot_and_rescore_never_hits_the_store(monkeypatch, tmp_path):
+    """新运行必须自带快照；重算只用快照，不碰数据库。"""
+    from aiops.evaluation import harness as H
+    from aiops.evaluation.scenarios import ScenarioSpec, VerbOutcome
+
+    script = tmp_path / "repeat.sh"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    spec = ScenarioSpec(
+        id="a01-pod-rebuild",
+        name="演示",
+        namespace="vigil-experiment",
+        service="rebuild-demo",
+        symptoms="",
+        script=script,
+        truth="演示",
+        expected_action="restart_pod",
+        expected_target="rebuild-demo",
+        allowed_kinds=("restart_pod",),
+    )
+
+    def fake_run_verb(inner, verb, *, settings):
+        return VerbOutcome(verb=verb, ok=True, facts={}, returncode=0, output="")
+
+    async def fake_close(store, spec, record, settings, *, cleanup_needed):
+        return None
+
+    monkeypatch.setattr(H, "run_verb", fake_run_verb)
+    monkeypatch.setattr(H, "_close", fake_close)
+    monkeypatch.setattr(H, "_invoke_arm", lambda spec, arm: (None, 0, ""))
+    monkeypatch.setattr(H, "_dump_output", lambda *a, **kw: None)
+    record = asyncio.run(H.execute(None, spec, "rules", 1, settings=object()))  # type: ignore[arg-type]
+    payload = {"records": [record.as_dict()]}
+    assert isinstance(payload["records"][0]["facts"]["snapshot"], dict)
+
+    class _NoStore:
+        def __getattr__(self, name):
+            raise AssertionError(f"重算不该访问数据库：{name}")
+
+    asyncio.run(H.rescore(_NoStore(), payload))  # type: ignore[arg-type]
+
+
+def test_merge_keeps_anchors_and_marks_mixed_versions():
+    from aiops.evaluation.harness import merge_records
+
+    first = {"batch": {"date": "2026-11-18", "anchors": {"git_head": "aaa", "model": "m"}}}
+    batch = {"date": "2026-11-20", "anchors": {"git_head": "bbb", "model": "m"}}
+    merged, _ = merge_records(first, batch, [])
+    assert merged["anchors"]["git_head"] == "aaa"
+    assert merged["anchors"]["mixed"] is True
+    assert merged["anchors"]["also"]["git_head"] == "bbb"
+
+    same, _ = merge_records(
+        first, {"date": "2026-11-20", "anchors": {"git_head": "aaa", "model": "m"}}, []
+    )
+    assert same["anchors"] == {"git_head": "aaa", "model": "m"}
+
+
+def test_missing_cost_is_not_treated_as_zero_calls():
+    """有一次没记到工具调用，不能当 0 次——那会凭空造出成本优势。"""
+    agent = []
+    for index in (1, 2, 3):
+        item = _record("f01", "agent", index)
+        item["facts"]["tool_calls"] = 100.0
+        agent.append(item)
+    agent[2]["facts"].pop("tool_calls")
+    rules = [_record("f01", "rules", i) for i in (1, 2, 3)]
+    for item in rules:
+        item["facts"]["tool_calls"] = 10.0
+        item["facts"]["cli"]["elapsed_seconds"] = 60.0
+    rows = summarize(agent + rules)
+    agent_row = next(item for item in rows["rows"] if item["arm"] == "agent")
+    assert agent_row["cost_missing"] == 1
+    note = "".join(rows["comparison"])
+    assert "工具调用 缺失" in note
+    assert "不构成收益结论" in note

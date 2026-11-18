@@ -110,7 +110,10 @@ def test_adr_thresholds_match_the_code():
     assert f"{LOW_MEMORY_LIMIT_MIB}Mi" in adr
     assert f"≥ {OOM_RESTART_THRESHOLD}" in adr
     assert f"{MIN_VALID_RUNS} 次有效运行" in adr
-    assert f"{MIN_DIAGNOSIS_RATE:.0%}".replace("67%", "2/3") in adr or "2/3" in adr
+    # 比例要按 ADR 里写的分数解析，再用常量比对；不能靠"文档里出现过 2/3"兜底。
+    ratio = re.search(r"诊断正确率不低于 \*\*([\d.]+)/([\d.]+)\*\*", adr)
+    assert ratio is not None, "ADR 里找不到诊断正确率门槛"
+    assert float(ratio.group(1)) / float(ratio.group(2)) == MIN_DIAGNOSIS_RATE
 
 
 def test_run_record_markdown_matches_the_json():

@@ -220,3 +220,39 @@ def test_script_environment_does_not_inherit_experiment_targets(monkeypatch):
     env = _environment(configured)
     assert "NS" not in env and "DEPLOY" not in env and "KUBECTL" not in env
     assert env["KUBECONFIG"] == "/tmp/vigil-kube.yaml"
+
+
+def test_job_scope_does_not_treat_exact_match_as_a_wildcard():
+    """`job="frontend-*"` 是精确匹配，不是通配。"""
+    from aiops.evaluation.scenarios import _scoped_to
+
+    assert _scoped_to('probe_success{job="frontend-probe"}', "frontend-probe")
+    assert not _scoped_to('probe_success{job="frontend-*"}', "frontend-probe")
+    assert _scoped_to('probe_success{job=~"frontend-.*"}', "frontend-probe")
+    assert not _scoped_to('probe_success{job=~"backup-.*"}', "frontend-probe")
+
+
+def test_job_scope_ignores_lookalike_label_names():
+    """exported_job 不是 job。"""
+    from aiops.evaluation.scenarios import _scoped_to
+
+    expression = 'probe_success{exported_job="frontend-probe",job="unrelated-backup"}'
+    assert not _scoped_to(expression, "frontend-probe")
+
+
+def test_series_job_must_match_even_when_the_expression_is_a_regex():
+    """表达式用正则选了一类 job，但真正返回的是别的 job：不算证据。"""
+    check = EvidenceCheck(
+        "业务失败",
+        ("prometheus.query_range",),
+        fact="business_failure",
+        job="frontend-probe",
+    )
+    fact = SupportFact(
+        "obs-z",
+        "prometheus.query_range",
+        'probe_success{job=~"frontend-.*"}',
+        "",
+        data={"series": [{"labels": {"job": "frontend-backup"}, "points": [[1.0, 0.0]]}]},
+    )
+    assert not check.matched_by([fact])
