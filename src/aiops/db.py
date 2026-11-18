@@ -425,6 +425,7 @@ class Store:
                     hypothesis.update_reason,
                 ),
             )
+            await self._notify_investigation(conn, hypothesis.investigation_id, "evidence")
 
     async def get_hypothesis(self, hypothesis_id: str) -> Hypothesis | None:
         async with self._pool.connection() as conn:
@@ -647,6 +648,7 @@ class Store:
                     proposal.observation_window_seconds,
                 ),
             )
+            await self._notify_investigation(conn, proposal.investigation_id, "proposal")
         except psycopg.errors.UniqueViolation as exc:
             raise DuplicateProposal("同一目标版本已有进行中的提案") from exc
 
@@ -870,6 +872,7 @@ class Store:
             )
             if cursor.rowcount != 1:
                 raise LookupError(f"执行记录不存在：{attempt_id}")
+            await self._notify_attempt(conn, attempt_id)
 
     async def get_conversation_for_investigation(self, investigation_id: str) -> dict | None:
         async with self._pool.connection() as conn:
@@ -915,6 +918,7 @@ class Store:
             if not cur.rowcount:
                 return False
             await self._insert_attempt(conn, attempt)
+            await self._notify_attempt(conn, attempt.id)
             return True
 
     async def record_not_sent(
@@ -932,6 +936,7 @@ class Store:
                 "DELETE FROM action_locks WHERE target_key = %s AND proposal_id = %s",
                 (target_lock_key, attempt.proposal_id),
             )
+            await self._notify_attempt(conn, attempt.id)
 
     async def finish_attempt(
         self,
@@ -981,6 +986,7 @@ class Store:
                         "DELETE FROM action_locks WHERE target_key = %s AND proposal_id = %s",
                         (target_lock_key, proposal_id),
                     )
+                await self._notify_attempt(conn, attempt_id)
 
     async def _insert_followup(
         self, conn: psycopg.AsyncConnection, followup: ActionFollowup
@@ -1594,6 +1600,29 @@ class Store:
             )
             return await cur.fetchone()
 
+    async def _notify_investigation(
+        self, conn: psycopg.AsyncConnection, investigation_id: str | None, kind: str
+    ) -> None:
+        if investigation_id is not None:
+            await conn.execute(
+                """
+                INSERT INTO conversation_events (conversation_id, kind)
+                SELECT id, %s FROM conversations WHERE investigation_id = %s
+                """,
+                (kind, investigation_id),
+            )
+
+    async def _notify_attempt(self, conn: psycopg.AsyncConnection, attempt_id: str) -> None:
+        await conn.execute(
+            """
+            INSERT INTO conversation_events (conversation_id, kind)
+            SELECT c.id, 'execution' FROM conversations c
+            JOIN action_proposals p USING (investigation_id)
+            JOIN action_attempts a ON a.proposal_id = p.id WHERE a.id = %s
+            """,
+            (attempt_id,),
+        )
+
     async def _insert_conversation_event(
         self, conn: psycopg.AsyncConnection, conversation_id: str, kind: str
     ) -> None:
@@ -1685,6 +1714,7 @@ class Store:
                     observation.time_range.end,
                 ),
             )
+            await self._notify_investigation(conn, observation.investigation_id, "evidence")
 
     async def get_observation(self, observation_id: str) -> Observation | None:
         async with self._pool.connection() as conn:
@@ -1741,6 +1771,7 @@ class Store:
                     link.rationale,
                 ),
             )
+            await self._notify_investigation(conn, link.investigation_id, "evidence")
 
     async def list_hypothesis_evidence(self, investigation_id: str) -> list[HypothesisEvidence]:
         async with self._pool.connection() as conn:
@@ -1861,6 +1892,8 @@ class Store:
                     request.started_at,
                 ),
             )
+            if cursor.rowcount:
+                await self._notify_investigation(conn, request.investigation_id, "progress")
             return cursor.rowcount == 1
 
     async def get_tool_request(
@@ -1916,6 +1949,7 @@ class Store:
             )
             if cursor.rowcount != 1:
                 raise LookupError(f"工具请求不存在：{tool_call_id}")
+            await self._notify_investigation(conn, investigation_id, "progress")
 
     async def list_tool_requests(self, investigation_id: str) -> list[ToolRequest]:
         async with self._pool.connection() as conn:

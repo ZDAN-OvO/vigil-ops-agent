@@ -408,7 +408,7 @@ aiops serve（单进程、单事件循环）
     "stage": "pre_check | applying | rolling_out | verifying | done | null",
     "not_executed_reason": "expired | drift | revision_changed | probe_ambiguous | baseline_unavailable | api_rejected | null",
     "verification": "improved | no_improvement | worsened | unknown | null",
-    "verification_reason": "probe_ambiguous | interrupted | null",
+    "verification_reason": "probe_ambiguous | interrupted | template_mismatch | null",
     "verification_done": false
   },
   "followups": [{"id": "fu-…", "proposal_id": "act-…", "reason": "…", "status": "open | resolved", "resolution": "…", "resolved_at": null}],
@@ -417,6 +417,7 @@ aiops serve（单进程、单事件循环）
 }
 ```
 
+- `proposal.card_hash` 仅在当前提案已完成交接且仍待审批时返回，其余阶段为 `null`。
 - `outcome` 各字段直接读执行记录，按 A.6 的写入顺序表解释，不从其他字段推导。页面"是否写入集群"：`not_sent` → 未写入；`sent` → 已写入；`sending` / `uncertain` → 无法确认。
 - `proposal` 指该调查最新创建的提案；`outcome` 带 `proposal_id`，只取这张提案的执行记录，不沿用上一张提案的结果。`followups` 列出**本调查所有**待办，每条带 `proposal_id`，页面在结果区按提案显示，旧提案的待办不会因为出现新提案而被藏起来。上一张提案的结果只出现在对话的历史结论中。页面调查只会有 `rollout_undo`（A.7）。只有 `pending_approval` 且 `ready_proposal_id` 匹配时，页面显示批准和拒绝按钮；`denied`（风险规则禁止，例如目标还有未关闭的待办）只显示原因。
 - `needs_verification` 当且仅当该调查还有未关闭的人工待办。待办关闭后，`followups` 中带出核实结论，页面在结果区显示。

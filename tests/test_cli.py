@@ -280,6 +280,7 @@ def cli_env(tmp_path):
     return {
         **os.environ,
         "VIGIL_RUNTIME_DIR": str(tmp_path / "runtime"),
+        "VIGIL_WEB_PORT": "0",
         "VIGIL_WEBHOOK_TOKEN": "test-webhook-token",
         "VIGIL_MODEL_NAME": "test-model",
     }

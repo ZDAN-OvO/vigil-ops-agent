@@ -55,7 +55,7 @@ from aiops.knowledge import load_runbooks
 from aiops.process_lock import acquire
 from aiops.report import Report, delegation_payloads
 from aiops.web.runner import ConversationRunner
-from aiops.webhook import build_app
+from aiops.web.serve import serve_apps
 
 app = typer.Typer(
     help="Vigil AIOps：故障调查与受控修复。",
@@ -677,7 +677,7 @@ def serve(
     host: str | None = typer.Option(None, help="告警监听地址，默认读配置"),
     port: int | None = typer.Option(None, help="告警监听端口，默认读配置"),
 ) -> None:
-    """启动 AlertManager webhook 服务；收到告警后异步发起调查。"""
+    """启动本机页面、后台调查与 AlertManager 告警接入。"""
     settings = Settings()
     if settings.webhook_token is None:
         typer.echo("未配置 VIGIL_WEBHOOK_TOKEN，拒绝启动无鉴权的 webhook。", err=True)
@@ -689,8 +689,6 @@ def serve(
 
     _take_lock(serving=True, settings=settings)
 
-    import uvicorn
-
     async def run() -> None:
         async with Store.open(dsn) as store:
             await store.migrate()
@@ -701,17 +699,15 @@ def serve(
                     typer.echo("警告：存在可能改写 Deployment 的准入规则。", err=True)
             except Exception:
                 typer.echo("警告：无法检查 Deployment 的可变更准入规则。", err=True)
-            config = uvicorn.Config(
-                build_app(settings),
-                host=host or settings.webhook_host,
-                port=settings.webhook_port if port is None else port,
+            page_host = f"[{settings.web_host}]" if ":" in settings.web_host else settings.web_host
+            typer.echo(f"Vigil 页面：http://{page_host}:{settings.web_port}/")
+            await serve_apps(
+                settings,
+                store,
+                runner,
+                alert_host=host or settings.webhook_host,
+                alert_port=settings.webhook_port if port is None else port,
             )
-            async with asyncio.TaskGroup() as tasks:
-                work = tasks.create_task(runner.run())
-                try:
-                    await uvicorn.Server(config).serve()
-                finally:
-                    work.cancel()
 
     try:
         asyncio.run(run())
