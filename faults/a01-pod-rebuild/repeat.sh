@@ -9,7 +9,8 @@ NS="${NS:-vigil-experiment}"
 NS_OWNER="a01-pod-rebuild"
 DEPLOY="${DEPLOY:-rebuild-demo}"
 # 清单里有哪些对象：创建判定和清理都以这份为准，避免只盯 Deployment。
-MANIFEST_OBJECTS="deploy/$DEPLOY service/$DEPLOY configmap/$DEPLOY-poison"
+# 必须是数组：加引号展开成一整个参数会让 kubectl 直接报错，检查等于没做。
+MANIFEST_OBJECTS=("deploy/$DEPLOY" "service/$DEPLOY" "configmap/$DEPLOY-poison")
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PF_PORT="${PF_PORT:-8082}"
 PF_LOG="${PF_LOG:-${TMPDIR:-/tmp}/vigil-a01-port-forward.log}"
@@ -29,6 +30,19 @@ CREATED=0
 fail() { say "FAIL $*"; result "$VERB" fail "reason=$1" "created=$CREATED"; exit 1; }
 
 kget() { "$KUBECTL" -n "$NS" "$@" 2>/dev/null; }
+
+# 0=存在，1=确实不存在，2=读不出来。把权限错误或超时当成"不存在"会导致误删，
+# 所以读失败一律停下，不往下走。
+object_state() {
+  local out
+  if out=$("$KUBECTL" -n "$NS" get "$1" -o name 2>&1); then
+    return 0
+  fi
+  case "$out" in
+    *NotFound*) return 1 ;;
+    *) say "FAIL 无法确认 $1 是否存在：$out" ; return 2 ;;
+  esac
+}
 
 # 输出 "名称 UID restartCount ready"。跳过正在删除的 Pod，避免删除竞态读错对象。
 active_pod() {
@@ -148,18 +162,23 @@ deploy() {
   # 清单三类对象在 apply 之前必须先全空：只查 Deployment 不够（别的对象可能已经
   # 在那儿），而"apply 失败后能查到"也不等于"这次建的"——那可能是原本就存在的旧
   # 对象，按它登记 created 会让清理删掉不属于本次实验的东西。
-  local object
+  local object state
   local existing=""
-  for object in "$MANIFEST_OBJECTS"; do
-    if "$KUBECTL" -n "$NS" get "$object" >/dev/null 2>&1; then
-      existing="$existing $object"
-    fi
+  for object in "${MANIFEST_OBJECTS[@]}"; do
+    object_state "$object"
+    state=$?
+    case "$state" in
+      0) existing="$existing $object" ;;
+      1) ;;
+      *) fail "无法确认清单对象是否存在，停止" ;;
+    esac
   done
-  [ -z "$existing" ] || fail "已存在${existing}，停止（不会自动清理）"
+  [ -z "$existing" ] || fail "清单对象已存在，停止且不清理"
   # apply 失败不等于没建：失败后新出现的对象就是这次建的，登记 created 让编排复位。
   "$KUBECTL" apply -f "$DIR/manifests.yaml" >/dev/null || {
     local created_objects=""
-    for object in "$MANIFEST_OBJECTS"; do
+    for object in "${MANIFEST_OBJECTS[@]}"; do
+      # 这里读失败就不登记：方向是"少清理"，不会误删。
       if "$KUBECTL" -n "$NS" get "$object" >/dev/null 2>&1; then
         created_objects="$created_objects $object"
       fi
