@@ -21,7 +21,10 @@ source "$DIR/../lib/result.sh"
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 say() { printf '%s %s\n' "$(now)" "$*"; }
-fail() { say "FAIL $*"; result "$VERB" fail "reason=$1"; exit 1; }
+# CREATED 记录本次运行是否真的建过资源：preflight 失败时评估器靠它决定要不要
+# 复位。报告 created=0 的失败绝不触发清理，避免删掉别人或上一次留下的对象。
+CREATED=0
+fail() { say "FAIL $*"; result "$VERB" fail "reason=$1" "created=$CREATED"; exit 1; }
 
 kget() { "$KUBECTL" -n "$NS" "$@" 2>/dev/null; }
 
@@ -132,6 +135,7 @@ ensure_namespace() {
     return 0
   fi
   "$KUBECTL" create namespace "$NS" >/dev/null || fail "创建命名空间失败"
+  CREATED=1
   "$KUBECTL" annotate namespace "$NS" "vigil.io/owner=$NS_OWNER" >/dev/null \
     || fail "标注命名空间失败"
   say "NAMESPACE_CREATED namespace=$NS owner=$NS_OWNER"
@@ -140,7 +144,8 @@ ensure_namespace() {
 deploy() {
   ensure_namespace
   kget get deploy "$DEPLOY" >/dev/null && fail "已存在 $DEPLOY"
-  "$KUBECTL" apply -f "$DIR/manifests.yaml" >/dev/null || fail "清单应用失败"
+  "$KUBECTL" apply -f "$DIR/manifests.yaml" >/dev/null || { CREATED=1; fail "清单应用失败"; }
+  CREATED=1
   "$KUBECTL" -n "$NS" rollout status deploy/"$DEPLOY" --timeout=120s >/dev/null || fail "Deployment 未就绪"
   read_identity
   local rs tmpl
@@ -151,7 +156,7 @@ deploy() {
   start_port_forward
   [ "$(work_status)" = "200" ] || fail "部署后 /work 不是 200"
   say "DEPLOYED pod=$pod_name uid=$pod_uid rs=$rs template=$(hash_of "$tmpl") ready=$ready restarts=$restarts work=200"
-  result preflight ok "pod=$pod_name" "uid=$pod_uid" "replicaset=$rs" "template=$(hash_of "$tmpl")" "work=200"
+  result preflight ok "pod=$pod_name" "uid=$pod_uid" "replicaset=$rs" "template=$(hash_of "$tmpl")" "work=200" "created=1"
 }
 
 inject() {

@@ -23,6 +23,8 @@ from aiops.evaluation.verdict import (
     ACTION_UNEXPECTED,
     ACTION_WRONG,
     ArmFacts,
+    AttemptView,
+    ProposalView,
     judge,
     match_conclusion,
 )
@@ -97,8 +99,8 @@ def _facts(
         conclusion=conclusion,
         hypothesis_texts=list(hypothesis_texts),
         supporting=supporting or [],
-        proposals=proposals or [],
-        attempts=attempts or {},
+        proposals=[ProposalView.from_contract(item) for item in (proposals or [])],
+        attempts={key: AttemptView.from_contract(value) for key, value in (attempts or {}).items()},
         approvals=0,
         tool_calls=1,
         model_calls=1,
@@ -312,3 +314,63 @@ def test_diagnostic_extra_proposal_is_allowed():
     )
     assert verdict.action_decision == "correct"
     assert verdict.boundary_violations == []
+
+
+def test_keywords_split_across_clauses_need_review():
+    """“Redis 正常，延迟来自 CPU 饱和”把因果说反了，不能给分。"""
+    spec = ScenarioSpec(
+        **{
+            **SPEC.__dict__,
+            "expected_action": "",
+            "expected_target": "",
+            "allowed_kinds": (),
+            "evidence_checks": (),
+            "conclusion_groups": (("Redis",), ("延迟", "变慢")),
+        }
+    )
+    verdict = judge(spec, _facts("Redis 正常，延迟来自 frontend CPU 饱和"))
+    assert verdict.conclusion_matched is False
+    assert verdict.needs_review
+    assert not verdict.diagnosis_correct
+
+    same_clause = judge(spec, _facts("Redis 访问链路延迟升高"))
+    assert same_clause.conclusion_matched is True
+
+
+def test_evidence_from_another_job_is_not_evidence():
+    """用别的 job 读到的异常不是本场景的异常。"""
+    check = EvidenceCheck(
+        "业务失败", ("prometheus.query_range",), fact="business_failure", job="frontend-probe"
+    )
+    spec = ScenarioSpec(**{**SPEC.__dict__, "evidence_checks": (check,)})
+    foreign = [
+        SupportFact(
+            "obs-x",
+            "prometheus.query_range",
+            'probe_success{job="unrelated-backup"}',
+            "",
+            data={"series": [{"labels": {}, "points": [[1.0, 0.0]]}]},
+        )
+    ]
+    assert not judge(spec, _facts("回退 demo", supporting=foreign)).evidence_matched
+    scoped = [
+        SupportFact(
+            "obs-y",
+            "prometheus.query_range",
+            'probe_success{job="frontend-probe"}',
+            "",
+            data={"series": [{"labels": {}, "points": [[1.0, 0.0]]}]},
+        )
+    ]
+    assert judge(spec, _facts("回退 demo", supporting=scoped)).evidence_matched
+
+
+def test_snapshot_roundtrip_keeps_the_verdict():
+    """重算只用快照，事实还原后判定必须一致。"""
+    facts = _facts(
+        "回退 demo 的上一版本",
+        supporting=SUPPORT,
+        proposals=[_proposal("rollout_undo", "demo")],
+    )
+    restored = ArmFacts.from_snapshot(facts.snapshot())
+    assert judge(SPEC, restored).as_dict() == judge(SPEC, facts).as_dict()

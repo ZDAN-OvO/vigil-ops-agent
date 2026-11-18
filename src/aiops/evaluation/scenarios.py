@@ -131,6 +131,8 @@ class EvidenceCheck:
     name: str
     tools: tuple[str, ...]
     fact: str = ""
+    # 探针 job 名：观测表达式指向别的 job 时不算证据。
+    job: str = ""
 
     def matched_by(self, facts: list[SupportFact]) -> bool:
         check = FACT_CHECKS.get(self.fact)
@@ -139,9 +141,29 @@ class EvidenceCheck:
         for item in facts:
             if item.tool not in self.tools:
                 continue
+            if self.job and not _scoped_to(item.expression, self.job):
+                continue
             if check is None or check(item):
                 return True
         return False
+
+
+def _scoped_to(expression: str, job: str) -> bool:
+    """观测是否指向场景的这台探针。
+
+    用别的 job 读到的异常不是本场景的异常（例如 backup 的慢请求）。既没有 job
+    也没有 instance 过滤的表达式无法确认归属，同样不算证据。
+    """
+    job_match = re.search(r'job\s*=~?\s*"([^"]+)"', expression)
+    if job_match:
+        pattern = job_match.group(1)
+        if pattern.endswith("*"):
+            return job.startswith(pattern[:-1])
+        return pattern == job
+    instance = re.search(r'instance\s*=~?\s*"([^"]+)"', expression)
+    if instance:
+        return "frontend" in instance.group(1)
+    return False
 
 
 @dataclass(frozen=True)
@@ -208,7 +230,12 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         ),
         evidence_checks=(
             EvidenceCheck("发布对象", ("kubernetes.list_deployments",)),
-            EvidenceCheck("业务失败", ("prometheus.query_range",), fact="business_failure"),
+            EvidenceCheck(
+                "业务失败",
+                ("prometheus.query_range",),
+                fact="business_failure",
+                job="frontend-probe",
+            ),
         ),
     ),
     ScenarioSpec(
@@ -242,7 +269,12 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
             ("延迟", "变慢", "链路", "依赖"),
         ),
         evidence_checks=(
-            EvidenceCheck("延迟事实", ("prometheus.query_range",), fact="latency_elevated"),
+            EvidenceCheck(
+                "延迟事实",
+                ("prometheus.query_range",),
+                fact="latency_elevated",
+                job="frontend-probe",
+            ),
         ),
     ),
     ScenarioSpec(
@@ -298,8 +330,39 @@ def parse_result(output: str) -> dict[str, str] | None:
     return None
 
 
+# 这些变量一旦被外部环境设置，场景脚本就会换目标对象或换执行程序，
+# 而调查臂仍按场景规格查固定目标——两边不再是同一场故障。实验里的值是
+# 脚本自身定义，不允许继承。
+_SCRIPT_OVERRIDES = (
+    "NS",
+    "NS_OWNER",
+    "OWNER",
+    "DEPLOY",
+    "CONTAINER",
+    "KUBECTL",
+    "BAD",
+    "HEALTHY",
+    "HEALTHY_REQUEST",
+    "BAD_REQUEST",
+    "FAULT_REQUEST",
+    "HEALTHY_LIMIT",
+    "FAULT_LIMIT",
+    "MIN_RESTARTS",
+    "OBSERVE_SECONDS",
+    "RECOVERY_SECONDS",
+    "SAMPLE_INTERVAL",
+    "THRESHOLD_MS",
+    "WAIT_SECONDS",
+    "VERB",
+    "FAIL_ROLLBACK",
+    "MON",
+    "PF_PORT",
+    "PF_LOG",
+)
+
+
 def _environment(settings: Settings) -> dict[str, str]:
-    env = dict(os.environ)
+    env = {key: value for key, value in os.environ.items() if key not in _SCRIPT_OVERRIDES}
     if settings.kubeconfig is not None:
         env["KUBECONFIG"] = str(settings.kubeconfig)
     return env

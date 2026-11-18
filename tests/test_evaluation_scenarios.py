@@ -207,3 +207,16 @@ def test_derived_metric_expressions_do_not_count_as_raw_values():
         assert not check.matched_by(
             [SupportFact("o", "prometheus.query_range", derived, "", data=inverted)]
         )
+
+
+def test_script_environment_does_not_inherit_experiment_targets(monkeypatch):
+    """外部同名变量不能把场景脚本的目标换成别的对象。"""
+    from aiops.evaluation.scenarios import _environment
+
+    monkeypatch.setenv("NS", "production")
+    monkeypatch.setenv("DEPLOY", "payments")
+    monkeypatch.setenv("KUBECTL", "/tmp/fake-kubectl")
+    configured = SETTINGS.model_copy(update={"kubeconfig": Path("/tmp/vigil-kube.yaml")})
+    env = _environment(configured)
+    assert "NS" not in env and "DEPLOY" not in env and "KUBECTL" not in env
+    assert env["KUBECONFIG"] == "/tmp/vigil-kube.yaml"

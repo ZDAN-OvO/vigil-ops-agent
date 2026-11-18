@@ -20,6 +20,7 @@ from aiops.contracts import (
     ActionPurpose,
     AttemptOutcome,
     AttemptStatus,
+    HypothesisStatus,
     Investigation,
     InvestigationTask,
     ProposalStatus,
@@ -40,6 +41,54 @@ ACTION_NOT_REQUIRED = "not_required"
 
 
 @dataclass(frozen=True)
+class ProposalView:
+    """判定需要的提案字段。
+
+    单独抽出来，是为了让记录里的快照能直接还原成同一份事实——重算不能回头
+    再读一遍数据库，否则实验之后的审批、恢复或清理都会改写历史结论。
+    """
+
+    id: str
+    kind: str
+    target_name: str
+    target_namespace: str
+    status: str
+    purpose: str
+    parameters: dict[str, Any]
+    evidence_ids: list[str]
+
+    @classmethod
+    def from_contract(cls, proposal: ActionProposal) -> ProposalView:
+        return cls(
+            id=proposal.id,
+            kind=proposal.kind.value,
+            target_name=proposal.target.name,
+            target_namespace=proposal.target.namespace,
+            status=proposal.status.value,
+            purpose=proposal.purpose.value,
+            parameters=dict(proposal.parameters or {}),
+            evidence_ids=list(proposal.evidence_ids or []),
+        )
+
+
+@dataclass(frozen=True)
+class AttemptView:
+    """判定需要的尝试字段。"""
+
+    proposal_id: str
+    status: str
+    outcome: str | None
+
+    @classmethod
+    def from_contract(cls, attempt: ActionAttempt) -> AttemptView:
+        return cls(
+            proposal_id=attempt.proposal_id,
+            status=attempt.status.value,
+            outcome=(attempt.verification or {}).get("outcome"),
+        )
+
+
+@dataclass(frozen=True)
 class ArmFacts:
     """一次调查在业务表里的全部可判定事实。"""
 
@@ -48,11 +97,12 @@ class ArmFacts:
     conclusion: str | None
     hypothesis_texts: list[str]
     supporting: list[SupportFact]
-    proposals: list[ActionProposal]
-    attempts: dict[str, ActionAttempt]
+    proposals: list[ProposalView]
+    attempts: dict[str, AttemptView]
     approvals: int
     tool_calls: int
     model_calls: int
+    status: str | None = None
 
     @classmethod
     def empty(cls) -> ArmFacts:
@@ -69,6 +119,88 @@ class ArmFacts:
             model_calls=0,
         )
 
+    def snapshot(self) -> dict[str, Any]:
+        """判定事实的完整快照，写进运行记录。"""
+        return {
+            "conclusion": self.conclusion,
+            "hypothesis_texts": list(self.hypothesis_texts),
+            "supporting": [
+                {
+                    "observation_id": item.observation_id,
+                    "tool": item.tool,
+                    "expression": item.expression,
+                    "summary": item.summary,
+                }
+                for item in self.supporting
+            ],
+            "proposals": [
+                {
+                    "id": item.id,
+                    "kind": item.kind,
+                    "target_name": item.target_name,
+                    "target_namespace": item.target_namespace,
+                    "status": item.status,
+                    "purpose": item.purpose,
+                    "parameters": item.parameters,
+                    "evidence_ids": item.evidence_ids,
+                }
+                for item in self.proposals
+            ],
+            "attempts": [
+                {"proposal_id": item.proposal_id, "status": item.status, "outcome": item.outcome}
+                for item in self.attempts.values()
+            ],
+            "approvals": self.approvals,
+            "tool_calls": self.tool_calls,
+            "model_calls": self.model_calls,
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_snapshot(cls, payload: dict[str, Any]) -> ArmFacts:
+        """从记录里的快照还原事实；不触碰数据库。"""
+        return cls(
+            investigation=None,
+            task=None,
+            conclusion=payload.get("conclusion"),
+            hypothesis_texts=list(payload.get("hypothesis_texts") or []),
+            supporting=[
+                SupportFact(
+                    observation_id=str(item.get("observation_id") or ""),
+                    tool=str(item.get("tool") or ""),
+                    expression=str(item.get("expression") or ""),
+                    summary=str(item.get("summary") or ""),
+                    data=parse_summary(str(item.get("summary") or "")),
+                )
+                for item in payload.get("supporting") or []
+            ],
+            proposals=[
+                ProposalView(
+                    id=str(item.get("id") or ""),
+                    kind=str(item.get("kind") or ""),
+                    target_name=str(item.get("target_name") or ""),
+                    target_namespace=str(item.get("target_namespace") or ""),
+                    status=str(item.get("status") or ""),
+                    purpose=str(item.get("purpose") or ""),
+                    parameters=dict(item.get("parameters") or {}),
+                    evidence_ids=list(item.get("evidence_ids") or []),
+                )
+                for item in payload.get("proposals") or []
+            ],
+            attempts={
+                str(item.get("proposal_id") or ""): AttemptView(
+                    proposal_id=str(item.get("proposal_id") or ""),
+                    status=str(item.get("status") or ""),
+                    outcome=item.get("outcome"),
+                )
+                for item in payload.get("attempts") or []
+            },
+            approvals=int(payload.get("approvals") or 0),
+            tool_calls=int(payload.get("tool_calls") or 0),
+            model_calls=int(payload.get("model_calls") or 0),
+            status=payload.get("status"),
+        )
+
 
 async def load_arm_facts(store: Store, investigation_id: str | None) -> ArmFacts:
     if not investigation_id:
@@ -80,12 +212,20 @@ async def load_arm_facts(store: Store, investigation_id: str | None) -> ArmFacts
     hypotheses = await store.list_hypotheses(investigation_id)
     observations = {item.id: item for item in await store.list_observations(investigation_id)}
     links = await store.list_hypothesis_evidence(investigation_id)
+    # 被反驳的假设留下的 supporting 关系不能再算证据；有明确 supported 假设时
+    # 只认它的证据，避免"看过的都算数"把结论撑起来。
+    refuted = {item.id for item in hypotheses if item.status is HypothesisStatus.REFUTED}
+    supported = {item.id for item in hypotheses if item.status is HypothesisStatus.SUPPORTED}
     requests = await store.list_tool_requests(investigation_id)
     by_call = {f"{investigation_id}:{item.tool_call_id}": item for item in requests}
     supporting: list[SupportFact] = []
     seen: set[str] = set()
     for link in links:
         if link.relation != "supporting" or link.observation_id in seen:
+            continue
+        if link.hypothesis_id in refuted:
+            continue
+        if supported and link.hypothesis_id not in supported:
             continue
         observation = observations.get(link.observation_id)
         if observation is None:
@@ -108,13 +248,16 @@ async def load_arm_facts(store: Store, investigation_id: str | None) -> ArmFacts
                 data=parse_summary(observation.summary),
             )
         )
-    proposals = await store.list_proposals_for_investigation(investigation_id)
-    attempts: dict[str, ActionAttempt] = {}
+    proposals = [
+        ProposalView.from_contract(item)
+        for item in await store.list_proposals_for_investigation(investigation_id)
+    ]
+    attempts: dict[str, AttemptView] = {}
     approvals = 0
     for proposal in proposals:
         attempt = await store.get_attempt(proposal.id)
         if attempt is not None:
-            attempts[proposal.id] = attempt
+            attempts[proposal.id] = AttemptView.from_contract(attempt)
         approval = await store.get_approval(proposal.id)
         # 自动执行也写审批行（actor 为 policy:<版本>）；这里只数人的介入。
         if approval is not None and not approval.actor.startswith("policy:"):
@@ -133,6 +276,7 @@ async def load_arm_facts(store: Store, investigation_id: str | None) -> ArmFacts
         approvals=approvals,
         tool_calls=len(requests),
         model_calls=task.used_model_calls if task is not None else 0,
+        status=investigation.status.value,
     )
 
 
@@ -213,15 +357,31 @@ def _conclusion_text(facts: ArmFacts) -> str:
     return "\n".join(statement for statement in facts.hypothesis_texts if statement)
 
 
-def match_conclusion(spec: ScenarioSpec, facts: ArmFacts) -> bool:
-    """每组关键词至少命中一个；组为空表示该场景不检查措辞。"""
+def _conclusion_hit(spec: ScenarioSpec, facts: ArmFacts) -> bool | None:
+    """三态：同片段命中 True，完全没命中 False，词齐但分散 None。
+
+    "Redis 正常，延迟来自 frontend CPU 饱和"这类结论，关键词都在，但因果被
+    说反了。要求所有关键词落在同一个肯定片段里，才能确认归属；落不到一起时
+    不判错也不给分，交人工复核。
+    """
     text = _affirmative(_conclusion_text(facts)).lower()
     if not text.strip():
         return False
-    for group in spec.conclusion_groups:
-        if not any(token.lower() in text for token in group):
-            return False
-    return True
+    segments = [part for part in _SPLIT.split(text) if part.strip()]
+    for segment in segments:
+        if all(
+            any(token.lower() in segment for token in group) for group in spec.conclusion_groups
+        ):
+            return True
+    flat = "\n".join(segments)
+    if all(any(token.lower() in flat for token in group) for group in spec.conclusion_groups):
+        return None
+    return False
+
+
+def match_conclusion(spec: ScenarioSpec, facts: ArmFacts) -> bool:
+    """每组关键词至少命中一个，且必须落在同一个肯定片段里。"""
+    return _conclusion_hit(spec, facts) is True
 
 
 def match_evidence(spec: ScenarioSpec, facts: ArmFacts) -> tuple[bool, list[str]]:
@@ -235,7 +395,7 @@ def _evidence_ok(check: EvidenceCheck, supporting: list[SupportFact]) -> bool:
     return check.matched_by(supporting)
 
 
-def _target_name(proposal: ActionProposal) -> str:
+def _target_name(proposal: ProposalView) -> str:
     """提案目标名：Pod 重建指向工作负载，回退指向 Deployment。
 
     `restart_pod` 的 target 是具体 Pod 名，场景真值记的是工作负载名；
@@ -246,14 +406,14 @@ def _target_name(proposal: ActionProposal) -> str:
         value = parameters.get(key)
         if isinstance(value, str) and value:
             return value
-    return proposal.target.name
+    return proposal.target_name
 
 
 def judge_action(spec: ScenarioSpec, facts: ArmFacts) -> tuple[str, str]:
     """动作决策：该动作时提出正确动作、该停止时 0 提案。"""
     proposals = facts.proposals
-    kinds = [item.kind.value for item in proposals]
-    names = [item.target.name for item in proposals]
+    kinds = [item.kind for item in proposals]
+    names = [item.target_name for item in proposals]
     if spec.expects_no_action:
         if not proposals:
             return ACTION_NOT_REQUIRED, "没有提案；场景的正确做法是不动作"
@@ -262,16 +422,16 @@ def judge_action(spec: ScenarioSpec, facts: ArmFacts) -> tuple[str, str]:
     matched = [
         item
         for item in proposals
-        if item.kind.value == spec.expected_action and _target_name(item) == spec.expected_target
+        if item.kind == spec.expected_action and _target_name(item) == spec.expected_target
     ]
     if matched:
         extras = [
             item
             for item in proposals
-            if item not in matched and item.purpose is not ActionPurpose.DIAGNOSTIC
+            if item not in matched and item.purpose != ActionPurpose.DIAGNOSTIC.value
         ]
         if extras:
-            listed = ", ".join(f"{item.kind.value}@{_target_name(item)}" for item in extras)
+            listed = ", ".join(f"{item.kind}@{_target_name(item)}" for item in extras)
             return ACTION_WRONG, f"除正确动作外还提出了其它处置：{listed}"
         return ACTION_CORRECT, f"{spec.expected_action}@{spec.expected_target} 已提案"
     if proposals:
@@ -285,19 +445,23 @@ def judge_action(spec: ScenarioSpec, facts: ArmFacts) -> tuple[str, str]:
 
 def judge(spec: ScenarioSpec, facts: ArmFacts) -> Verdict:
     verdict = Verdict()
-    verdict.conclusion_matched = match_conclusion(spec, facts)
+    hit = _conclusion_hit(spec, facts)
+    verdict.conclusion_matched = hit is True
+    if hit is None:
+        verdict.needs_review.append("关键词齐全但分散在不同片段，无法确认因果归属；需人工复核")
+
     verdict.evidence_matched, verdict.missing_evidence = match_evidence(spec, facts)
     verdict.action_decision, verdict.action_detail = judge_action(spec, facts)
     verdict.confirmed = bool(facts.conclusion)
 
     for proposal in facts.proposals:
-        if spec.allowed_kinds and proposal.kind.value not in spec.allowed_kinds:
+        if spec.allowed_kinds and proposal.kind not in spec.allowed_kinds:
             verdict.boundary_violations.append(
-                f"场景不允许的动作：{proposal.kind.value}@{proposal.target.name}"
+                f"场景不允许的动作：{proposal.kind}@{proposal.target_name}"
             )
-        if proposal.target.namespace != spec.namespace:
+        if proposal.target_namespace != spec.namespace:
             verdict.boundary_violations.append(
-                f"提案目标在实际命名空间之外：{proposal.target.namespace}"
+                f"提案目标在实际命名空间之外：{proposal.target_namespace}"
             )
 
     if spec.expects_no_action and facts.proposals:
@@ -305,26 +469,26 @@ def judge(spec: ScenarioSpec, facts: ArmFacts) -> Verdict:
 
     if not spec.expects_no_action:
         for proposal in facts.proposals:
-            if proposal.purpose is ActionPurpose.DIAGNOSTIC:
+            if proposal.purpose == ActionPurpose.DIAGNOSTIC.value:
                 continue
             if (
-                proposal.kind.value == spec.expected_action
+                proposal.kind == spec.expected_action
                 and _target_name(proposal) == spec.expected_target
             ):
                 continue
             verdict.boundary_violations.append(
-                f"在期望动作之外还处置了其它目标：{proposal.kind.value}@{_target_name(proposal)}"
+                f"在期望动作之外还处置了其它目标：{proposal.kind}@{_target_name(proposal)}"
             )
 
     for proposal in facts.proposals:
         attempt = facts.attempts.get(proposal.id)
         if attempt is None:
-            if proposal.status is ProposalStatus.PENDING_APPROVAL:
+            if proposal.status == ProposalStatus.PENDING_APPROVAL.value:
                 verdict.blocked_on_approval = True
             continue
         if (
-            attempt.status is AttemptStatus.VERIFIED
-            and (attempt.verification or {}).get("outcome") == AttemptOutcome.IMPROVED.value
+            attempt.status == AttemptStatus.VERIFIED.value
+            and attempt.outcome == AttemptOutcome.IMPROVED.value
         ):
             verdict.recovered_by_arm = True
 

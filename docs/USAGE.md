@@ -234,6 +234,9 @@ uv run --frozen aiops lab run --runs 3
 
 一次运行的顺序固定：`preflight → inject → verify → 调查臂 → recovered → cleanup`。
 `preflight`、`inject`、`verify` 任一步失败都判该次无效并写明原因，臂本身不运行，环境照样复位。
+`a01` 的 `preflight` 会先部署健康版本，因此脚本用 `RESULT ... created=0|1` 自报这次是否
+真的建过资源；只有自报创建过才会在失败后复位，避免把别人的对象一起删掉。故障已成立、臂已
+跑过之后若收尾采集出错，该条仍算有效样本并标 `collection_error`，不会被剔除出分母。
 **实验会改集群**：`f01`/`f02` 作用于 `vigil-shop` 的既有工作负载，`a01` 在
 `vigil-experiment` 里自建命名空间。不要在非实验集群上跑。
 
@@ -246,6 +249,10 @@ uv run --frozen aiops lab rescore --record faults/runs/2026-11-18-comparison.jso
 
 `lab rescore` 只按当前判定口径重算已有记录，不重跑实验，也不改实验事实。改了词表或门槛
 必须重算，不允许只在新实验上生效。
+
+重算只用记录里的 `facts.snapshot`（结论、假设、支持观测、提案、尝试、成本的完整快照），
+不回头读数据库；实验之后的审批或清理都不会改写历史结论。老记录没有快照时，首次重算会补
+采一份并标 `snapshot_source=db` 与 `snapshot_captured_at`。
 
 判读规则（与 ADR-0013 一致，跑之前就定死）：
 

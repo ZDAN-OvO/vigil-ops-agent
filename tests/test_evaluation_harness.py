@@ -1,5 +1,7 @@
 """评估编排的纯函数部分：汇总、门槛与分批合并。"""
 
+import asyncio
+
 from aiops.evaluation.harness import (
     MIN_DIAGNOSIS_RATE,
     MIN_VALID_RUNS,
@@ -172,3 +174,146 @@ def test_missing_median_does_not_create_a_false_dominance():
     notes = compare(summarize(fast + slow)["rows"])
     assert any("耗时 缺失，未比较" in note for note in notes)
     assert not any("支持相对收益结论" in note for note in notes)
+
+
+def _record_costs(scenario, arm, index, *, tools=10, models=5, approvals=0, **kw):
+    record = _record(scenario, arm, index, **kw)
+    record["facts"].update({"tool_calls": tools, "model_calls": models, "approvals": approvals})
+    return record
+
+
+def test_missing_elapsed_blocks_the_time_dimension():
+    """有一次没记到耗时，就不能拿剩下的算中位——那会把慢样本丢掉。"""
+    agent = [_record_costs("f01", "agent", i) for i in (1, 2, 3)]
+    agent[0]["facts"]["cli"]["elapsed_seconds"] = 1.0
+    agent[1]["facts"]["cli"]["elapsed_seconds"] = None
+    agent[2]["facts"]["cli"]["elapsed_seconds"] = None
+    rules = [_record_costs("f01", "rules", i, tools=10, models=5) for i in (1, 2, 3)]
+    for item in rules:
+        item["facts"]["cli"]["elapsed_seconds"] = 60.0
+    row = summarize(agent + rules)
+    agent_row = next(item for item in row["rows"] if item["arm"] == "agent")
+    assert agent_row["elapsed_missing"] == 2
+    assert "中位耗时 缺失" in "".join(row["comparison"])
+    assert "不构成收益结论" in "".join(row["comparison"])
+
+
+def test_cost_dimensions_can_veto_a_time_gain():
+    """耗时更快但工具、模型、审批都更多，不算收益。"""
+    agent = [_record_costs("f01", "agent", i) for i in (1, 2, 3)]
+    rules = [_record_costs("f01", "rules", i, tools=1, models=0, approvals=0) for i in (1, 2, 3)]
+    for item in agent:
+        item["facts"]["cli"]["elapsed_seconds"] = 1.0
+    for item in rules:
+        item["facts"]["cli"]["elapsed_seconds"] = 60.0
+    verdict_bits = "".join(compare(summarize(agent + rules)["rows"]))
+    assert "不构成收益结论" in verdict_bits
+    assert "工具调用" in verdict_bits
+
+
+def test_render_markdown_shows_cost_columns():
+    rows = summarize([_record_costs("f01", "rules", i) for i in (1, 2, 3)])
+    text = render_markdown({"date": "2026-11-18", "arms": ["rules"]}, rows)
+    assert "工具调用" in text and "模型调用" in text and "人工审批" in text
+
+
+def test_gain_with_a_missing_dimension_is_not_claimed():
+    """已知维度更强但有维度缺失：只说已知，不宣称整体收益。"""
+    agent = [_record_costs("f01", "agent", i, correct=True) for i in (1, 2, 3)]
+    for item in agent:
+        item["facts"]["cli"]["elapsed_seconds"] = None
+    rules = [_record_costs("f01", "rules", i, correct=i < 3) for i in (1, 2, 3)]
+    for item in rules:
+        item["facts"]["cli"]["elapsed_seconds"] = 60.0
+    note = "".join(compare(summarize(agent + rules)["rows"]))
+    assert "整体不构成收益结论（有维度缺失）" in note
+
+
+def _spec(tmp_path):
+    from pathlib import Path
+
+    from aiops.evaluation.scenarios import ScenarioSpec
+
+    script = Path(tmp_path) / "repeat.sh"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    return ScenarioSpec(
+        id="demo",
+        name="演示",
+        namespace="vigil-shop",
+        service="demo",
+        symptoms="",
+        script=script,
+        truth="演示",
+        preflight_creates=True,
+    )
+
+
+def test_preflight_failure_without_creation_does_not_clean(monkeypatch, tmp_path):
+    """预检失败、且脚本说没建东西时，绝不能去删既有对象。"""
+    from aiops.evaluation import harness as H
+    from aiops.evaluation.scenarios import VerbOutcome
+
+    verbs: list[str] = []
+
+    def fake_run_verb(spec, verb, *, settings):
+        verbs.append(verb)
+        facts = {"created": "0"} if verb == "preflight" else {}
+        return VerbOutcome(verb=verb, ok=verb != "preflight", facts=facts, returncode=0, output="")
+
+    async def fake_close(store, spec, record, settings, *, cleanup_needed):
+        if cleanup_needed:
+            record.environment_restored = False
+
+    monkeypatch.setattr(H, "run_verb", fake_run_verb)
+    monkeypatch.setattr(H, "_close", fake_close)
+    record = asyncio.run(
+        H.execute(None, _spec(tmp_path), "rules", 1, settings=object())  # type: ignore[arg-type]
+    )
+    assert "cleanup" not in verbs
+    assert record.invalid_reason == "preflight"
+
+
+def test_preflight_failure_after_creating_still_cleans(monkeypatch, tmp_path):
+    from aiops.evaluation import harness as H
+    from aiops.evaluation.scenarios import VerbOutcome
+
+    cleaned: list[bool] = []
+
+    def fake_run_verb(spec, verb, *, settings):
+        facts = {"created": "1"} if verb == "preflight" else {}
+        return VerbOutcome(verb=verb, ok=False, facts=facts, returncode=0, output="")
+
+    async def fake_close(store, spec, record, settings, *, cleanup_needed):
+        cleaned.append(cleanup_needed)
+
+    monkeypatch.setattr(H, "run_verb", fake_run_verb)
+    monkeypatch.setattr(H, "_close", fake_close)
+    asyncio.run(
+        H.execute(None, _spec(tmp_path), "rules", 1, settings=object())  # type: ignore[arg-type]
+    )
+    assert cleaned == [True]
+
+
+def test_collection_failure_keeps_a_valid_arm_sample(monkeypatch, tmp_path):
+    """故障已成立、臂已跑过：收尾采集失败不能把这条失败样本从分母里删掉。"""
+    from aiops.evaluation import harness as H
+    from aiops.evaluation.scenarios import VerbOutcome
+
+    def fake_run_verb(spec, verb, *, settings):
+        if verb == "recovered":
+            raise OSError("采集失败")
+        return VerbOutcome(verb=verb, ok=True, facts={}, returncode=0, output="")
+
+    async def fake_close(store, spec, record, settings, *, cleanup_needed):
+        return None
+
+    monkeypatch.setattr(H, "run_verb", fake_run_verb)
+    monkeypatch.setattr(H, "_close", fake_close)
+    monkeypatch.setattr(H, "_invoke_arm", lambda spec, arm: (None, 5, "臂失败"))
+    monkeypatch.setattr(H, "_dump_output", lambda *a, **kw: None)
+    record = asyncio.run(
+        H.execute(None, _spec(tmp_path), "rules", 1, settings=object())  # type: ignore[arg-type]
+    )
+    assert record.valid is True
+    assert record.facts.get("collection_error")

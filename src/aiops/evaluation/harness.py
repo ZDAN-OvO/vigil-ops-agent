@@ -165,15 +165,15 @@ async def execute(
         raise ValueError(f"未知对照臂：{arm}")
     record = RunRecord(scenario=spec.id, arm=arm, index=index)
     logger.info("开始 {} {} 第 {} 次", spec.id, arm, index)
-    # 注入前只读；一旦开始注入，无论后续成功或异常都必须复位。
-    # preflight 可能直接创建资源（A01 会先部署）；调用前就假定需要复位，
-    # 否则这一步之后抛异常会留下没人清理的命名空间。
-    cleanup_needed = spec.preflight_creates
+    cleanup_needed = False
     try:
         preflight = run_verb(spec, "preflight", settings=settings)
         record.phases["preflight"] = _phase(preflight)
         _dump_output(record.run_id, "preflight", preflight.output)
         if not preflight.ok:
+            # 预检失败也要看它是否已经建了东西：A01 的预检会先部署。
+            # 只有脚本自报 created=1 才复位，绝不按"场景可能会建"就删。
+            cleanup_needed = preflight.facts.get("created") == "1"
             record.invalid_reason = "preflight"
             return record
 
@@ -220,10 +220,22 @@ async def execute(
         return record
     except Exception as exc:  # noqa: BLE001 - 单次运行异常不能拖垮整批，也不能吞掉复位
         logger.exception("运行异常：{} {}", spec.id, arm)
-        # 编排自身出错时结果不可信：不把这一条算进有效样本，也不删除记录。
-        record.valid = False
-        record.invalid_reason = record.invalid_reason or "harness_error"
         record.facts["harness_error"] = f"{type(exc).__name__}: {exc}"[:500]
+        if record.valid:
+            # 故障已成立、臂已经跑过：这条记录代表臂的真实表现，编排后续出错
+            # （例如采集恢复状态失败）不能把失败样本从分母里剔除，否则越差越快。
+            record.facts["collection_error"] = "收尾采集失败，判定按已落库事实重算"
+            try:
+                facts = await load_arm_facts(store, record.investigation_id)
+                verdict = judge(spec, facts)
+                record.verdict = verdict.as_dict()
+                record.facts.update(_fact_summary(facts, verdict))
+            except Exception:  # noqa: BLE001 - 补算失败也不能盖住原始异常
+                logger.exception("补算失败：{}", record.run_id)
+        else:
+            # 故障没成立就谈不上臂的表现，这一条不构成有效样本，但记录保留。
+            record.valid = False
+            record.invalid_reason = record.invalid_reason or "harness_error"
         return record
     finally:
         await _close(store, spec, record, settings, cleanup_needed=cleanup_needed)
@@ -232,37 +244,14 @@ async def execute(
 
 
 def _fact_summary(facts: ArmFacts, verdict: Verdict) -> dict[str, Any]:
-    return {
-        "proposals": [
-            {
-                "id": item.id,
-                "kind": item.kind.value,
-                "target": item.target.name,
-                "status": item.status.value,
-                "origin": item.origin.value,
-                "evidence_ids": item.evidence_ids,
-            }
-            for item in facts.proposals
-        ],
-        "attempts": [
-            {
-                "proposal_id": proposal_id,
-                "status": attempt.status.value,
-                "outcome": (attempt.verification or {}).get("outcome"),
-            }
-            for proposal_id, attempt in facts.attempts.items()
-        ],
-        "approvals": facts.approvals,
-        "tool_calls": facts.tool_calls,
-        "model_calls": facts.model_calls,
-        "supporting_observations": [
-            {"tool": item.tool, "expression": item.expression, "id": item.observation_id}
-            for item in facts.supporting
-        ],
-        "status": facts.investigation.status.value if facts.investigation else None,
-        "conclusion": facts.conclusion,
-        "needs_review": verdict.needs_review,
-    }
+    """把判定事实与结论写进记录。
+
+    `snapshot` 是完整输入，重算只用它，不再回头读数据库——实验之后的审批、
+    恢复或清理都不能改写历史结论。
+    """
+    summary = facts.snapshot()
+    summary["needs_review"] = verdict.needs_review
+    return summary
 
 
 async def _close(
@@ -322,11 +311,25 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             "blocked_on_approval": sum(1 for v in verdicts if v.get("blocked_on_approval")),
             "needs_review": sum(1 for v in verdicts if v.get("needs_review")),
             "boundary_violations": sum(len(v.get("boundary_violations") or []) for v in verdicts),
-            "median_wall_seconds": _median(
+            "median_wall_seconds": _median_positive(
                 [
                     float((item.get("facts") or {}).get("cli", {}).get("elapsed_seconds") or 0)
                     for item in valid
                 ]
+            ),
+            "elapsed_missing": sum(
+                1
+                for item in valid
+                if not (item.get("facts") or {}).get("cli", {}).get("elapsed_seconds")
+            ),
+            "median_tool_calls": _median_count(
+                [float((item.get("facts") or {}).get("tool_calls") or 0) for item in valid]
+            ),
+            "median_model_calls": _median_count(
+                [float((item.get("facts") or {}).get("model_calls") or 0) for item in valid]
+            ),
+            "median_approvals": _median_count(
+                [float((item.get("facts") or {}).get("approvals") or 0) for item in valid]
             ),
         }
         row["diagnosis_rate"] = row["diagnosis_correct"] / row["valid"] if row["valid"] else 0.0
@@ -381,16 +384,30 @@ def _metrics(row: dict[str, Any]) -> dict[str, float | None]:
     耗时缺失时保留 None：当成 0 会让"没记录"变成"最快"，凭空造出支配关系。
     """
     median = row["median_wall_seconds"]
+    # 有记录缺耗时（超时或没拿到载荷）时不能拿"剩下的"算中位：那会把慢的样本
+    # 丢掉，让更慢的臂看起来更快。缺失即不可比，留给 unknown。
+    elapsed = None
+    if median is not None and not row.get("elapsed_missing"):
+        elapsed = float(median)
     return {
         "诊断正确率": _rate(row, "diagnosis_correct"),
         "确认根因率": _rate(row, "confirmed"),
         "本臂恢复率": _rate(row, "recovered_by_arm"),
-        "中位耗时": float(median) if median is not None else None,
+        "中位耗时": elapsed,
+        "工具调用": float(row["median_tool_calls"])
+        if row.get("median_tool_calls") is not None
+        else None,
+        "模型调用": float(row["median_model_calls"])
+        if row.get("median_model_calls") is not None
+        else None,
+        "人工审批": float(row["median_approvals"])
+        if row.get("median_approvals") is not None
+        else None,
         "越界次数": float(row["boundary_violations"]),
     }
 
 
-_LOWER_IS_BETTER = {"中位耗时", "越界次数"}
+_LOWER_IS_BETTER = {"中位耗时", "工具调用", "模型调用", "人工审批", "越界次数"}
 
 
 def _pair_note(
@@ -439,17 +456,29 @@ def _pair_note(
 
 
 def _fmt(name: str, value: float) -> str:
-    if name in {"中位耗时"}:
+    if name == "中位耗时":
         return f"{value:.1f}s"
-    if name == "越界次数":
+    if name in {"越界次数", "工具调用", "模型调用", "人工审批"}:
         return f"{int(value)}"
     return f"{value:.2f}"
 
 
-def _median(values: list[float]) -> float | None:
+def _median_positive(values: list[float]) -> float | None:
+    """0 表示"没记录"，不是"很快"，所以这一版只算正数并另外统计缺失条数。"""
     clean = sorted(value for value in values if value > 0)
     if not clean:
         return None
+    middle = len(clean) // 2
+    if len(clean) % 2:
+        return round(clean[middle], 1)
+    return round((clean[middle - 1] + clean[middle]) / 2, 1)
+
+
+def _median_count(values: list[float]) -> float | None:
+    """调用次数、审批次数里 0 是真实值（规则臂不调模型），不能当成缺失。"""
+    if not values:
+        return None
+    clean = sorted(values)
     middle = len(clean) // 2
     if len(clean) % 2:
         return round(clean[middle], 1)
@@ -464,10 +493,22 @@ async def rescore(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
     records = payload.get("records") or []
     for record in records:
         spec = get_scenario(str(record.get("scenario") or ""))
-        facts = await load_arm_facts(store, record.get("investigation_id"))
+        recorded = record.get("facts") or {}
+        snapshot = recorded.get("snapshot")
+        if isinstance(snapshot, dict):
+            facts = ArmFacts.from_snapshot(snapshot)
+        else:
+            # 老记录没有快照：这次从库里补一份，并标清来源与时间。补采之后
+            # 的重算一律用快照，数据库再变也不影响。
+            facts = await load_arm_facts(store, record.get("investigation_id"))
+            recorded["snapshot"] = facts.snapshot()
+            recorded["snapshot_source"] = "db"
+            recorded["snapshot_captured_at"] = datetime.now(UTC).isoformat(timespec="seconds")
         verdict = judge(spec, facts)
         record["verdict"] = verdict.as_dict()
+        record["facts"] = recorded
         record["facts"].update(_fact_summary(facts, verdict))
+        record["facts"]["snapshot"] = recorded.get("snapshot") or facts.snapshot()
     payload["summary"] = summarize(records)
     return payload
 
@@ -529,6 +570,10 @@ def load_records(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def _show(value: float | None) -> str:
+    return "—" if value is None else f"{value:g}"
+
+
 def render_markdown(batch: dict[str, Any], summary: dict[str, Any]) -> str:
     """生成人读汇总：只陈述计数与门槛，不复述单次结论。"""
     lines = [
@@ -542,18 +587,21 @@ def render_markdown(batch: dict[str, Any], summary: dict[str, Any]) -> str:
         "## 汇总",
         "",
         "| 场景 | 臂 | 有效/总 | 诊断正确 | 确认根因 | 本臂恢复 | 待审批 | 越界 |"
-        " 中位耗时(s) | 达到门槛 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        " 中位耗时(s) | 工具调用 | 模型调用 | 人工审批 | 达到门槛 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in summary["rows"]:
         lines.append(
             "| {scenario} | {arm} | {valid}/{runs} | {diagnosis_correct} | {confirmed} | "
             "{recovered_by_arm} | {blocked_on_approval} | {boundary_violations} | "
-            "{median} | {floor} |".format(
+            "{median} | {tools} | {models} | {approvals} | {floor} |".format(
                 **row,
-                median=row["median_wall_seconds"]
-                if row["median_wall_seconds"] is not None
-                else "—",
+                median=(
+                    row["median_wall_seconds"] if row["median_wall_seconds"] is not None else "—"
+                ),
+                tools=_show(row.get("median_tool_calls")),
+                models=_show(row.get("median_model_calls")),
+                approvals=_show(row.get("median_approvals")),
                 floor="是" if row["meets_floor"] else "否",
             )
         )
