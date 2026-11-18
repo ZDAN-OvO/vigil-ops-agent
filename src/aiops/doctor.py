@@ -10,6 +10,40 @@ from aiops.config import Settings
 from aiops.db import Store, migration_files
 
 
+def kube_configuration(settings: Settings) -> client.Configuration:
+    kube = client.Configuration()
+    if settings.kubeconfig is None:
+        try:
+            config.load_incluster_config(client_configuration=kube)
+        except config.ConfigException:
+            config.load_kube_config(context=settings.kube_context, client_configuration=kube)
+    else:
+        config.load_kube_config(
+            config_file=str(settings.kubeconfig),
+            context=settings.kube_context,
+            client_configuration=kube,
+        )
+    return kube
+
+
+def mutating_webhook_present(settings: Settings) -> bool:
+    """按规则匹配 Deployment UPDATE；选择器无法确认时按可能匹配告警。"""
+    with client.ApiClient(kube_configuration(settings)) as api:
+        configs = client.AdmissionregistrationV1Api(api).list_mutating_webhook_configuration(
+            _request_timeout=(settings.tool_timeout_seconds, settings.tool_timeout_seconds),
+        )
+    return any(
+        rule.scope != "Cluster"
+        and bool({"UPDATE", "*"} & set(rule.operations or []))
+        and bool({"apps", "*"} & set(rule.api_groups or []))
+        and bool({"v1", "*"} & set(rule.api_versions or []))
+        and bool({"deployments", "*", "*/*"} & set(rule.resources or []))
+        for configuration in configs.items
+        for webhook in configuration.webhooks or []
+        for rule in webhook.rules or []
+    )
+
+
 async def check_dependencies(settings: Settings) -> list[tuple[str, bool, str]]:
     async def database() -> bool:
         if not settings.database_url:
@@ -32,21 +66,12 @@ async def check_dependencies(settings: Settings) -> list[tuple[str, bool, str]]:
         return isinstance(response.json().get("data"), list)
 
     def cluster() -> bool:
-        kube = client.Configuration()
-        if settings.kubeconfig is None:
-            try:
-                config.load_incluster_config(client_configuration=kube)
-            except config.ConfigException:
-                config.load_kube_config(context=settings.kube_context, client_configuration=kube)
-        else:
-            config.load_kube_config(
-                config_file=str(settings.kubeconfig),
-                context=settings.kube_context,
-                client_configuration=kube,
-            )
+        kube = kube_configuration(settings)
         with client.ApiClient(kube) as api:
             client.CoreV1Api(api).list_namespaced_service(
-                settings.namespace, limit=1, _request_timeout=settings.tool_timeout_seconds
+                settings.namespace,
+                limit=1,
+                _request_timeout=(settings.tool_timeout_seconds, settings.tool_timeout_seconds),
             )
         return True
 
@@ -55,6 +80,19 @@ async def check_dependencies(settings: Settings) -> list[tuple[str, bool, str]]:
             url = settings.prometheus_url.rstrip("/")
             response = await http.get(f"{url}/-/ready")
             return response.is_success
+
+    async def probe() -> bool:
+        async with httpx.AsyncClient(timeout=settings.tool_timeout_seconds) as http:
+            response = await http.get(
+                f"{settings.prometheus_url.rstrip('/')}/api/v1/query",
+                params={"query": settings.verify_probe_query},
+            )
+            response.raise_for_status()
+        data = response.json()["data"]
+        return data["resultType"] == "vector" and len(data["result"]) == 1
+
+    async def admission() -> bool:
+        return not await asyncio.to_thread(mutating_webhook_present, settings)
 
     async def check(
         name: str, probe: Callable[[], Awaitable[bool]], hint: str
@@ -75,5 +113,7 @@ async def check_dependencies(settings: Settings) -> list[tuple[str, bool, str]]:
                 "检查集群与 VIGIL_KUBECONFIG、VIGIL_KUBE_CONTEXT、VIGIL_NAMESPACE。",
             ),
             check("Prometheus", prometheus, "检查 VIGIL_PROMETHEUS_URL 和端口转发。"),
+            check("业务探针", probe, "检查 VIGIL_VERIFY_PROBE_QUERY 是否恰好返回一条序列。"),
+            check("Deployment 准入", admission, "检查匹配 Deployment 更新的可变更准入规则。"),
         )
     )

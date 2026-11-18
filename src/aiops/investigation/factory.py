@@ -35,12 +35,18 @@ def arm_for_runtime(runtime_version: str | None) -> str:
 
 
 def build_executor(
-    settings: Settings, store: Store, prometheus: PrometheusClient
+    settings: Settings,
+    store: Store,
+    prometheus: PrometheusClient,
+    *,
+    serve_instance: str | None = None,
 ) -> ActionExecutor:
     return ActionExecutor(
         store=store,
         adapter=RolloutUndoAdapter(
-            kubeconfig=settings.kubeconfig, context_name=settings.kube_context
+            kubeconfig=settings.kubeconfig,
+            context_name=settings.kube_context,
+            timeout_seconds=settings.tool_timeout_seconds,
         ),
         restart_adapter=PodRestartAdapter(
             kubeconfig=settings.kubeconfig, context_name=settings.kube_context
@@ -54,6 +60,8 @@ def build_executor(
         sample_seconds=settings.action_sample_seconds,
         approval_ttl_seconds=settings.action_approval_ttl_seconds,
         io_timeout_seconds=settings.tool_timeout_seconds,
+        probe_expression=settings.verify_probe_query,
+        serve_instance=serve_instance,
     )
 
 

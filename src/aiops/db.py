@@ -812,29 +812,32 @@ class Store:
 
     async def save_attempt(self, attempt: ActionAttempt) -> None:
         async with self._pool.connection() as conn:
-            try:
-                await conn.execute(
-                    """
-                    INSERT INTO action_attempts (
-                        id, proposal_id, status, idempotency_key, snapshot, request,
-                        result, verification, started_at, finished_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        attempt.id,
-                        attempt.proposal_id,
-                        attempt.status.value,
-                        attempt.idempotency_key,
-                        Jsonb(attempt.snapshot),
-                        Jsonb(attempt.request),
-                        Jsonb(attempt.result) if attempt.result is not None else None,
-                        Jsonb(attempt.verification) if attempt.verification is not None else None,
-                        attempt.started_at,
-                        attempt.finished_at,
-                    ),
-                )
-            except psycopg.errors.UniqueViolation as exc:
-                raise DuplicateAttempt("该提案已有执行记录") from exc
+            await self._insert_attempt(conn, attempt)
+
+    async def _insert_attempt(self, conn: psycopg.AsyncConnection, attempt: ActionAttempt) -> None:
+        try:
+            await conn.execute(
+                """
+                INSERT INTO action_attempts (
+                    id, proposal_id, status, idempotency_key, snapshot, request,
+                    result, verification, started_at, finished_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    attempt.id,
+                    attempt.proposal_id,
+                    attempt.status.value,
+                    attempt.idempotency_key,
+                    Jsonb(attempt.snapshot),
+                    Jsonb(attempt.request),
+                    Jsonb(attempt.result) if attempt.result is not None else None,
+                    Jsonb(attempt.verification) if attempt.verification is not None else None,
+                    attempt.started_at,
+                    attempt.finished_at,
+                ),
+            )
+        except psycopg.errors.UniqueViolation as exc:
+            raise DuplicateAttempt("该提案已有执行记录") from exc
 
     async def update_attempt(
         self,
@@ -850,13 +853,15 @@ class Store:
                 """
                 UPDATE action_attempts
                    SET status = %s,
-                       result = COALESCE(%s, result),
+                       result = CASE WHEN %s::jsonb IS NULL THEN result
+                                     ELSE COALESCE(result, '{}'::jsonb) || %s::jsonb END,
                        verification = COALESCE(%s, verification),
                        finished_at = COALESCE(%s, finished_at)
                  WHERE id = %s
                 """,
                 (
                     status.value,
+                    Jsonb(result) if result is not None else None,
                     Jsonb(result) if result is not None else None,
                     Jsonb(verification) if verification is not None else None,
                     finished_at,
@@ -865,6 +870,68 @@ class Store:
             )
             if cursor.rowcount != 1:
                 raise LookupError(f"执行记录不存在：{attempt_id}")
+
+    async def get_conversation_for_investigation(self, investigation_id: str) -> dict | None:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT * FROM conversations WHERE investigation_id = %s", (investigation_id,)
+            )
+            return await cur.fetchone()
+
+    async def register_rollback_sending(
+        self, attempt: ActionAttempt, *, investigation_id: str | None, instance_id: str | None
+    ) -> bool:
+        """持有任务行锁时核对执行归属，然后在同一事务中登记发写请求。"""
+        async with self._pool.connection() as conn:
+            if instance_id is not None:
+                cur = await conn.execute(
+                    """
+                    SELECT investigation_id FROM investigation_tasks
+                     WHERE investigation_id = %s AND phase = 'running'
+                       AND lease_owner = %s AND lease_expires_at > clock_timestamp()
+                     FOR UPDATE
+                    """,
+                    (investigation_id, instance_id),
+                )
+                if await cur.fetchone() is None:
+                    return False
+                cur = await conn.execute(
+                    """
+                    SELECT 1 FROM web_work w JOIN conversations c ON c.id = w.conversation_id
+                     WHERE c.investigation_id = %s AND c.finished_at IS NULL
+                       AND w.state = 'running' AND w.instance_id = %s AND w.proposal_id = %s
+                    """,
+                    (investigation_id, instance_id, attempt.proposal_id),
+                )
+                if await cur.fetchone() is None:
+                    return False
+            cur = await conn.execute(
+                """
+                UPDATE action_proposals SET status = 'executing'
+                 WHERE id = %s AND status = 'approved'
+                """,
+                (attempt.proposal_id,),
+            )
+            if not cur.rowcount:
+                return False
+            await self._insert_attempt(conn, attempt)
+            return True
+
+    async def record_not_sent(
+        self, attempt: ActionAttempt, *, proposal_status: ProposalStatus, target_lock_key: str
+    ) -> None:
+        """写前失败的记录和目标解锁一起提交。"""
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "UPDATE action_proposals SET status = %s WHERE id = %s AND status = 'approved'",
+                (proposal_status.value, attempt.proposal_id),
+            )
+            if cur.rowcount:
+                await self._insert_attempt(conn, attempt)
+            await conn.execute(
+                "DELETE FROM action_locks WHERE target_key = %s AND proposal_id = %s",
+                (target_lock_key, attempt.proposal_id),
+            )
 
     async def finish_attempt(
         self,
@@ -877,6 +944,7 @@ class Store:
         verification: dict | None,
         finished_at,
         followup: ActionFollowup | None = None,
+        target_lock_key: str | None = None,
     ) -> None:
         """执行记录、提案状态和待办同一事务落库，避免只写一半。"""
         async with self._pool.connection() as conn:
@@ -908,6 +976,11 @@ class Store:
                 )
                 if followup is not None:
                     await self._insert_followup(conn, followup)
+                elif target_lock_key is not None:
+                    await conn.execute(
+                        "DELETE FROM action_locks WHERE target_key = %s AND proposal_id = %s",
+                        (target_lock_key, proposal_id),
+                    )
 
     async def _insert_followup(
         self, conn: psycopg.AsyncConnection, followup: ActionFollowup

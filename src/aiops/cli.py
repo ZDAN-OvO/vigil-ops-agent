@@ -30,7 +30,7 @@ from aiops.contracts import (
     TimeRange,
 )
 from aiops.db import Store, StoreUnavailable
-from aiops.doctor import check_dependencies
+from aiops.doctor import check_dependencies, mutating_webhook_present
 from aiops.evaluation.harness import (
     ARMS,
     anchors,
@@ -703,6 +703,12 @@ def serve(
     except StoreUnavailable as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
+
+    try:
+        if mutating_webhook_present(settings):
+            typer.echo("警告：存在可能改写 Deployment 的准入规则。", err=True)
+    except Exception:
+        typer.echo("警告：无法检查 Deployment 的可变更准入规则，请运行 aiops doctor。", err=True)
 
     import uvicorn
 

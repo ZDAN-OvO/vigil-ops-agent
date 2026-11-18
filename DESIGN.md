@@ -242,7 +242,7 @@ aiops serve（单进程、单事件循环）
   - 清理后的**完整目标 Pod 模板**；
   - 当前与目标镜像、当前与目标 revision。
   
-  这些都在 `proposal_hash` 覆盖范围内。缺少这些字段的旧提案不能经 Web 执行。
+  这些都在 `proposal_hash` 覆盖范围内。缺少这些字段的旧提案需要重新提案，CLI 与 Web 共用固定模板的执行器。
 - 执行器在 dry-run 前和登记写意图前各读一次 Deployment 和该 ReplicaSet，核对 Deployment UID、`resourceVersion`、ReplicaSet UID、控制器 UID、revision，以及 ReplicaSet 当前模板是否仍等于提案中的模板。任何一项不同，以 `drift` 或 `revision_changed` 失败，不写集群。
 - 生成差异、构造替换请求、核对 dry-run 结果和写后回读，一律使用 Kubernetes API 返回的**原始 JSON**（客户端的 `_preload_content=False` 或等价方式），不经过客户端的类型化模型。类型化模型会丢掉 SDK 版本不认识的新字段，导致卡片漏列被删除的字段。
 - 提案生成时，服务端用 API 返回的**完整当前模板**（不做清理）与清理后的目标模板比较，得到**变更清单**（每一项的字段路径、当前值、目标值），存入提案参数，同样在 `proposal_hash` 覆盖范围内。卡片直接展示这份清单；值经 A.13 过滤，`env`、`secretKeyRef` 等敏感字段只显示"已变化"。清单为空的提案不生成。卡片、`proposal_hash` 和写请求使用同一份目标模板；当前模板中有而目标模板中没有的字段（例如 `finalizers`）作为"将被删除"列入清单。
@@ -266,7 +266,7 @@ aiops serve（单进程、单事件循环）
   - 写入前查询失败或有效样本不足（沿用现有门槛）：停止执行，`send_state = not_sent`，`not_executed_reason = baseline_unavailable`。
   - 写入成功后验证时不是一条：保留 `send_state = sent`，`verification = unknown`，`verification_reason = probe_ambiguous`。
 - `doctor` 检查该查询当前是否恰好返回一条序列。
-- `doctor` 同时检查集群中是否存在匹配业务命名空间 Deployment 更新的 `MutatingWebhookConfiguration`；存在则标为失败，`serve` 启动时也给出警告。
+- `doctor` 同时检查集群中是否存在匹配业务命名空间 Deployment 更新的 `MutatingWebhookConfiguration`；存在则标为失败，`serve` 启动时也给出警告。无法核实选择器是否匹配时，按可能匹配提示；实际模板仍由预演和写后回读核对。
 
 ### A.5 审批
 
@@ -299,7 +299,7 @@ aiops serve（单进程、单事件循环）
 
 **最终结果与锁同事务**：执行记录进入最终结果时，在同一事务中处理目标锁：
 - 需要人工待办的（`uncertain`，或验证结论为 `unknown`）：写最终结果、创建待办，**保留**目标锁。
-- 其余（`not_sent`、验证完成且结论明确）：写最终结果、**释放**目标锁。
+- 其余（`not_sent`、验证完成且无需人工待办）：写最终结果、**释放**目标锁。沿用既有的无改善、恶化待办；有待办的目标继续锁定到核实完成。
 
 现有执行器在 `finally` 中无条件释放锁，需要改为上述规则。
 

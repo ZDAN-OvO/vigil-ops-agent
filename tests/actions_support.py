@@ -11,7 +11,7 @@ from aiops.actions.executor import (
     AutoExecutionError,
 )
 from aiops.actions.restart_pod import PodPlan
-from aiops.actions.rollout_undo import ActionError, RolloutPlan
+from aiops.actions.rollout_undo import ActionError, RolloutPlan, validate_plan
 from aiops.contracts import (
     ActionKind,
     ActionOrigin,
@@ -58,7 +58,15 @@ class FakeAdapter:
     def plan(self, namespace, name):
         return self._plan
 
-    def apply(self, plan, *, dry_run, proposal_id):
+    def recheck(self, proposal):
+        plan = self.plan(proposal.target.namespace, proposal.target.name)
+        validate_plan(plan, proposal)
+        return plan
+
+    def template_matches(self, plan):
+        return True
+
+    def apply(self, plan, *, dry_run, proposal_id, expires_at=None):
         self.calls.append(dry_run)
         if self._fail_on_apply and not dry_run:
             raise RuntimeError("连接中断")
@@ -117,6 +125,9 @@ def rollout_plan(*, current_memory_limit=None, target_memory_limit=None):
         template={"metadata": {}, "spec": {"containers": [{"name": "server"}]}},
         deployment_uid="uid-1",
         resource_version="10",
+        replicaset_name="target-history",
+        replicaset_uid="rs-history",
+        controller_uid="uid-1",
         current_memory_limit=current_memory_limit,
         target_memory_limit=target_memory_limit,
     )

@@ -97,7 +97,8 @@ def test_non_finite_baseline_stops_before_write(tmp_path, cleanup):
     error, saved, attempt = asyncio.run(scenario())
     assert error.code == "baseline_unavailable"
     assert saved.status is ProposalStatus.FAILED
-    assert attempt is None
+    assert attempt.result["send_state"] == "not_sent"
+    assert attempt.result["not_executed_reason"] == "baseline_unavailable"
     assert adapter.calls == []
 
 
@@ -124,18 +125,20 @@ def test_rollout_gateway_status_baseline_stops_before_write(tmp_path, cleanup):
 
     error, attempt = asyncio.run(scenario())
     assert error.code == "baseline_unavailable"
-    assert attempt is None
+    assert attempt.result["send_state"] == "not_sent"
+    assert attempt.result["not_executed_reason"] == "baseline_unavailable"
     assert adapter.calls == []
 
 
 def test_rollout_expiry_during_intent_write_stops_before_apply(monkeypatch, tmp_path, cleanup):
-    original = Store.save_attempt
+    original = Store.register_rollback_sending
 
-    async def slow_save(self, attempt):
+    async def slow_save(self, attempt, **kwargs):
+        result = await original(self, attempt, **kwargs)
         await asyncio.sleep(1.1)
-        return await original(self, attempt)
+        return result
 
-    monkeypatch.setattr(Store, "save_attempt", slow_save)
+    monkeypatch.setattr(Store, "register_rollback_sending", slow_save)
     adapter = FakeAdapter(rollout_plan())
 
     async def scenario():
@@ -238,7 +241,8 @@ def test_missing_baseline_stops_before_write(tmp_path, cleanup):
     error, saved, attempt = asyncio.run(scenario())
     assert error.code == "baseline_unavailable"
     assert saved.status is ProposalStatus.FAILED
-    assert attempt is None
+    assert attempt.result["send_state"] == "not_sent"
+    assert attempt.result["not_executed_reason"] == "baseline_unavailable"
     assert adapter.calls == []
 
 
@@ -296,7 +300,8 @@ def test_drift_after_approval_blocks_execution(tmp_path, cleanup):
     error, saved, attempt = asyncio.run(scenario())
     assert error.code == "drift"
     assert saved.status is ProposalStatus.FAILED
-    assert attempt is None
+    assert attempt.result["send_state"] == "not_sent"
+    assert attempt.result["not_executed_reason"] == "drift"
     assert adapter.calls == []
 
 
@@ -380,7 +385,8 @@ def test_expired_approval_is_not_executed(tmp_path, cleanup):
     error, saved, attempt = asyncio.run(scenario())
     assert error.code == "expired"
     assert saved.status is ProposalStatus.EXPIRED
-    assert attempt is None
+    assert attempt.result["send_state"] == "not_sent"
+    assert attempt.result["not_executed_reason"] == "expired"
     assert adapter.calls == []
 
 
@@ -595,3 +601,167 @@ def test_abandoned_proposal_releases_the_idempotency_key(tmp_path, cleanup):
     assert duplicate is True
     assert saved is not None and saved.status is ProposalStatus.REJECTED
     assert saved_second is not None and saved_second.status is ProposalStatus.PENDING_APPROVAL
+
+
+@pytest.mark.parametrize(
+    ("status", "send_state", "reason", "held"),
+    [
+        (409, "not_sent", "drift", False),
+        (403, "not_sent", "api_rejected", False),
+        (503, "uncertain", None, True),
+        (0, "uncertain", None, True),
+    ],
+)
+def test_rollout_transport_classification(tmp_path, cleanup, status, send_state, reason, held):
+    class Response(FakeAdapter):
+        def apply(self, plan, *, dry_run, proposal_id, expires_at=None):
+            result = super().apply(plan, dry_run=dry_run, proposal_id=proposal_id)
+            if not dry_run:
+                raise ActionError("api_error", "模拟传输结果", http_status=status)
+            return result
+
+    adapter = Response(rollout_plan())
+    _, _, attempt, _, _ = asyncio.run(
+        propose_and_approve(adapter, FakePrometheus([500.0, 500.0]), tmp_path, cleanup)
+    )
+    assert adapter.calls == [True, False]
+    assert attempt.result["send_state"] == send_state
+    assert attempt.result.get("not_executed_reason") == reason
+    assert (read_followup(attempt.id) is not None) is held
+    with psycopg.connect(DSN) as conn:
+        locked = conn.execute(
+            "SELECT 1 FROM action_locks WHERE proposal_id = %s", (attempt.proposal_id,)
+        ).fetchone()
+    assert (locked is not None) is held
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_rollout_rejects_multiple_probe_series(tmp_path, cleanup, when):
+    class Multiple(FakePrometheus):
+        async def query_range(self, context, expression, time_range, *, step_seconds):
+            result = await super().query_range(
+                context, expression, time_range, step_seconds=step_seconds
+            )
+            if self._calls == (1 if when == "before" else 2):
+                result.data["series"].append({"points": [[1, 200], [2, 200]]})
+            return result
+
+    adapter = FakeAdapter(rollout_plan())
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(store, adapter, Multiple([200.0, 200.0]), tmp_path)
+            proposal, _ = await executor.propose_rollback(
+                deployment="productcatalogservice", reason="坏发布", actor="tester"
+            )
+            cleanup.append(proposal.id)
+            if when == "before":
+                with pytest.raises(ActionError) as caught:
+                    await executor.approve(proposal.id, actor="tester")
+                assert caught.value.code == "probe_ambiguous"
+            else:
+                await executor.approve(proposal.id, actor="tester")
+            return await store.get_attempt(proposal.id)
+
+    attempt = asyncio.run(scenario())
+    if when == "before":
+        assert attempt.result["send_state"] == "not_sent"
+        assert attempt.result["not_executed_reason"] == "probe_ambiguous"
+        assert adapter.calls == []
+    else:
+        assert attempt.result["send_state"] == "sent"
+        assert attempt.result["verification"] == "unknown"
+        assert attempt.result["verification_reason"] == "probe_ambiguous"
+        assert read_followup(attempt.id) is not None
+        assert adapter.calls == [True, False]
+
+
+def test_rollout_post_write_template_mismatch_requires_followup(tmp_path, cleanup):
+    class Mutated(FakeAdapter):
+        def template_matches(self, plan):
+            return False
+
+    prometheus = FakePrometheus([200.0, 200.0])
+    _, _, attempt, _, _ = asyncio.run(
+        propose_and_approve(Mutated(rollout_plan()), prometheus, tmp_path, cleanup)
+    )
+    assert attempt.result["send_state"] == "sent"
+    assert attempt.result["code"] == "template_mismatch"
+    assert read_followup(attempt.id) is not None
+    assert prometheus._calls == 1
+
+
+def test_rollout_expiry_while_write_thread_is_waiting(monkeypatch, tmp_path, cleanup):
+    from aiops.actions import executor as actions
+
+    original = asyncio.to_thread
+
+    async def queued(func, *args, **kwargs):
+        if func.__name__ == "_send_rollout":
+            await asyncio.sleep(1.1)
+        return await original(func, *args, **kwargs)
+
+    monkeypatch.setattr(actions.asyncio, "to_thread", queued)
+    adapter = FakeAdapter(rollout_plan())
+
+    async def scenario():
+        async with Store.open(DSN) as store:
+            await store.migrate()
+            executor = build_executor(
+                store,
+                adapter,
+                FakePrometheus([200.0, 200.0]),
+                tmp_path,
+                approval_ttl_seconds=1,
+            )
+            proposal, _ = await executor.propose_rollback(
+                deployment="productcatalogservice", reason="坏发布", actor="tester"
+            )
+            cleanup.append(proposal.id)
+            return await executor.approve(proposal.id, actor="tester")
+
+    attempt = asyncio.run(scenario())
+    assert adapter.calls == [True]
+    assert attempt.result["send_state"] == "not_sent"
+    assert attempt.result["not_executed_reason"] == "expired"
+    assert read_followup(attempt.id) is None
+
+
+def test_rollout_cannot_send_if_registration_fails(monkeypatch, tmp_path, cleanup):
+    async def revoke(store, attempt, **kwargs):
+        await store.set_proposal_status(attempt.proposal_id, ProposalStatus.REJECTED)
+        return await original(store, attempt, **kwargs)
+
+    original = Store.register_rollback_sending
+    monkeypatch.setattr(Store, "register_rollback_sending", revoke)
+    adapter = FakeAdapter(rollout_plan())
+    with pytest.raises(ActionError) as caught:
+        asyncio.run(propose_and_approve(adapter, FakePrometheus([200.0, 200.0]), tmp_path, cleanup))
+    assert caught.value.code == "not_approved"
+    assert adapter.calls == [True]
+
+
+@pytest.mark.parametrize(
+    ("send_state", "expected"), [("not_sent", False), ("uncertain", None), ("sent", True)]
+)
+def test_agent_feedback_reports_only_confirmed_write(send_state, expected):
+    from datetime import UTC, datetime
+
+    from aiops.agent.tools import _action_feedback
+    from aiops.contracts import ActionAttempt, AttemptStatus
+
+    proposal = make_proposal()
+    attempt = ActionAttempt(
+        id="att-test",
+        proposal_id=proposal.id,
+        status=AttemptStatus.UNKNOWN,
+        idempotency_key=proposal.idempotency_key,
+        snapshot={},
+        request={},
+        started_at=datetime.now(UTC),
+        result={"send_state": send_state},
+    )
+    feedback = _action_feedback(None, proposal, None, attempt, followup_ids=[])
+    assert feedback["write_sent"] is expected
+    assert feedback["send_state"] == send_state
