@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -83,6 +84,7 @@ from aiops.skills import (
 )
 from aiops.tools.registry import build_registry, read_only_names, select_tools, tool_name
 from aiops.tracing import configure_tracing, tracing_callbacks
+from aiops.web.hints import HintMiddleware, confirm_hints
 
 AGENT_TOOLS = select_tools(build_registry())
 READ_ONLY_TOOLS = select_tools(build_registry(), read_only=True)
@@ -127,6 +129,10 @@ class LangChainInvestigation:
         runtime_path: Path | None = None,
         model: ChatOpenAI | None = None,
         arm: str = "agent",
+        read_only: bool = False,
+        conversation_id: str | None = None,
+        serve_instance: str | None = None,
+        lease_lost: asyncio.Event | None = None,
     ) -> None:
         if settings.model_name is None:
             raise ValueError("未配置 VIGIL_MODEL_NAME")
@@ -146,7 +152,10 @@ class LangChainInvestigation:
         self._runtime_path = runtime_path or settings.runtime_path
         self._model = model or self._build_model(settings)
         self._guard = ReportErrorGuard()
-        self._lease_owner = f"agent-{uuid.uuid4().hex[:10]}"
+        self._lease_owner = serve_instance or f"agent-{uuid.uuid4().hex[:10]}"
+        self._read_only = read_only
+        self._conversation_id = conversation_id
+        self._lease_lost = lease_lost
         configure_tracing(settings)
         self._callbacks = tracing_callbacks(settings)
 
@@ -207,6 +216,9 @@ class LangChainInvestigation:
             tool_timeout_seconds=self._settings.tool_timeout_seconds,
             model_reserve_seconds=float(self._settings.investigation_action_model_reserve_seconds),
             progress=Progress(recovered=task.recovered_at is not None),
+            read_only=self._read_only,
+            conversation_id=self._conversation_id,
+            lease_lost=self._lease_lost,
         )
         return task, context
 
@@ -304,6 +316,8 @@ class LangChainInvestigation:
                     SkillsMiddleware(backend=backend, sources=["/"]),
                 ]
             )
+        if self._conversation_id:
+            middleware.append(HintMiddleware(self._conversation_id))
         middleware.append(subagent)
         # 装配结果留一份，测试用它守住"generic 只去掉方法论、不丢委派"。
         self._graph_middleware = [type(item).__name__ for item in middleware]
@@ -359,6 +373,14 @@ class LangChainInvestigation:
         return await self._abort(context, TerminationCode.READ_ONLY_VIOLATION, str(exc))
 
     async def _acquire_lease(self, task: InvestigationTask, *, resuming: bool) -> None:
+        if self._conversation_id:
+            if (
+                task.lease_owner != self._lease_owner
+                or task.lease_expires_at is None
+                or task.lease_expires_at <= datetime.now(UTC)
+            ):
+                raise LeaseConflict("页面后台工作租约失效")
+            return
         if not await self._store.acquire_task_lease(
             self._investigation_id, self._lease_owner, seconds=300
         ):
@@ -417,7 +439,8 @@ class LangChainInvestigation:
                 await self._record_loaded_skills(catalog, result)
                 return await self._finish_graph(graph, result, context)
         finally:
-            await self._store.release_task_lease(self._investigation_id, self._lease_owner)
+            if not self._conversation_id:
+                await self._store.release_task_lease(self._investigation_id, self._lease_owner)
 
     async def resume(self, *, proposal_id: str, decision: str, actor: str = "operator") -> Report:
         task = await self._store.get_task(self._investigation_id)
@@ -468,13 +491,20 @@ class LangChainInvestigation:
                 await self._record_loaded_skills(catalog, result)
                 return await self._finish_graph(graph, result, context)
         finally:
-            await self._store.release_task_lease(self._investigation_id, self._lease_owner)
+            if not self._conversation_id:
+                await self._store.release_task_lease(self._investigation_id, self._lease_owner)
 
     async def _invoke(self, graph, payload, context: AgentContext) -> dict[str, Any] | Report:
         """执行一次图调用；把运行故障改写成确定性终态，不伪装成调查结论。"""
         token = CURRENT_CONTEXT.set(context)
         try:
-            return await graph.ainvoke(payload, self._config(), context=context)
+            if not self._conversation_id:
+                return await graph.ainvoke(payload, self._config(), context=context)
+            result = await graph.ainvoke(
+                payload, self._config(), context=context, durability="sync"
+            )
+            await confirm_hints(self._store, self._conversation_id, result)
+            return result
         except RunCancelled:
             return await self._abort(context, TerminationCode.CANCELLED, "任务收到取消请求")
         except BudgetExhausted as exc:

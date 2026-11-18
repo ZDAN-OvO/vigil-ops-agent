@@ -253,3 +253,418 @@ def test_finish_attempt_preserves_existing_send_state(web_dsn):
             }
 
     asyncio.run(scenario())
+
+
+async def seed_work(store, *, ready=False, proposal_status="pending_approval"):
+    from actions_support import make_proposal
+
+    incident, investigation = new_investigation()
+    conv = await store.create_conversation("create", incident, investigation)
+    work = await store.claim_web_work(conv.id, "old-instance")
+    proposal = make_proposal(investigation_id=investigation.id, status=proposal_status)
+    await store.save_proposal(
+        proposal,
+        RiskDecision(
+            proposal_id=proposal.id,
+            disposition=RiskDisposition.APPROVAL,
+            policy_version="test",
+            reasons=["测试"],
+            requires_compensation=False,
+        ),
+    )
+    if ready:
+        from aiops.web.lifecycle import handoff
+
+        await store.set_task_waiting(investigation.id, proposal_id=proposal.id)
+        assert (await store.get_task(investigation.id)).ready_proposal_id is None
+        await handoff(store, work, proposal.id)
+    return conv.id, investigation, work, proposal
+
+
+def test_web_decision_is_atomic_and_idempotent(web_dsn, monkeypatch):
+    from aiops.contracts import ApprovalDecision
+    from aiops.db import ConversationConflict
+    from aiops.web.card import card_hash
+    from aiops.web.lifecycle import decide_proposal
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            _, investigation, _, proposal = await seed_work(store, ready=True)
+            async with store._pool.connection() as conn:
+                fingerprint = await card_hash(conn, proposal)
+            args = dict(
+                request_id="decision",
+                decision=ApprovalDecision.REJECTED,
+                submitted_hash=fingerprint,
+                reason="继续取证",
+                actor="web-operator",
+                ttl=900,
+            )
+            with pytest.raises(ConversationConflict, match="hash_mismatch"):
+                await decide_proposal(store, proposal.id, **(args | {"submitted_hash": "wrong"}))
+            real_insert = store._insert_approval
+
+            async def fail(*args):
+                raise RuntimeError("模拟决策途中失败")
+
+            monkeypatch.setattr(store, "_insert_approval", fail)
+            with pytest.raises(RuntimeError, match="模拟决策途中失败"):
+                await decide_proposal(store, proposal.id, **args)
+            current = await store.get_proposal(proposal.id)
+            assert current.status is ProposalStatus.PENDING_APPROVAL
+            monkeypatch.setattr(store, "_insert_approval", real_insert)
+            first, second = await asyncio.gather(
+                decide_proposal(store, proposal.id, **args),
+                decide_proposal(store, proposal.id, **args),
+            )
+            assert first.id == second.id and first.replayed != second.replayed
+            assert await store.count_approvals(proposal.id) == 1
+            assert await store.get_attempt(proposal.id) is None
+            assert (await store.get_task(investigation.id)).actions_disabled is True
+            with pytest.raises(ConversationConflict, match="not_pending"):
+                await decide_proposal(store, proposal.id, **(args | {"request_id": "other"}))
+
+    asyncio.run(scenario())
+
+
+async def seed_execution(store, proposal, send_state: str, *, verification_done=False):
+    now = datetime.now(UTC)
+    attempt = ActionAttempt(
+        id="att-web-test",
+        proposal_id=proposal.id,
+        status=AttemptStatus.EXECUTING,
+        idempotency_key=proposal.idempotency_key,
+        snapshot={},
+        request={},
+        started_at=now,
+        result={
+            "send_state": send_state,
+            "stage": "applying",
+            "verification_done": verification_done,
+        },
+    )
+    assert await store.acquire_lock(
+        "vigil-lab/vigil-shop/Deployment/productcatalogservice", proposal.id
+    )
+    await store.save_attempt(attempt)
+    return attempt
+
+
+def test_recovery_row_1_skips_active_work(web_dsn):
+    from aiops.web.lifecycle import recover_conversation
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            conv, _, _, proposal = await seed_work(store)
+            await seed_execution(store, proposal, "sending")
+            assert await recover_conversation(store, conv, "new", active=True) == "active"
+            assert await recover_conversation(store, conv, "old-instance") == "active"
+            assert (await store.get_attempt(proposal.id)).status is AttemptStatus.EXECUTING
+
+    asyncio.run(scenario())
+
+
+def test_recovery_row_2_terminal_task_closes_conversation(web_dsn):
+    from aiops.web.lifecycle import recover_conversation
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            conv, investigation, _, _ = await seed_work(store)
+            async with store._pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE investigation_tasks SET phase = 'terminal', outcome = 'aborted', "
+                    "termination_code = 'runtime_error' WHERE investigation_id = %s",
+                    (investigation.id,),
+                )
+            assert await recover_conversation(store, conv, "new") == "terminal"
+            assert await recover_conversation(store, conv, "new") == "finished"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("sent", ["sending", "sent"])
+def test_recovery_row_3_startup_recovers_unfinished_write(web_dsn, sent):
+    from aiops.web.runner import ConversationRunner
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            _, _, _, proposal = await seed_work(store, proposal_status="executing")
+            attempt = await seed_execution(store, proposal, sent)
+            assert await store.has_unfinished_attempt()
+            runner = ConversationRunner(store, Settings(database_url=web_dsn))
+            await runner.startup()
+            assert not await store.has_unfinished_attempt()
+            current = await store.get_current_conversation()
+            assert current["finished_at"] is not None
+            assert (await store.get_followup_by_attempt(attempt.id)).status.value == "open"
+            outcome = await store.get_attempt(proposal.id)
+            assert outcome.result["send_state"] == ("sent" if sent == "sent" else "uncertain")
+            assert outcome.status is AttemptStatus.UNKNOWN
+            second = ConversationRunner(store, Settings(database_url=web_dsn))
+            await second.startup()
+            assert len(await store.list_followups(proposal_id=proposal.id)) == 1
+
+    asyncio.run(scenario())
+
+
+def test_recovery_row_4_final_write_closes_read_only(web_dsn):
+    from aiops.web.lifecycle import recover_conversation
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            conv, _, _, proposal = await seed_work(store, proposal_status="succeeded")
+            attempt = await seed_execution(store, proposal, "sent", verification_done=True)
+            await store.finish_attempt(
+                attempt.id,
+                proposal_id=proposal.id,
+                proposal_status=ProposalStatus.SUCCEEDED,
+                status=AttemptStatus.VERIFIED,
+                result=None,
+                verification={"outcome": "improved"},
+                finished_at=datetime.now(UTC),
+                target_lock_key="vigil-lab/vigil-shop/Deployment/productcatalogservice",
+            )
+            assert await recover_conversation(store, conv, "new") == "closed_after_action"
+            assert await store.get_followup_by_attempt(attempt.id) is None
+
+    asyncio.run(scenario())
+
+
+def test_recovery_row_5_queued_work_starts(web_dsn):
+    from aiops.web.lifecycle import recover_conversation
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            conv = await store.create_conversation("create", *new_investigation())
+            assert await recover_conversation(store, conv.id, "new") == "queued"
+            assert await store.claim_web_work(conv.id, "new") is not None
+
+    asyncio.run(scenario())
+
+
+def test_recovery_row_6_preserves_ready_proposal(web_dsn):
+    from aiops.web.lifecycle import recover_conversation
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            conv, investigation, _, proposal = await seed_work(store, ready=True)
+            assert await recover_conversation(store, conv, "new") == "waiting"
+            assert (await store.get_task(investigation.id)).ready_proposal_id == proposal.id
+            assert await store.claim_web_work(conv, "new") is None
+
+    asyncio.run(scenario())
+
+
+def test_recovery_row_7_interrupts_claimed_work_and_releases_target(web_dsn):
+    from aiops.web.lifecycle import recover_conversation
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            conv, _, _, proposal = await seed_work(store, proposal_status="approved")
+            key = "vigil-lab/vigil-shop/Deployment/productcatalogservice"
+            assert await store.acquire_lock(key, proposal.id)
+            assert await recover_conversation(store, conv, "new") == "interrupted"
+            assert not await store.target_is_locked(key)
+            assert (await store.get_current_conversation())["interrupted"]
+            assert (await store.get_proposal(proposal.id)).status is ProposalStatus.REJECTED
+
+    asyncio.run(scenario())
+
+
+def test_web_handoff_rolls_back_ready_if_work_update_fails(web_dsn):
+    from aiops.web.lifecycle import handoff
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            conv, investigation, work, proposal = await seed_work(store)
+            await store.set_task_waiting(investigation.id, proposal_id=proposal.id)
+            with pytest.raises(RuntimeError, match="审批工作已失效"):
+                await handoff(store, work | {"id": work["id"] + 1}, proposal.id)
+            task = await store.get_task(investigation.id)
+            assert task.ready_proposal_id is None and task.lease_owner == "old-instance"
+            assert await store.claim_web_work(conv, "new") is None
+            await handoff(store, work, proposal.id)
+            task = await store.get_task(investigation.id)
+            assert task.ready_proposal_id == proposal.id and task.lease_owner is None
+
+    asyncio.run(scenario())
+
+
+def test_web_renew_lease_preserves_current_owner_only(web_dsn):
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            _, investigation, _, _ = await seed_work(store)
+            before = await store.get_task(investigation.id)
+            assert not await store.renew_web_lease(investigation.id, "other")
+            assert await store.renew_web_lease(investigation.id, "old-instance")
+            assert (
+                await store.get_task(investigation.id)
+            ).lease_expires_at > before.lease_expires_at
+
+    asyncio.run(scenario())
+
+
+def test_recovery_and_followup_resolution_never_restore_unknown(web_dsn):
+    from aiops.contracts import ActionFollowup, AttemptOutcome
+    from aiops.web.lifecycle import recover_conversation
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            conv, _, _, proposal = await seed_work(store, proposal_status="executing")
+            attempt = await seed_execution(store, proposal, "uncertain")
+            await store.finish_attempt(
+                attempt.id,
+                proposal_id=proposal.id,
+                proposal_status=ProposalStatus.UNKNOWN,
+                status=AttemptStatus.UNKNOWN,
+                result=None,
+                verification=None,
+                finished_at=datetime.now(UTC),
+                followup=ActionFollowup(
+                    id="fol-web-test",
+                    proposal_id=proposal.id,
+                    attempt_id=attempt.id,
+                    cluster=proposal.target.cluster,
+                    namespace=proposal.target.namespace,
+                    target_kind=proposal.target.kind,
+                    target_name=proposal.target.name,
+                    outcome=AttemptOutcome.UNKNOWN,
+                    reason="待核实",
+                    evidence={},
+                    created_at=datetime.now(UTC),
+                ),
+            )
+            await asyncio.gather(
+                recover_conversation(store, conv, "new"),
+                store.resolve_followup("fol-web-test", actor="tester", note="核实后无重复写入"),
+            )
+            assert (await store.get_proposal(proposal.id)).status is ProposalStatus.FAILED
+            assert (await store.get_followup("fol-web-test")).status.value == "resolved"
+            assert await recover_conversation(store, conv, "new") == "finished"
+            assert (await store.get_attempt(proposal.id)).result["send_state"] == "uncertain"
+            assert not await store.target_is_locked(
+                "vigil-lab/vigil-shop/Deployment/productcatalogservice"
+            )
+            assert len(await store.list_followups(proposal_id=proposal.id)) == 1
+
+    asyncio.run(scenario())
+
+
+def test_web_approval_rejects_unknown_owner_and_unready_proposal(web_dsn):
+    from aiops.contracts import ApprovalDecision
+    from aiops.db import ConversationConflict
+    from aiops.web.lifecycle import decide_proposal
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            _, _, _, proposal = await seed_work(store)
+            for proposal_id, code in [(proposal.id, "not_waiting"), ("act-wrong", "not_found")]:
+                with pytest.raises(ConversationConflict, match=code):
+                    await decide_proposal(
+                        store,
+                        proposal_id,
+                        request_id="test",
+                        decision=ApprovalDecision.APPROVED,
+                        submitted_hash="unused",
+                        reason="",
+                        actor="web-operator",
+                        ttl=900,
+                    )
+            assert await store.count_approvals(proposal.id) == 0
+            assert await store.get_attempt(proposal.id) is None
+
+    asyncio.run(scenario())
+
+
+def test_web_hints_checkpoint_and_model_retry_keep_one_logical_round(web_dsn):
+    from investigation_support import FakeToolbox, ScriptedChatModel, report_call
+
+    from aiops.agent.engine import LangChainInvestigation
+    from aiops.web.runner import ConversationRunner
+
+    async def scenario():
+        settings = Settings(database_url=web_dsn, model_name="scripted")
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            incident, investigation = new_investigation()
+            conv = await store.create_conversation("create", incident, investigation)
+            hint = await store.append_conversation_message("hint", conv.id, "先检查首页依赖")
+            worker = ConversationRunner(store, settings)
+            await store.claim_web_work(conv.id, worker.instance_id)
+
+            def transient_error(messages):
+                raise TimeoutError("模拟第一次模型调用超时")
+
+            model = ScriptedChatModel(responses=[transient_error, report_call(confirmed=False)])
+            runtime = LangChainInvestigation(
+                settings=settings,
+                store=store,
+                dsn=web_dsn,
+                incident=incident,
+                investigation=investigation,
+                toolbox=FakeToolbox(),
+                executor=None,
+                model=model,
+                arm="generic",
+                conversation_id=conv.id,
+                serve_instance=worker.instance_id,
+            )
+            await runtime.run()
+            async with store._pool.connection() as conn:
+                cur = await conn.execute(
+                    "SELECT delivery, delivered_round FROM conversation_messages WHERE id = %s",
+                    (hint.id,),
+                )
+                message = await cur.fetchone()
+                assert message == {"delivery": "delivered", "delivered_round": 1}
+            assert len(model.seen) >= 2
+            for messages in model.seen:
+                assert sum("先检查首页依赖" in str(m.content) for m in messages) == 1
+
+    asyncio.run(scenario())
+
+
+def test_web_cli_cannot_mutate_page_investigation_after_serve_stops(web_dsn, monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from aiops.cli import app
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            _, investigation, _, proposal = await seed_work(store, ready=True)
+            return proposal.id, investigation.id
+
+    proposal_id, investigation_id = asyncio.run(scenario())
+    monkeypatch.setenv("VIGIL_DATABASE_URL", web_dsn)
+    monkeypatch.setenv("VIGIL_RUNTIME_DIR", str(tmp_path))
+    for args in (
+        ["approve", proposal_id],
+        ["reject", proposal_id],
+        ["resume", proposal_id],
+        ["cancel", investigation_id],
+        [
+            "act",
+            "--deployment",
+            "frontend",
+            "--reason",
+            "test",
+            "--investigation",
+            investigation_id,
+        ],
+    ):
+        result = CliRunner().invoke(app, ["dev", *args])
+        assert result.exit_code == 1, args
+        assert "页面" in result.output

@@ -59,6 +59,8 @@ def _retryable(exc: BaseException) -> bool:
 
 
 async def cancel_requested(ctx: AgentContext) -> bool:
+    if ctx.lease_lost is not None and ctx.lease_lost.is_set():
+        raise RunCancelled("页面调查租约已失效")
     task = await ctx.store.get_task(ctx.investigation_id)
     return bool(task and task.cancel_requested_at is not None)
 
@@ -107,6 +109,8 @@ class BudgetMiddleware(AgentMiddleware):
         attempts = 0
         last_error: BaseException | None = None
         while attempts <= self._max_retries:
+            if ctx.lease_lost is not None and ctx.lease_lost.is_set():
+                raise RunCancelled("页面调查租约已失效")
             attempts += 1
             await ctx.budget.spend_model_call()
             timeout = ctx.budget.model_call_timeout(configured=self._timeout)

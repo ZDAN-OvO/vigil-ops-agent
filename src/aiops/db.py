@@ -1081,6 +1081,16 @@ class Store:
             raise ValueError("解决待办必须记录操作者与说明")
         async with self._pool.connection() as conn:
             async with conn.transaction():
+                cur = await conn.execute(
+                    """
+                    SELECT t.investigation_id
+                      FROM action_followups f JOIN action_proposals p ON p.id = f.proposal_id
+                      JOIN investigation_tasks t USING (investigation_id)
+                     WHERE f.id = %s FOR UPDATE OF t
+                    """,
+                    (followup_id,),
+                )
+                await cur.fetchone()
                 cursor = await conn.execute(
                     """
                     UPDATE action_followups
@@ -1118,6 +1128,23 @@ class Store:
                         datetime.now(UTC),
                         Jsonb({"followup_id": followup_id, "note": note}),
                     ),
+                )
+                await conn.execute(
+                    "UPDATE action_proposals SET status = 'failed' "
+                    "WHERE id = %s AND status = 'unknown'",
+                    (row["proposal_id"],),
+                )
+                await conn.execute(
+                    "DELETE FROM action_locks WHERE proposal_id = %s", (row["proposal_id"],)
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO conversation_events (conversation_id, kind)
+                    SELECT c.id, 'followup' FROM conversations c
+                    JOIN action_proposals p USING (investigation_id)
+                    WHERE p.id = %s
+                    """,
+                    (row["proposal_id"],),
                 )
         return _followup_from_row(row)
 
@@ -1267,12 +1294,16 @@ class Store:
                    SET phase = 'waiting_approval',
                        proposal_id = %s,
                        paused_at = now(),
-                       lease_owner = NULL,
-                       lease_expires_at = NULL,
+                       lease_owner = CASE WHEN EXISTS (
+                           SELECT 1 FROM conversations c WHERE c.investigation_id = %s
+                       ) THEN lease_owner END,
+                       lease_expires_at = CASE WHEN EXISTS (
+                           SELECT 1 FROM conversations c WHERE c.investigation_id = %s
+                       ) THEN lease_expires_at END,
                        updated_at = now()
                  WHERE investigation_id = %s AND phase <> 'terminal'
                 """,
-                (proposal_id, investigation_id),
+                (proposal_id, investigation_id, investigation_id, investigation_id),
             )
             if cursor.rowcount != 1:
                 raise LookupError(f"任务不存在或已结束：{investigation_id}")
@@ -1300,7 +1331,15 @@ class Store:
         recovered_at=None,
         proposal_id: str | None = None,
     ) -> None:
+        from aiops.web.lifecycle import _lock_conversation, close_conversation
+
         async with self._pool.connection() as conn:
+            current = await conn.execute(
+                "SELECT id FROM conversations WHERE investigation_id = %s", (investigation_id,)
+            )
+            conversation = await current.fetchone()
+            if conversation:
+                conversation = await _lock_conversation(conn, conversation["id"])
             cursor = await conn.execute(
                 """
                 UPDATE investigation_tasks
@@ -1326,6 +1365,8 @@ class Store:
             )
             if cursor.rowcount != 1:
                 raise LookupError(f"任务不存在：{investigation_id}")
+            if conversation:
+                await close_conversation(self, conn, conversation)
 
     async def record_recovery(self, investigation_id: str, *, at) -> None:
         async with self._pool.connection() as conn:
@@ -1350,18 +1391,61 @@ class Store:
             )
             return cursor.rowcount == 1
 
-    async def has_unfinished_attempt(self) -> bool:
-        """开放监听前检查是否还有未结束的执行记录。"""
+    async def has_unfinished_attempt(self, *, non_web_only: bool = False) -> bool:
+        """开放监听前检查未决执行，旧表记录按最保守的归属判断。"""
         async with self._pool.connection() as conn:
             cursor = await conn.execute(
                 """
-                SELECT 1 FROM action_attempts
-                 WHERE status IN ('intent', 'executing')
-                    OR result->>'send_state' = 'sending'
-                 LIMIT 1
-                """
+                SELECT 1 FROM action_attempts a
+                JOIN action_proposals p ON p.id = a.proposal_id
+                LEFT JOIN conversations c ON c.investigation_id = p.investigation_id
+                WHERE (a.status IN ('intent', 'executing') OR a.result->>'send_state' = 'sending')
+                  AND (NOT %s OR c.id IS NULL)
+                LIMIT 1
+                """,
+                (non_web_only,),
             )
             return await cursor.fetchone() is not None
+
+    async def renew_web_lease(self, investigation_id: str, instance_id: str) -> bool:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE investigation_tasks
+                   SET lease_expires_at = clock_timestamp() + interval '300 seconds'
+                 WHERE investigation_id = %s AND lease_owner = %s
+                   AND lease_expires_at > clock_timestamp() AND phase <> 'terminal'
+                """,
+                (investigation_id, instance_id),
+            )
+            return bool(cursor.rowcount)
+
+    async def pending_conversation_hints(self, conversation_id: str) -> list[dict]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                """
+                SELECT id, content FROM conversation_messages
+                 WHERE conversation_id = %s AND delivery = 'received'
+                 ORDER BY created_at, id
+                """,
+                (conversation_id,),
+            )
+            return await cur.fetchall()
+
+    async def confirm_conversation_hints(self, conversation_id: str, delivered: dict[str, int]):
+        async with self._pool.connection() as conn:
+            changed = False
+            for message_id, round_number in delivered.items():
+                cur = await conn.execute(
+                    """
+                    UPDATE conversation_messages SET delivery = 'delivered', delivered_round = %s
+                     WHERE conversation_id = %s AND id = %s AND delivery = 'received'
+                    """,
+                    (round_number, conversation_id, message_id),
+                )
+                changed |= bool(cur.rowcount)
+            if changed:
+                await self._insert_conversation_event(conn, conversation_id, "hint_delivered")
 
     async def task_has_write_intent(self, investigation_id: str) -> bool:
         """是否存在已发出或结果未知的写意图；用于中断后禁止接管重放。"""

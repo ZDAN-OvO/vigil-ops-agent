@@ -54,6 +54,7 @@ from aiops.investigation.rules import RULES_MODEL_NAME
 from aiops.knowledge import load_runbooks
 from aiops.process_lock import acquire
 from aiops.report import Report, delegation_payloads
+from aiops.web.runner import ConversationRunner
 from aiops.webhook import build_app
 
 app = typer.Typer(
@@ -688,41 +689,46 @@ def serve(
 
     _take_lock(serving=True, settings=settings)
 
-    async def check_startup() -> None:
+    import uvicorn
+
+    async def run() -> None:
         async with Store.open(dsn) as store:
             await store.migrate()
-            if await store.has_unfinished_attempt():
-                raise StoreUnavailable(
-                    "存在命令行来源或归属不明的未决执行，请用 aiops dev followups 核实并收尾。"
-                )
-            if await store.has_unfinished_attempt():
-                raise StoreUnavailable("仍有未决执行，无法启动 serve。")
+            runner = ConversationRunner(store, settings)
+            await runner.startup()
+            try:
+                if await asyncio.to_thread(mutating_webhook_present, settings):
+                    typer.echo("警告：存在可能改写 Deployment 的准入规则。", err=True)
+            except Exception:
+                typer.echo("警告：无法检查 Deployment 的可变更准入规则。", err=True)
+            config = uvicorn.Config(
+                build_app(settings),
+                host=host or settings.webhook_host,
+                port=settings.webhook_port if port is None else port,
+            )
+            async with asyncio.TaskGroup() as tasks:
+                work = tasks.create_task(runner.run())
+                try:
+                    await uvicorn.Server(config).serve()
+                finally:
+                    work.cancel()
 
     try:
-        asyncio.run(check_startup())
+        asyncio.run(run())
     except StoreUnavailable as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
-
-    try:
-        if mutating_webhook_present(settings):
-            typer.echo("警告：存在可能改写 Deployment 的准入规则。", err=True)
-    except Exception:
-        typer.echo("警告：无法检查 Deployment 的可变更准入规则，请运行 aiops doctor。", err=True)
-
-    import uvicorn
-
-    uvicorn.run(
-        build_app(settings),
-        host=host or settings.webhook_host,
-        port=port or settings.webhook_port,
-    )
 
 
 @asynccontextmanager
 async def _open_executor(settings: Settings, store: Store):
     async with open_executor(settings, store=store) as executor:
         yield executor
+
+
+async def _require_cli_investigation(store: Store, investigation_id: str | None) -> None:
+    if investigation_id and await store.get_conversation_for_investigation(investigation_id):
+        raise ActionError("web_owned", "此调查属于页面会话，请在页面操作。")
 
 
 async def _arm_for_proposal(store: Store, proposal) -> str:
@@ -854,6 +860,7 @@ def act(
     async def run():
         async with Store.open(_require_dsn()) as store:
             await store.migrate()
+            await _require_cli_investigation(store, investigation)
             async with _open_executor(Settings(), store) as executor:
                 if kind == "restart-pod":
                     if not pod or not service:
@@ -1121,6 +1128,8 @@ def approve(
         async with Store.open(dsn) as store:
             await store.migrate()
             proposal = await store.get_proposal(proposal_id)
+            if proposal is not None:
+                await _require_cli_investigation(store, proposal.investigation_id)
             if proposal is None:
                 raise ActionError("not_found", f"提案不存在：{proposal_id}")
             target = await _agent_target(store, proposal)
@@ -1195,6 +1204,8 @@ def resume(
         async with Store.open(dsn) as store:
             await store.migrate()
             proposal = await store.get_proposal(proposal_id)
+            if proposal is not None:
+                await _require_cli_investigation(store, proposal.investigation_id)
             if proposal is None:
                 raise ActionError("not_found", f"提案不存在：{proposal_id}")
             target = await _agent_target(store, proposal)
@@ -1335,6 +1346,8 @@ def reject(
         async with Store.open(dsn) as store:
             await store.migrate()
             proposal = await store.get_proposal(proposal_id)
+            if proposal is not None:
+                await _require_cli_investigation(store, proposal.investigation_id)
             if proposal is None:
                 raise ActionError("not_found", f"提案不存在：{proposal_id}")
             target = await _agent_target(store, proposal)
@@ -1393,6 +1406,7 @@ def cancel(
         now = datetime.now(UTC)
         async with Store.open(dsn) as store:
             await store.migrate()
+            await _require_cli_investigation(store, investigation_id)
             task = await store.get_task(investigation_id)
             if task is None:
                 raise TaskNotResumable("该调查不是单 Agent 任务")
@@ -1442,7 +1456,7 @@ def cancel(
 
     try:
         task, accepted = asyncio.run(run())
-    except (TaskNotResumable, LookupError) as exc:
+    except (ActionError, TaskNotResumable, LookupError) as exc:
         typer.echo(f"无法取消：{exc}", err=True)
         raise typer.Exit(code=1) from exc
     except StoreUnavailable as exc:

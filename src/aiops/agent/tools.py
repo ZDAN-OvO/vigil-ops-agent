@@ -1182,8 +1182,31 @@ async def request_action_core(
     cached = await prepare_request(ctx, call_id, "request_action", args.model_dump())
     if cached is not None:
         return cached
-    if cached is not None:
-        return cached
+
+    existing = await ctx.store.get_tool_request(ctx.investigation_id, call_id)
+    if existing is not None and existing.state is ToolRequestState.ACTION_PENDING:
+        return await _resume_pending_action(ctx, call_id, existing)
+
+    rejected = None
+    if ctx.read_only:
+        rejected = "当前运行模式下告警调查只取证"
+    elif ctx.conversation_id:
+        task = await ctx.store.get_task(ctx.investigation_id)
+        if task is None or task.actions_disabled:
+            rejected = "本次调查已被人工拒绝处置，只能继续取证"
+        elif args.action != "rollout_undo":
+            rejected = "本次调查不支持该动作"
+    if rejected:
+        message = _error("action_disabled", rejected)
+        await _finish_request(
+            ctx,
+            call_id,
+            state=ToolRequestState.REJECTED,
+            message=message,
+            error_code="action_disabled",
+        )
+        return message
+
     if ctx.progress.recovered:
         message = _error(
             "business_recovered",
@@ -1197,10 +1220,6 @@ async def request_action_core(
             error_code="business_recovered",
         )
         return message
-
-    existing = await ctx.store.get_tool_request(ctx.investigation_id, call_id)
-    if existing is not None and existing.state is ToolRequestState.ACTION_PENDING:
-        return await _resume_pending_action(ctx, call_id, existing)
 
     problem = await _validate_action_references(ctx, args)
     if problem is not None:
