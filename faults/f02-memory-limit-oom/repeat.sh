@@ -17,14 +17,21 @@ MIN_RESTARTS="${MIN_RESTARTS:-3}"
 WAIT_SECONDS="${WAIT_SECONDS:-300}"
 PF_PORT="${PF_PORT:-8080}"
 PF_LOG="${PF_LOG:-${TMPDIR:-/tmp}/vigil-f02-port-forward.log}"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=faults/lib/result.sh
+source "$DIR/../lib/result.sh"
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 say() { printf '%s %s\n' "$(now)" "$*"; }
 
+# 确认自己起的转发进程活着，避免端口被别的服务占用时读到别人的响应。
 start_port_forward() {
+  : >"$PF_LOG"
   "$KUBECTL" port-forward -n "$NS" svc/frontend "${PF_PORT}:80" --address 127.0.0.1 >"$PF_LOG" 2>&1 &
   pf=$!
   for _ in $(seq 1 30); do
+    kill -0 "$pf" 2>/dev/null || return 1
+    grep -q "Forwarding from" "$PF_LOG" 2>/dev/null || { sleep 1; continue; }
     [ "$(home_status)" = "200" ] || [ "$(home_status)" = "500" ] && return 0
     sleep 1
   done
@@ -53,6 +60,18 @@ last_reason() {
   "$KUBECTL" -n "$NS" get pods -l "app=$DEPLOY" -o jsonpath='{.items[0].status.containerStatuses[0].lastState.terminated.reason}' 2>/dev/null || echo none
 }
 
+preflight() {
+  [ "$(memory_limit)" = "$HEALTHY_LIMIT" ] || { say "FAIL 当前限额 $(memory_limit) 不是 $HEALTHY_LIMIT"; result preflight fail "reason=limit" "limit=$(memory_limit)"; exit 1; }
+  [ "$(probe_value)" = "1" ] || { say "FAIL 探针不是 1"; result preflight fail "reason=probe" "probe=$(probe_value)"; exit 1; }
+  [ "$(alert_state)" = "none" ] || { say "FAIL 有活动告警"; result preflight fail "reason=alert" "alert=$(alert_state)"; exit 1; }
+  start_port_forward || { say "FAIL 前端不可访问"; result preflight fail reason=frontend; exit 1; }
+  home=$(home_status)
+  stop_port_forward
+  [ "$home" = "200" ] || { say "FAIL 首页不是 200"; result preflight fail "reason=home" "home=$home"; exit 1; }
+  say "PREFLIGHT revision=$(revision) limit=$(memory_limit) probe=$(probe_value) alerts=$(alert_state) home=200"
+  result preflight ok "limit=$HEALTHY_LIMIT" "probe=1" "alerts=none" "home=200"
+}
+
 inject() {
   [ "$(memory_limit)" = "$HEALTHY_LIMIT" ] || { say "FAIL 当前限额 $(memory_limit) 不是 $HEALTHY_LIMIT"; exit 1; }
   [ "$(probe_value)" = "1" ] || { say "FAIL 探针不是 1"; exit 1; }
@@ -66,6 +85,7 @@ inject() {
   "$KUBECTL" -n "$NS" wait --for=delete pod -l "app=$DEPLOY" --timeout=60s >/dev/null 2>&1 || true
   "$KUBECTL" -n "$NS" scale deploy/"$DEPLOY" --replicas=1 >/dev/null || exit 1
   say "INJECTED revision=$(revision) limit=$(memory_limit)"
+  result inject ok "limit=$FAULT_LIMIT" "revision=$(revision)"
 }
 
 verify() {
@@ -81,13 +101,29 @@ verify() {
     if [ "$ok_oom" = 1 ] && [ "$ok_business" = 1 ] && [ "$ok_alert" = 1 ]; then
       say "VERIFIED sustained_oom=1 business_failure=1 alert_firing=1 revision=$(revision) limit=$(memory_limit)"
       stop_port_forward
+      result verify ok "oom=1" "restarts=$r" "reason=$reason" "home=$home" "probe=$probe" "alert=$alert" "limit=$(memory_limit)"
       exit 0
     fi
     sleep 10
   done
   say "FAIL 未同时满足持续 OOM、业务受损与告警：oom=$ok_oom business=$ok_business alert=$ok_alert"
   stop_port_forward
+  result verify fail "reason=sustained_oom" "oom=$ok_oom" "business=$ok_business" "alert=$ok_alert"
   exit 1
+}
+
+# 只读检查：限额已回到健康值、业务恢复、没有活动告警；不改任何东西。
+recovered() {
+  start_port_forward || { result recovered fail reason=frontend; exit 1; }
+  home=$(home_status)
+  stop_port_forward
+  probe=$(probe_value); alert=$(alert_state); limit=$(memory_limit)
+  say "RECOVERED_CHECK limit=$limit home=$home probe=$probe alert=$alert"
+  if [ "$limit" != "$HEALTHY_LIMIT" ] || [ "$home" != "200" ] || [ "$probe" != "1" ] || [ "$alert" != "none" ]; then
+    result recovered fail "reason=not_recovered" "limit=$limit" "home=$home" "probe=$probe" "alert=$alert"
+    exit 1
+  fi
+  result recovered ok "limit=$limit" "home=200" "probe=1" "alerts=none"
 }
 
 restore() {
@@ -103,19 +139,23 @@ restore() {
     if [ "$home" = "200" ] && [ "$probe" = "1" ] && [ "$alert" = "none" ]; then
       say "RESTORED revision=$(revision) limit=$(memory_limit) restarts=$(restarts) | $(pod_line)"
       stop_port_forward
+      result cleanup ok "limit=$HEALTHY_LIMIT" "home=200" "probe=1" "alerts=none"
       exit 0
     fi
     sleep 10
   done
   say "FAIL 恢复窗口内未回到基线"
   stop_port_forward
+  result cleanup fail "reason=not_restored" "home=${home:-unknown}" "probe=${probe:-unknown}"
   exit 1
 }
 
 trap stop_port_forward EXIT
 case "${1:-}" in
+  preflight) preflight ;;
+  recovered) recovered ;;
   inject) inject ;;
   verify) verify ;;
-  restore) restore ;;
-  *) echo "用法：$0 {inject|verify|restore}" >&2; exit 2 ;;
+  restore | cleanup) restore ;;
+  *) echo "用法：$0 {preflight|recovered|inject|verify|cleanup}" >&2; exit 2 ;;
 esac

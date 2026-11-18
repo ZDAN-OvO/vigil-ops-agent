@@ -5,8 +5,10 @@ from typing import Any, Literal, Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-# 新调查运行时的版本标识；用于区分旧循环与 Skill/委派调查运行时。
+# 新调查运行时的版本标识；用于区分旧循环、Skill/委派运行时与对照臂。
 AGENT_RUNTIME_VERSION = "langchain-skill-tool-2"
+# 对照臂：同一 create_agent 循环，但没有 Skill 目录与排查方法提示词。
+GENERIC_RUNTIME_VERSION = "langchain-generic-1"
 
 
 class Contract(BaseModel):
@@ -128,7 +130,7 @@ class Hypothesis(Contract):
     investigation_id: str
     parent_id: str | None = None
     statement: str
-    origin: Literal["model", "runbook", "human"] = "model"
+    origin: Literal["model", "runbook", "human", "rules"] = "model"
     status: HypothesisStatus = HypothesisStatus.PENDING
     update_reason: str = ""
 

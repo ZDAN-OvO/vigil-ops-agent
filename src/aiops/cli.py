@@ -30,7 +30,26 @@ from aiops.contracts import (
     TimeRange,
 )
 from aiops.db import Store, StoreUnavailable
-from aiops.investigation.factory import open_agent, open_executor
+from aiops.evaluation.harness import (
+    ARMS,
+    anchors,
+    execute,
+    load_records,
+    merge_records,
+    rescore,
+    summarize,
+    write_markdown,
+    write_records,
+)
+from aiops.evaluation.scenarios import (
+    SCENARIOS,
+    ScenarioError,
+    check_kube_context,
+    get_scenario,
+    scenario_payload,
+)
+from aiops.investigation.factory import arm_for_runtime, open_agent, open_executor
+from aiops.investigation.rules import RULES_MODEL_NAME
 from aiops.knowledge import load_runbooks
 from aiops.report import Report, delegation_payloads
 from aiops.webhook import build_app
@@ -42,11 +61,21 @@ app = typer.Typer(
 )
 db_app = typer.Typer(help="实验 PostgreSQL 的迁移与连接检查。", no_args_is_help=True)
 app.add_typer(db_app, name="db")
+lab_app = typer.Typer(help="对照评估：跑场景、看记录、比门槛。", no_args_is_help=True)
+app.add_typer(lab_app, name="lab")
 
 
 class OutputFormat(StrEnum):
     TEXT = "text"
     JSON = "json"
+
+
+class Arm(StrEnum):
+    """对照臂：同一故障集上比较的三种调查方式。"""
+
+    AGENT = "agent"
+    GENERIC = "generic"
+    RULES = "rules"
 
 
 def _require_dsn() -> str:
@@ -206,11 +235,12 @@ def investigate(
     cluster: str = typer.Option("vigil-lab", help="集群名，仅用于记录"),
     lookback_minutes: int = typer.Option(15, min=1, max=180, help="取证时间窗"),
     context: Annotated[list[str] | None, typer.Option(help="人工补充的上下文，可重复")] = None,
+    arm: Annotated[Arm, typer.Option(help="对照臂：agent / generic / rules")] = Arm.AGENT,
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
     """运行一次调查；命中自动规则的可丢弃 Pod 重建会立即执行，其余只提案等待审批。"""
     settings = Settings()
-    model_name = settings.model_name
+    model_name = RULES_MODEL_NAME if arm is Arm.RULES else settings.model_name
     if not model_name:
         typer.echo("未配置 VIGIL_MODEL_NAME，无法调用模型。", err=True)
         raise typer.Exit(code=2)
@@ -256,7 +286,7 @@ def investigate(
                         actor="cli",
                         event="investigation.started",
                         occurred_at=now,
-                        payload={"service": service, "model": model_name},
+                        payload={"service": service, "model": model_name, "arm": arm.value},
                     )
                 ]
             )
@@ -266,6 +296,7 @@ def investigate(
                 dsn=dsn,
                 incident=incident,
                 investigation=investigation,
+                arm=arm.value,
             ) as runtime:
                 return await runtime.run()
 
@@ -274,12 +305,211 @@ def investigate(
     except StoreUnavailable as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
-    except (LeaseConflict, TaskNotResumable) as exc:
+    except (LeaseConflict, TaskNotResumable, ResumeNotSupported) as exc:
         typer.echo(f"无法运行：{exc}", err=True)
         raise typer.Exit(code=1) from exc
 
     _print_report(report, output)
     raise typer.Exit(code=report.exit_code())
+
+
+@lab_app.command("scenarios")
+def lab_scenarios(output: OutputFormat = OutputFormat.TEXT) -> None:
+    """列出可注入、可核验、可复位的场景与判定口径。"""
+    payload = [scenario_payload(spec) for spec in SCENARIOS]
+    if output == OutputFormat.JSON:
+        typer.echo(json.dumps({"schema_version": "1", "scenarios": payload}, ensure_ascii=False))
+        return
+    for item in payload:
+        typer.echo(f"{item['id']}（{item['name']}）：{item['namespace']}/{item['service']}")
+        typer.echo(f"  真值：{item['truth']}")
+        action = item["expected_action"]
+        if action == "none":
+            typer.echo("  动作：正确做法是不动作")
+        else:
+            typer.echo(f"  动作：{action}@{item['expected_target']}")
+        checks = "；".join(
+            check["name"] + "(" + "/".join(check["tools"]) + ")"
+            for check in item["evidence_checks"]
+        )
+        typer.echo(f"  证据检查：{checks}")
+
+
+def _default_record_path() -> Path:
+    today = datetime.now(UTC).date().isoformat()
+    return Path("faults") / "runs" / f"{today}-comparison.json"
+
+
+@lab_app.command("run")
+def lab_run(
+    scenario: Annotated[
+        list[str] | None, typer.Option(help="场景 ID，可重复；留空表示全部场景")
+    ] = None,
+    arm: Annotated[
+        list[Arm] | None, typer.Option(help="对照臂，可重复；留空表示三条臂都跑")
+    ] = None,
+    runs: int = typer.Option(3, min=1, max=20, help="每个（场景，臂）跑几次"),
+    record: Annotated[
+        Path | None, typer.Option(help="记录文件；默认 faults/runs/<日期>-comparison.json")
+    ] = None,
+    append: Annotated[bool, typer.Option(help="并入已有记录文件，而不是覆盖")] = False,
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """按场景顺序跑对照实验；每步都调用 faults/ 下的脚本，不直接改集群。
+
+    有效运行的定义：健康基线成立、注入成立、故障核验成立。任一步失败都记为无效，
+    不计入分母以外的地方，也不删除记录。
+    """
+    dsn = _require_dsn()
+    settings = Settings()
+    specs = [get_scenario(name) for name in scenario] if scenario else list(SCENARIOS)
+    arms = [item.value for item in (arm or [Arm.AGENT, Arm.GENERIC, Arm.RULES])]
+    unknown = [name for name in arms if name not in ARMS]
+    if unknown:
+        typer.echo(f"未知对照臂：{', '.join(unknown)}", err=True)
+        raise typer.Exit(code=2)
+    try:
+        context = check_kube_context(settings)
+    except ScenarioError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"目标 context：{context}", err=True)
+    batch_anchors = anchors(specs, settings.model_name)
+    if batch_anchors.get("git_dirty") == "yes":
+        typer.echo("警告：工作区有未提交改动，这批记录只能算探索性数据（ADR-0013 6.1）", err=True)
+
+    target = record or _default_record_path()
+    batch = {
+        "date": datetime.now(UTC).date().isoformat(),
+        "label": "同故障集对照",
+        "scenarios": [spec.id for spec in specs],
+        "arms": arms,
+        "runs_per_cell": runs,
+        "anchors": batch_anchors,
+    }
+    records: list[dict] = []
+
+    def merged() -> tuple[dict, list[dict]]:
+        if append and target.exists():
+            return merge_records(json.loads(target.read_text()), batch, records)
+        combined = dict(batch)
+        combined["environment_restored"] = all(item["environment_restored"] for item in records)
+        return combined, records
+
+    def persist(item) -> None:  # noqa: ANN001 - 每跑一次就落盘，崩溃也不丢已完成运行
+        records.append(item.as_dict())
+        current_batch, current_records = merged()
+        current_batch["environment_restored"] = all(
+            record["environment_restored"] for record in current_records
+        )
+        write_records(target, current_batch, current_records)
+
+    async def run_batch() -> None:
+        async with Store.open(dsn) as store:
+            await store.migrate()
+            for spec in specs:
+                for name in arms:
+                    for index in range(1, runs + 1):
+                        await execute(
+                            store,
+                            spec,
+                            name,
+                            index,
+                            settings=settings,
+                            on_record=persist,
+                        )
+
+    asyncio.run(run_batch())
+    batch, records = merged()
+    summary = summarize(records)
+    write_records(target, batch, records)
+    write_markdown(target.with_suffix(".md"), batch, summary)
+
+    if output == OutputFormat.JSON:
+        typer.echo(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "record": str(target),
+                    "summary": summary,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    typer.echo(f"记录：{target}")
+    typer.echo(f"汇总：{target.with_suffix('.md')}")
+    typer.echo("")
+    for row in summary["rows"]:
+        typer.echo(
+            f"{row['scenario']} / {row['arm']}：有效 {row['valid']}/{row['runs']}，"
+            f"诊断正确 {row['diagnosis_correct']}，确认 {row['confirmed']}，"
+            f"本臂恢复 {row['recovered_by_arm']}，越界 {row['boundary_violations']}"
+        )
+    for note in summary["comparison"]:
+        typer.echo(f"- {note}")
+
+
+@lab_app.command("rescore")
+def lab_rescore(
+    record: Annotated[Path, typer.Option(help="要重新判定的记录文件")],
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """按当前判定口径重算已有记录；不重跑实验，也不改实验事实。"""
+    try:
+        payload = json.loads(record.read_text())
+    except FileNotFoundError as exc:
+        typer.echo(f"记录不存在：{record}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    async def run() -> dict:
+        async with Store.open(_require_dsn()) as store:
+            return await rescore(store, payload)
+
+    result = asyncio.run(run())
+    batch = result.get("batch") or {}
+    body = {
+        "schema_version": result.get("schema_version", 1),
+        "batch": batch,
+        "summary": result["summary"],
+        "records": result["records"],
+    }
+    record.write_text(json.dumps(body, ensure_ascii=False, indent=2, default=str) + "\n")
+    write_markdown(record.with_suffix(".md"), batch, result["summary"])
+    if output == OutputFormat.JSON:
+        typer.echo(json.dumps(result["summary"], ensure_ascii=False))
+        return
+    typer.echo(f"已重算：{record}")
+    for row in result["summary"]["rows"]:
+        typer.echo(
+            f"{row['scenario']} / {row['arm']}："
+            f"诊断正确 {row['diagnosis_correct']}/{row['valid']}，"
+            f"达到门槛 {row['meets_floor']}"
+        )
+
+
+@lab_app.command("summarize")
+def lab_summarize(
+    record: Annotated[Path, typer.Option(help="lab run 写出的 JSON 记录")],
+    output: OutputFormat = OutputFormat.TEXT,
+) -> None:
+    """重新汇总一份已有记录；不重跑实验，也不修改记录。"""
+    try:
+        payload = load_records(record)
+    except FileNotFoundError as exc:
+        typer.echo(f"记录不存在：{record}", err=True)
+        raise typer.Exit(code=2) from exc
+    summary = payload.get("summary") or summarize(payload.get("records") or [])
+    if output == OutputFormat.JSON:
+        typer.echo(json.dumps(summary, ensure_ascii=False))
+        return
+    for row in summary["rows"]:
+        typer.echo(
+            f"{row['scenario']} / {row['arm']}：有效 {row['valid']}/{row['runs']}，"
+            f"诊断正确率 {row['diagnosis_rate']:.2f}，达到门槛 {row['meets_floor']}"
+        )
+    for note in summary["comparison"]:
+        typer.echo(f"- {note}")
 
 
 @app.command()
@@ -429,6 +659,18 @@ def serve(
 async def _open_executor(settings: Settings, store: Store):
     async with open_executor(settings, store=store) as executor:
         yield executor
+
+
+async def _arm_for_proposal(store: Store, proposal) -> str:
+    """按任务记录还原提案所属的对照臂，避免恢复时把 generic 跑成 agent。"""
+    if proposal is None or not proposal.investigation_id:
+        return "agent"
+    task = await store.get_task(proposal.investigation_id)
+    return arm_for_runtime(task.runtime_version if task is not None else None)
+
+
+class ResumeNotSupported(RuntimeError):
+    """规则基线是同步运行，没有 checkpoint，不能按调查恢复。"""
 
 
 async def _agent_target(store: Store, proposal) -> tuple[Incident, Investigation] | None:
@@ -805,6 +1047,11 @@ def approve(
             if proposal is None:
                 raise ActionError("not_found", f"提案不存在：{proposal_id}")
             target = await _agent_target(store, proposal)
+            arm = await _arm_for_proposal(store, proposal) if target is not None else "agent"
+            if arm == "rules":
+                raise ResumeNotSupported(
+                    "规则基线调查没有可恢复的 checkpoint；需要执行时用 aiops act 重新提案"
+                )
             async with _open_executor(settings, store) as executor:
                 if target is None:
                     attempt = await executor.approve(
@@ -821,6 +1068,7 @@ def approve(
                 dsn=dsn,
                 incident=incident,
                 investigation=investigation,
+                arm=arm,
             ) as runtime:
                 report = await runtime.resume(
                     proposal_id=proposal_id, decision="approved", actor=actor
@@ -832,7 +1080,7 @@ def approve(
     except ActionError as exc:
         typer.echo(f"未执行（{exc.code}）：{exc.message}", err=True)
         raise typer.Exit(code=1) from exc
-    except (LeaseConflict, TaskNotResumable) as exc:
+    except (LeaseConflict, TaskNotResumable, ResumeNotSupported) as exc:
         typer.echo(f"未继续（{exc.__class__.__name__}）：{exc}", err=True)
         raise typer.Exit(code=1) from exc
     except StoreUnavailable as exc:
@@ -875,6 +1123,11 @@ def resume(
                 async with _open_executor(settings, store) as executor:
                     attempt = await executor.resume(proposal_id, actor=actor)
                     return "legacy", attempt, None
+            arm = await _arm_for_proposal(store, proposal)
+            if arm == "rules":
+                raise ResumeNotSupported(
+                    "规则基线调查没有可恢复的 checkpoint；需要执行时用 aiops act 重新提案"
+                )
             incident, investigation = target
             async with open_agent(
                 settings=settings,
@@ -882,6 +1135,7 @@ def resume(
                 dsn=dsn,
                 incident=incident,
                 investigation=investigation,
+                arm=arm,
             ) as runtime:
                 report = await runtime.resume(
                     proposal_id=proposal_id, decision="approved", actor=actor
@@ -893,7 +1147,7 @@ def resume(
     except ActionError as exc:
         typer.echo(f"未执行（{exc.code}）：{exc.message}", err=True)
         raise typer.Exit(code=1) from exc
-    except (LeaseConflict, TaskNotResumable) as exc:
+    except (LeaseConflict, TaskNotResumable, ResumeNotSupported) as exc:
         typer.echo(f"未继续（{exc.__class__.__name__}）：{exc}", err=True)
         raise typer.Exit(code=1) from exc
     except StoreUnavailable as exc:
@@ -1007,6 +1261,9 @@ def reject(
                 await executor.reject(proposal_id, actor=actor, reason=reason)
             if target is None:
                 return proposal, None
+            arm = await _arm_for_proposal(store, proposal)
+            if arm == "rules":
+                raise ResumeNotSupported("规则基线调查没有可恢复的 checkpoint；拒绝只记录在提案上")
             incident, investigation = target
             async with open_agent(
                 settings=settings,
@@ -1014,6 +1271,7 @@ def reject(
                 dsn=dsn,
                 incident=incident,
                 investigation=investigation,
+                arm=arm,
             ) as runtime:
                 report = await runtime.resume(
                     proposal_id=proposal_id, decision="rejected", actor=actor
@@ -1025,7 +1283,7 @@ def reject(
     except ActionError as exc:
         typer.echo(f"未拒绝（{exc.code}）：{exc.message}", err=True)
         raise typer.Exit(code=1) from exc
-    except (LeaseConflict, TaskNotResumable) as exc:
+    except (LeaseConflict, TaskNotResumable, ResumeNotSupported) as exc:
         typer.echo(f"未继续（{exc.__class__.__name__}）：{exc}", err=True)
         raise typer.Exit(code=1) from exc
     except StoreUnavailable as exc:

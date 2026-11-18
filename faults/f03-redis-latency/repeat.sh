@@ -11,6 +11,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PF_PORT="${PF_PORT:-8080}"
 PF_LOG="${PF_LOG:-${TMPDIR:-/tmp}/vigil-f03-port-forward.log}"
 THRESHOLD_MS="${THRESHOLD_MS:-300}"
+# shellcheck source=faults/lib/result.sh
+source "$DIR/../lib/result.sh"
 WAIT_SECONDS="${WAIT_SECONDS:-300}"
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -29,13 +31,40 @@ redis_restarts() { "$KUBECTL" -n "$NS" get pods -l app=redis-cart -o jsonpath='{
 home_time() { curl -s -o /dev/null -w '%{time_total}' --max-time 10 "http://127.0.0.1:${PF_PORT}/" 2>/dev/null || echo 0; }
 cart_time() { curl -s -o /dev/null -w '%{http_code}:%{time_total}' --max-time 10 "http://127.0.0.1:${PF_PORT}/cart" 2>/dev/null || echo 000:0; }
 
+# 确认自己起的转发进程活着，避免端口被别的服务占用时读到别人的响应。
 start_port_forward() {
+  : >"$PF_LOG"
   "$KUBECTL" -n "$NS" port-forward svc/frontend "${PF_PORT}:80" --address 127.0.0.1 >"$PF_LOG" 2>&1 &
   pf=$!
-  for _ in $(seq 1 30); do [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${PF_PORT}/" 2>/dev/null)" = "200" ] && return 0; sleep 1; done
+  for _ in $(seq 1 30); do
+    kill -0 "$pf" 2>/dev/null || return 1
+    grep -q "Forwarding from" "$PF_LOG" 2>/dev/null || { sleep 1; continue; }
+    [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${PF_PORT}/" 2>/dev/null)" = "200" ] && return 0
+    sleep 1
+  done
   return 1
 }
 stop_port_forward() { [ -n "${pf:-}" ] && kill "$pf" 2>/dev/null || true; }
+
+preflight() {
+  [ "$(selector)" = "redis-cart" ] || { say "FAIL redis-cart 选择器已是 $(selector)"; result preflight fail "reason=selector" "selector=$(selector)"; exit 1; }
+  "$KUBECTL" -n "$NS" get deploy redis-access-proxy >/dev/null 2>&1 && { say "FAIL 代理已存在"; result preflight fail reason=proxy_present; exit 1; }
+  start_port_forward || { say "FAIL 前端不可访问"; result preflight fail reason=frontend; exit 1; }
+  # 2 分钟均值会带上别的场景刚恢复时的高延迟，等它落回基线再开始，最多 3 分钟。
+  deadline=$(( $(date +%s) + 180 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    avg=$(probe_duration)
+    python3 -I -c "import sys; sys.exit(0 if float('$avg')*1000 < 100 else 1)" 2>/dev/null && break
+    say "SETTLE probe_duration_2m=$avg 等待回落到基线"
+    sleep 15
+  done
+  avg=$(probe_duration); ok=$(probe_success); cart=$(cart_time)
+  stop_port_forward
+  python3 -I -c "import sys; sys.exit(0 if '$ok'=='1' and '$cart'.startswith('200:') and float('$avg')*1000 < 100 else 1)" \
+    || { say "FAIL 基线不健康"; result preflight fail "reason=baseline" "probe=$ok" "cart=$cart" "latency_ms=$(python3 -I -c "print(round(float('$avg')*1000))" 2>/dev/null || echo unknown)"; exit 1; }
+  say "PREFLIGHT probe=$(probe_success) selector=$(selector) latency_ms=$(python3 -I -c "print(round(float('$avg')*1000))")"
+  result preflight ok "selector=redis-cart" "probe=1" "cart=$cart" "latency_ms=$(python3 -I -c "print(round(float('$avg')*1000))")"
+}
 
 inject() {
   [ "$(selector)" = "redis-cart" ] || { say "FAIL redis-cart 选择器已是 $(selector)"; exit 1; }
@@ -49,6 +78,7 @@ inject() {
   "$KUBECTL" -n "$NS" rollout status deploy/cartservice --timeout=120s >/dev/null || exit 1
   say "INJECTED selector=$(selector) proxy=$(kubectl -n "$NS" get pods -l app=redis-access-proxy -o jsonpath='{.items[0].metadata.name}')"
   "$KUBECTL" -n "$NS" get endpoints redis-cart
+  result inject ok "selector=$(selector)" "proxy=present"
 }
 
 verify() {
@@ -60,13 +90,30 @@ verify() {
     if python3 -I -c "import sys; sys.exit(0 if float('$avg')*1000 >= $THRESHOLD_MS and '$ok'=='1' else 1)" 2>/dev/null; then
       say "VERIFIED latency_ms=$(python3 -I -c "print(round(float('$avg')*1000))") probe_success=1 selector=$(selector) cleanup_pending=1"
       stop_port_forward
+      result verify ok "latency_ms=$(python3 -I -c "print(round(float('$avg')*1000))")" "probe=$ok" "selector=$(selector)" "home_s=$home"
       exit 0
     fi
     sleep 10
   done
   say "FAIL 延迟未达到 ${THRESHOLD_MS}ms 或探针失败"
   stop_port_forward
+  result verify fail "reason=latency" "latency_ms=${avg:-unknown}" "probe=${ok:-unknown}"
   exit 1
+}
+
+# 只读检查：选择器已回原样、延迟回到基线；不改任何东西。
+recovered() {
+  start_port_forward || { result recovered fail reason=frontend; exit 1; }
+  avg=$(probe_duration); ok=$(probe_success); cart=$(cart_time)
+  stop_port_forward
+  selector=$(selector)
+  say "RECOVERED_CHECK selector=$selector probe=$ok probe_duration_2m=$avg cart=$cart"
+  if [ "$selector" != "redis-cart" ] || [ "$ok" != "1" ] || ! echo "$cart" | grep -q '^200:' \
+    || ! python3 -I -c "import sys; sys.exit(0 if float('$avg')*1000 < 100 else 1)" 2>/dev/null; then
+    result recovered fail "reason=not_recovered" "selector=$selector" "probe=$ok" "cart=$cart" "latency_ms=$(python3 -I -c "print(round(float('$avg')*1000))" 2>/dev/null || echo unknown)"
+    exit 1
+  fi
+  result recovered ok "selector=$selector" "probe=$ok" "cart=$cart" "latency_ms=$(python3 -I -c "print(round(float('$avg')*1000))")"
 }
 
 cleanup() {
@@ -81,19 +128,23 @@ cleanup() {
     if python3 -I -c "import sys; sys.exit(0 if float('$avg')*1000 < 100 and '$ok'=='1' and '$cart'.startswith('200:') else 1)" 2>/dev/null; then
       say "CLEANED selector=$(selector) probe_duration_ms=$(python3 -I -c "print(round(float('$avg')*1000))") redis_restarts=$(redis_restarts)"
       stop_port_forward
+      result cleanup ok "selector=redis-cart" "probe=$ok" "cart=$cart" "latency_ms=$(python3 -I -c "print(round(float('$avg')*1000))")"
       exit 0
     fi
     sleep 10
   done
   say "FAIL 清理后未回到基线"
   stop_port_forward
+  result cleanup fail "reason=not_cleaned" "probe=${ok:-unknown}" "cart=${cart:-unknown}"
   exit 1
 }
 
 trap stop_port_forward EXIT
 case "${1:-}" in
+  preflight) preflight ;;
+  recovered) recovered ;;
   inject) inject ;;
   verify) verify ;;
   cleanup) cleanup ;;
-  *) echo "用法：$0 {inject|verify|cleanup}" >&2; exit 2 ;;
+  *) echo "用法：$0 {preflight|recovered|inject|verify|cleanup}" >&2; exit 2 ;;
 esac

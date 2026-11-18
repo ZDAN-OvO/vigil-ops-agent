@@ -222,3 +222,136 @@ def test_v06_poison_on_proceeds_for_the_owned_namespace(tmp_path):
 
     assert result.returncode == 0
     assert "patch" in calls
+
+
+OWNER_STUB = (
+    "#!/bin/sh\n"
+    'echo "$@" >> "$LOG"\n'
+    'if [ "$1" = "get" ] && [ "$2" = "namespace" ]; then\n'
+    "  printf 'a01-pod-rebuild'; exit 0\n"
+    "fi\n"
+)
+
+
+def run_preflight(tmp_path, stub_body: str, **extra):
+    kubectl = tmp_path / "kubectl"
+    kubectl.write_text(stub_body, encoding="utf-8")
+    kubectl.chmod(0o755)
+    env = {
+        **os.environ,
+        "KUBECTL": str(kubectl),
+        "KUBECONFIG": str(tmp_path / "unused"),
+        "LOG": str(tmp_path / "calls.log"),
+        "PF_LOG": str(tmp_path / "pf.log"),
+        **extra,
+    }
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "preflight"], env=env, capture_output=True, text=True
+    )
+    calls = (
+        (tmp_path / "calls.log").read_text(encoding="utf-8")
+        if (tmp_path / "calls.log").exists()
+        else ""
+    )
+    return result, calls
+
+
+def test_preflight_refuses_when_a_manifest_object_already_exists(tmp_path):
+    """清单里的对象原本就在：停下，不 apply，也不登记 created。"""
+    result, calls = run_preflight(
+        tmp_path,
+        OWNER_STUB
+        + 'if [ "$1" = "apply" ]; then exit 0; fi\n'
+        + 'if [ "$1" = "-n" ]; then\n'
+        + '  case "$4" in\n'
+        + "    service/rebuild-demo) exit 0 ;;\n"
+        + "  esac\n"
+        + "  echo 'Error from server (NotFound)' >&2; exit 1\n"
+        + "fi\n"
+        + "exit 0\n",
+    )
+
+    assert result.returncode != 0
+    # 必须是"已经存在"，不是"读不出来"：后者说明对象名被当成一整个参数了。
+    assert "已存在" in result.stdout
+    assert "created=0" in result.stdout
+    assert "apply" not in calls
+
+
+def test_preflight_rejects_deployment_override_before_accessing_cluster(tmp_path):
+    result, calls = run_preflight(
+        tmp_path,
+        OWNER_STUB
+        + 'if [ "$4" = "service/rebuild-demo" ]; then exit 0; fi\n'
+        + 'if [ "$1" = "apply" ]; then exit 1; fi\n'
+        + "echo 'Error from server (NotFound)' >&2; exit 1\n",
+        DEPLOY="other",
+    )
+
+    assert result.returncode != 0
+    assert calls == ""
+    assert "DEPLOY 必须与 manifests.yaml 一致" in result.stdout
+    assert "created=0" in result.stdout
+
+
+def test_v06_deploy_stops_when_repeat_deploy_fails(tmp_path):
+    result, calls = run_v06(
+        tmp_path,
+        OWNER_STUB
+        + 'if [ "$3 $4" = "get pods" ]; then\n'
+        + '  echo \'{"items": [{"metadata": {"name": "pod-old"}}]}\'; exit 0\n'
+        + "fi\n"
+        + 'if [ "$3 $4" = "get pod" ] || [ "$3 $4" = "get endpoints" ]; then\n'
+        + "  echo 10.0.0.1; exit 0\n"
+        + "fi\n"
+        + 'if [ "$4" = "service/rebuild-demo" ]; then exit 0; fi\n'
+        + "echo 'Error from server (NotFound)' >&2; exit 1\n",
+        "deploy",
+        VIGIL_KUBE_CONTEXT="",
+    )
+
+    assert result.returncode != 0
+    assert "清单对象已存在" in result.stdout
+    assert "get pods" not in calls
+    assert "ENDPOINTS_READY" not in result.stdout
+
+
+def test_preflight_registers_a_partial_creation_after_apply_fails(tmp_path):
+    """apply 失败但 Service 已经建出来了：登记 created=1，让编排复位。"""
+    flag = tmp_path / "applied"
+    result, _ = run_preflight(
+        tmp_path,
+        OWNER_STUB
+        + 'if [ "$1" = "apply" ]; then touch "$FLAG"; exit 1; fi\n'
+        + 'if [ "$1" = "-n" ]; then\n'
+        + '  case "$4" in\n'
+        + '    "service/rebuild-demo")\n'
+        + '      if [ -f "$FLAG" ]; then exit 0; fi ;;\n'
+        + "  esac\n"
+        + "  echo 'Error from server (NotFound)' >&2; exit 1\n"
+        + "fi\n"
+        + "exit 0\n",
+        FLAG=str(flag),
+    )
+
+    assert result.returncode != 0
+    assert "PARTIAL_CREATED" in result.stdout
+    assert "created=1" in result.stdout
+
+
+def test_preflight_stops_when_object_state_cannot_be_read(tmp_path):
+    """读不出对象状态时停下：把权限错误当成"不存在"会导致误删。"""
+    result, calls = run_preflight(
+        tmp_path,
+        OWNER_STUB
+        + 'if [ "$1" = "apply" ]; then exit 0; fi\n'
+        + 'if [ "$1" = "-n" ]; then\n'
+        + "  echo 'Error from server (Forbidden): deployments is forbidden' >&2; exit 1\n"
+        + "fi\n"
+        + "exit 0\n",
+    )
+
+    assert result.returncode != 0
+    assert "无法确认" in result.stdout
+    assert "created=0" in result.stdout
+    assert "apply" not in calls

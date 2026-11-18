@@ -507,6 +507,7 @@ async def agent_case(
     budget: Budget | None = None,
     namespace: str = "vigil-experiment",
     investigation_budget: Budget | None = None,
+    arm: str = "agent",
 ) -> AsyncIterator[Case]:
     if not DSN:
         raise RuntimeError("未配置 VIGIL_DATABASE_URL")
@@ -529,6 +530,7 @@ async def agent_case(
             toolbox=fake_toolbox,  # type: ignore[arg-type]
             executor=executor,
             model=model,  # type: ignore[arg-type]
+            arm=arm,
         )
         yield Case(
             store=store,

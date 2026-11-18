@@ -93,8 +93,11 @@ uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
 | 命令 | 作用 | 写集群 |
 |---|---|---|
 | `aiops status` | 版本与能力范围，不探测集群 | 否 |
+| `aiops lab scenarios` | 列出对照评估的场景与判定口径 | 否 |
+| `aiops lab run` | 按场景跑对照实验并写记录 | 是（通过场景脚本） |
+| `aiops lab summarize` / `lab rescore` | 汇总已有记录 / 按当前口径重算 | 否 |
 | `aiops db status` / `db migrate` | 迁移状态 / 应用缺失迁移 | 否 |
-| `aiops investigate --service --symptoms` | 跑一次调查；单 Agent 可能等待审批（退出 3） | 仅自动允许的实验命名空间 `restart_pod` |
+| `aiops investigate --service --symptoms [--arm]` | 跑一次调查；`--arm` 选对照臂（默认 `agent`） | 仅自动允许的实验命名空间 `restart_pod` |
 | `aiops incidents [--limit N]` | 最近事件与关联调查 | 否 |
 | `aiops report <inv-id>` | 已存结论、假设、Skill、委派与观测条数 | 否 |
 | `aiops act --kind rollout-undo --deployment X --reason "..."` | 提交回退提案 | 自动允许时当场执行 |
@@ -194,3 +197,68 @@ uv run --frozen python scripts/skill_runtime_gate.py
 ```
 
 `skill_runtime_gate.py` 检查网关 tool calling、结构化终态、checkpoint、Skill 信号匹配与只读子 Agent；失败项会写明原因，不要在未通过时宣称接入完成。
+
+## 9. 对照评估
+
+对照评估比较三条臂在同故障集上的表现，口径与门槛写在
+[ADR-0013](adr/0013-comparative-evaluation.md)。三条臂共用同一套工具、动作规则和记录表，
+差别只在判定方式：
+
+| 臂 | 说明 |
+|---|---|
+| `agent` | 现行运行时：`create_agent` + Skill 目录 + 排查方法提示词 |
+| `generic` | 同一个循环，去掉 Skill 与排查方法提示词 |
+| `rules` | 固定规则链，不调用模型 |
+
+### 先看场景与口径
+
+```bash
+uv run --frozen aiops lab scenarios
+```
+
+它会打印每个场景的真值类别、期望动作和证据检查项。**场景真值只给评估者看**，
+调查侧读不到；`faults/` 目录也不在工具可读范围内。
+
+### 跑一批对照
+
+```bash
+# 单场景单臂，先确认链路通
+uv run --frozen aiops lab run --scenario a01-pod-rebuild --arm rules --runs 1
+
+# 正式批次：全部场景、三条臂、每格 3 次
+uv run --frozen aiops lab run --runs 3
+```
+
+默认记录写到 `faults/runs/<日期>-comparison.json`，同时生成同名 `.md` 汇总。
+`--record` 可以指定路径；`.evidence/` 下的记录不提交。
+
+一次运行的顺序固定：`preflight → inject → verify → 调查臂 → recovered → cleanup`。
+`preflight`、`inject`、`verify` 任一步失败都判该次无效并写明原因，臂本身不运行，环境照样复位。
+`a01` 的 `preflight` 会先部署健康版本，因此脚本用 `RESULT ... created=0|1` 自报这次是否
+真的建过资源；只有自报创建过才会在失败后复位，避免把别人的对象一起删掉。故障已成立、臂已
+跑过之后若收尾采集出错，该条仍算有效样本并标 `collection_error`，不会被剔除出分母。
+**实验会改集群**：`f01`/`f02` 作用于 `vigil-shop` 的既有工作负载，`a01` 在
+`vigil-experiment` 里自建命名空间。不要在非实验集群上跑。
+
+### 读记录与重算
+
+```bash
+uv run --frozen aiops lab summarize --record faults/runs/2026-11-18-comparison.json
+uv run --frozen aiops lab rescore --record faults/runs/2026-11-18-comparison.json
+```
+
+`lab rescore` 只按当前判定口径重算已有记录，不重跑实验，也不改实验事实。改了词表或门槛
+必须重算，不允许只在新实验上生效。
+
+重算只用记录里的 `facts.snapshot`（结论、假设、支持观测、提案、尝试、成本的完整快照），
+不回头读数据库；实验之后的审批或清理都不会改写历史结论。老记录没有快照时，首次重算会补
+采一份并标 `snapshot_source=db` 与 `snapshot_captured_at`。
+
+判读规则（与 ADR-0013 一致，跑之前就定死）：
+
+- 每格至少 3 次有效运行才计入比较；
+- 诊断正确率不低于 2/3 且越界写操作为 0，才算该臂在该场景达标；
+- 一个臂要"更好且没有任何维度更差"才算相对收益，否则明确写"不构成对照结论"。
+
+`needs_review` 表示结论措辞没命中词表、但证据与动作都对：不要直接判错，回运行记录里
+人工核对结论原文。
