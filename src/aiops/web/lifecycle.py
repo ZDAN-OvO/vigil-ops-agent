@@ -168,6 +168,31 @@ async def _latest_action(conn: AsyncConnection, investigation_id: str) -> dict |
     return await cur.fetchone()
 
 
+_NOT_EXECUTED = {
+    "expired": "授权已过期",
+    "drift": "目标已被改动",
+    "revision_changed": "历史版本已变化",
+    "probe_ambiguous": "业务探针返回多条序列",
+    "baseline_unavailable": "无法取得业务基线",
+    "api_rejected": "集群拒绝了写请求",
+}
+_VERIFICATION = {
+    "improved": "首页探针显示业务已改善",
+    "no_improvement": "首页探针显示业务没有改善",
+    "worsened": "首页探针显示业务恶化",
+    "unknown": "业务验证结果未知",
+}
+
+
+def _recorded_outcome(result: dict) -> str:
+    """只读收尾时按持久化的执行记录写结论，不让"已写入"和"未执行"读起来一样。"""
+    if result.get("send_state") == "not_sent":
+        why = _NOT_EXECUTED.get(result.get("not_executed_reason") or "", "执行前核对未通过")
+        return f"回滚未执行（{why}），集群未被写入。调查在处置后停止。"
+    verdict = _VERIFICATION.get(result.get("verification") or "unknown", "业务验证结果未知")
+    return f"回滚已写入集群，{verdict}。调查在处置后停止。"
+
+
 def _unconfirmed(action: dict | None) -> bool:
     if not action or action["followup_status"] == "resolved" or not action["attempt_id"]:
         return False
@@ -365,7 +390,7 @@ async def recover_conversation(
                 reason = (
                     f"核实结果：{action['resolution']}。调查在处置后结束。"
                     if resolved
-                    else "调查在处置后停止，结论依据已记录的执行与验证结果。"
+                    else _recorded_outcome(result)
                 )
                 await close_conversation(store, conn, conversation, fallback=reason, action=action)
                 return "closed_after_action"

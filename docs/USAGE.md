@@ -143,6 +143,8 @@ uv run --frozen aiops dev db migrate  # 幂等；升级后先跑这个
 
 记录人工核实结果用 `aiops dev followup resolve <fol-id> --note <核实说明>`。
 
+`serve` 提示存在命令行来源的未决执行而拒绝启动时，先运行 `aiops dev adopt-pending` 把它们转成待办，到集群核实后再 `followup resolve`。
+
 ## 5. 命令行演练
 
 环境就绪后，手动发起调查并读取报告：

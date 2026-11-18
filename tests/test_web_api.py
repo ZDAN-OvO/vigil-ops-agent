@@ -26,6 +26,11 @@ FAKE_TEXT = "token=FAKE-vigil-key-77 日志位于 /tmp/private/vigil/secret.txt"
 
 
 FAKE_TOKEN = FAKE_TEXT.split()[0].removeprefix("token=")
+# 带前缀的凭据键、私钥键和 URI 形式的本机路径也必须遮掉。
+FAKE_TEXT += (
+    " DB_PASSWORD=fake-db-pw-41 SSL_PRIVATE_KEY: fake-ssl-key-42 file:/home/fake-user/x.json"
+)
+FAKE_VALUES = (FAKE_TOKEN, "/tmp/private", "fake-db-pw-41", "fake-ssl-key-42", "/home/fake-user")
 
 
 def test_local_origin_headers_and_api_not_found(tmp_path):
@@ -100,8 +105,7 @@ def test_api_status_codes_and_response_filtering(web_dsn, monkeypatch):
                 assert snapshot.status_code == 200
                 assert len(snapshot.json()["messages"]) == 2
                 assert snapshot.json()["evidence"][0]["hypothesis_id"] == "hyp-test"
-                assert FAKE_TOKEN not in snapshot.text
-                assert "/tmp/private" not in snapshot.text
+                assert not [v for v in FAKE_VALUES if v in snapshot.text]
 
                 def fail(_):
                     raise RuntimeError(FAKE_TEXT)
@@ -200,7 +204,7 @@ def test_latest_card_and_outcome_do_not_hide_previous_followups(web_dsn):
             assert snap.followups[0].proposal_id == first.id
             assert snap.conversation.page_state == "needs_verification"
             encoded = snap.model_dump_json()
-            assert FAKE_TOKEN not in encoded and "/tmp/private" not in encoded
+            assert not [v for v in FAKE_VALUES if v in encoded]
             await store.resolve_followup(followup.id, actor="tester", note="已核实")
             assert (
                 await read_snapshot(store, settings)

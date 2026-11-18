@@ -56,7 +56,7 @@ def resources():
 
 
 @contextmanager
-def local_api(*, code=200, timeout=False):
+def local_api(*, code=200, timeout=False, hang_get=False):
     deployment, history = resources()
     calls = []
     finish = threading.Event()
@@ -74,6 +74,9 @@ def local_api(*, code=200, timeout=False):
             self.wfile.write(body)
 
         def do_GET(self):
+            if hang_get:
+                finish.wait(5)
+                return
             if self.path.endswith("/replicasets/demo-history"):
                 self.reply(200, history)
             elif "/replicasets" in self.path:
@@ -173,3 +176,20 @@ def test_transport_timeout_emits_exactly_one_put(monkeypatch):
         with pytest.raises((TimeoutError, ReadTimeoutError)):
             adapter.apply(plan, dry_run=False, proposal_id="test")
         assert len(calls) == 1
+
+
+def test_rollout_poll_does_not_hang_on_a_stalled_api(monkeypatch):
+    """写后轮询遇到不返回的 API 时按时限抛错，交给执行器按"已写入、待核实"收尾。"""
+    import time
+
+    with local_api() as (port, _, _, _):
+        adapter = adapter_for(port, monkeypatch)
+        plan = adapter.plan("vigil-shop", "demo")
+    with local_api(hang_get=True) as (port, _, _, _):
+        adapter = adapter_for(port, monkeypatch)
+        started = time.monotonic()
+        with pytest.raises((TimeoutError, ReadTimeoutError)):
+            adapter.wait_rolled_out(plan, timeout_seconds=1)
+        with pytest.raises((TimeoutError, ReadTimeoutError)):
+            adapter.state("vigil-shop", "demo")
+        assert time.monotonic() - started < 4

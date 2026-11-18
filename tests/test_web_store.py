@@ -435,6 +435,54 @@ def test_recovery_row_4_final_write_closes_read_only(web_dsn):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    ("result", "expected", "absent"),
+    [
+        (
+            {"send_state": "sent", "verification_done": True, "verification": "improved"},
+            ("已写入", "改善"),
+            "未执行",
+        ),
+        (
+            {"send_state": "not_sent", "not_executed_reason": "expired"},
+            ("未执行", "授权已过期"),
+            "已写入",
+        ),
+    ],
+)
+def test_recovery_row_4_conclusion_states_recorded_outcome(web_dsn, result, expected, absent):
+    """只读收尾的结论必须写出实际结果：已写入且改善与未执行（过期）不能是同一句话。"""
+    from aiops.web.lifecycle import recover_conversation
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            conv, _, _, proposal = await seed_work(store, proposal_status="succeeded")
+            attempt = await seed_execution(store, proposal, result["send_state"])
+            await store.finish_attempt(
+                attempt.id,
+                proposal_id=proposal.id,
+                proposal_status=ProposalStatus.SUCCEEDED,
+                status=AttemptStatus.VERIFIED,
+                result=result,
+                verification={"outcome": result.get("verification")},
+                finished_at=datetime.now(UTC),
+                target_lock_key="vigil-lab/vigil-shop/Deployment/productcatalogservice",
+            )
+            assert await recover_conversation(store, conv, "new") == "closed_after_action"
+            async with store._pool.connection() as conn:
+                cur = await conn.execute(
+                    "SELECT content FROM conversation_messages "
+                    "WHERE conversation_id = %s AND kind = 'conclusion'",
+                    (conv,),
+                )
+                return (await cur.fetchone())["content"]
+
+    text = asyncio.run(scenario())
+    assert all(word in text for word in expected), text
+    assert absent not in text, text
+
+
 def test_recovery_row_5_queued_work_starts(web_dsn):
     from aiops.web.lifecycle import recover_conversation
 
@@ -1033,5 +1081,54 @@ def test_web_checkpoint_recovery_confirms_hint_once(web_dsn):
                     (hint.id,),
                 )
                 assert (await cur.fetchone()) == {"delivery": "delivered", "delivered_round": 1}
+
+    asyncio.run(scenario())
+
+
+def test_cli_pending_write_without_followup_can_be_adopted_and_resolved(web_dsn):
+    """命令行登记 sending 后崩溃且无待办：拒绝启动 → 转待办 → 人工核实 → 启动成功。"""
+    from actions_support import make_proposal
+
+    from aiops.db import StoreUnavailable
+    from aiops.web.runner import ConversationRunner
+
+    async def scenario():
+        async with Store.open(web_dsn) as store:
+            await store.migrate()
+            incident, investigation = new_investigation()
+            await store.save_incident(incident)
+            await store.create_investigation(investigation)
+            proposal = make_proposal(investigation_id=investigation.id, status="executing")
+            await store.save_proposal(
+                proposal,
+                RiskDecision(
+                    proposal_id=proposal.id,
+                    disposition=RiskDisposition.APPROVAL,
+                    policy_version="test",
+                    reasons=["测试"],
+                    requires_compensation=False,
+                ),
+            )
+            await seed_execution(store, proposal, "sending")
+            settings = Settings(database_url=web_dsn)
+            with pytest.raises(StoreUnavailable, match="adopt-pending"):
+                await ConversationRunner(store, settings).startup()
+
+            created = await store.adopt_unfinished_attempts()
+            assert len(created) == 1
+            assert await store.adopt_unfinished_attempts() == []
+            kept = await store.get_attempt(proposal.id)
+            assert kept.status is AttemptStatus.UNKNOWN
+            assert kept.result["send_state"] == "uncertain"
+            assert kept.result["stage"] == "applying"  # 原始写入证据保留
+            assert await store.target_is_locked(
+                "vigil-lab/vigil-shop/Deployment/productcatalogservice"
+            )
+
+            assert await store.resolve_followup(created[0], actor="op", note="集群已核实")
+            assert not await store.target_is_locked(
+                "vigil-lab/vigil-shop/Deployment/productcatalogservice"
+            )
+            await ConversationRunner(store, settings).startup()
 
     asyncio.run(scenario())

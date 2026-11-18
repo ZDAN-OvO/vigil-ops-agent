@@ -26,7 +26,8 @@ class ConversationRunner:
     async def startup(self) -> None:
         if await self.store.has_unfinished_attempt(non_web_only=True):
             raise StoreUnavailable(
-                "存在命令行来源或归属不明的未决执行，请用 aiops dev followups 核实并收尾。"
+                "存在命令行来源或归属不明的未决执行。请先运行 aiops dev adopt-pending 生成待办，"
+                "到集群核实后用 aiops dev followup resolve 收尾，再启动 serve。"
             )
         await self.recover_current()
         if await self.store.has_unfinished_attempt():

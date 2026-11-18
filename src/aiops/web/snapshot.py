@@ -63,7 +63,8 @@ def observation_summary(row: dict, settings: Settings, clean: Redactor) -> str:
         items = payload["items"]
         if row.get("tool") == "kubernetes.list_logs":
             chunks = [item.get("lines", [])[-2:] for item in items[:3]]
-            lines = [line[:240] for chunk in chunks for line in chunk]
+            # 先过滤再截断，避免截断把凭据切成过滤规则认不出的片段。
+            lines = [clean(line)[:240] for chunk in chunks for line in chunk]
             return clean(
                 f"{label}：{len(items)} 个采集对象" + ("\n" + "\n".join(lines) if lines else "")
             )

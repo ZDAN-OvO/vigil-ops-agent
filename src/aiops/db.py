@@ -1413,6 +1413,73 @@ class Store:
             )
             return await cursor.fetchone() is not None
 
+    async def adopt_unfinished_attempts(self) -> list[str]:
+        """把命令行来源或归属不明、已无进程推进的未决执行转成人工待办。
+
+        调用方必须已持有推进者进程锁，保证原写命令进程已退出。只写数据库：执行记录与提案记为
+        unknown，原 result 保留并补 interrupted 标记，目标锁保留到待办关闭；不发集群请求。
+        """
+        created: list[str] = []
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                cur = await conn.execute(
+                    """
+                    SELECT a.id AS attempt_id, a.result, p.id AS proposal_id, p.cluster,
+                           p.namespace, p.target_kind, p.target_name
+                      FROM action_attempts a
+                      JOIN action_proposals p ON p.id = a.proposal_id
+                      LEFT JOIN conversations c ON c.investigation_id = p.investigation_id
+                     WHERE (a.status IN ('intent', 'executing')
+                            OR a.result->>'send_state' = 'sending')
+                       AND c.id IS NULL
+                     FOR UPDATE OF a, p
+                    """
+                )
+                for row in await cur.fetchall():
+                    sent = (row["result"] or {}).get("send_state") == "sent"
+                    marker = {
+                        "send_state": "sent" if sent else "uncertain",
+                        "verification": "unknown",
+                        "verification_reason": "interrupted",
+                    }
+                    await conn.execute(
+                        "UPDATE action_attempts SET status = 'unknown', "
+                        "result = COALESCE(result, '{}'::jsonb) || %s::jsonb, "
+                        "finished_at = COALESCE(finished_at, now()) WHERE id = %s",
+                        (Jsonb(marker), row["attempt_id"]),
+                    )
+                    await conn.execute(
+                        "UPDATE action_proposals SET status = 'unknown' WHERE id = %s",
+                        (row["proposal_id"],),
+                    )
+                    exists = await conn.execute(
+                        "SELECT 1 FROM action_followups WHERE attempt_id = %s",
+                        (row["attempt_id"],),
+                    )
+                    if await exists.fetchone() is None:
+                        followup_id = f"fol-{uuid.uuid4().hex[:12]}"
+                        await conn.execute(
+                            """
+                            INSERT INTO action_followups (
+                                id, proposal_id, attempt_id, cluster, namespace, target_kind,
+                                target_name, outcome, reason, evidence, status, created_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'unknown', %s, %s, 'open', now())
+                            """,
+                            (
+                                followup_id,
+                                row["proposal_id"],
+                                row["attempt_id"],
+                                row["cluster"],
+                                row["namespace"],
+                                row["target_kind"],
+                                row["target_name"],
+                                "命令行执行中断，写入结果未明，请人工核实",
+                                Jsonb({"result": row["result"], **marker}),
+                            ),
+                        )
+                        created.append(followup_id)
+        return created
+
     async def renew_web_lease(self, investigation_id: str, instance_id: str) -> bool:
         async with self._pool.connection() as conn:
             cursor = await conn.execute(

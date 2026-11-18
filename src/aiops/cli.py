@@ -1050,6 +1050,28 @@ def followups(
         )
 
 
+@dev_app.command("adopt-pending")
+def adopt_pending() -> None:
+    """把命令行中断留下、没有待办的未决执行转成人工待办，供 followup resolve 收尾。"""
+    # 持锁保证原写命令进程已退出，这些记录不会再有人推进。
+    _take_lock()
+
+    async def run() -> list[str]:
+        async with Store.open(_require_dsn()) as store:
+            return await store.adopt_unfinished_attempts()
+
+    try:
+        created = asyncio.run(run())
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if not created:
+        typer.echo("没有需要转为待办的未决执行")
+        return
+    for followup_id in created:
+        typer.echo(f"已生成待办 {followup_id}，核实后运行 aiops dev followup resolve {followup_id}")
+
+
 @dev_app.command()
 def followup(
     followup_id: str,

@@ -44,6 +44,7 @@ const verificationLabels = {
 
 const hypothesisLabels = { pending: '待核实', supported: '有证据支持', refuted: '有证据反驳', inconclusive: '证据不足' }
 const relationLabels = { supports: '支持', refutes: '反驳' }
+const observationAnchor = (hypothesisId: string, observationId: string) => `${hypothesisId}--${observationId}`
 
 function Section({ title, children, action }: { title: string, children: ReactNode, action?: ReactNode }) {
   return <section className="panel"><header className="section-head"><h2>{title}</h2>{action}</header>{children}</section>
@@ -177,7 +178,9 @@ function Dialogue({ snapshot, conversation, refresh }: { snapshot: Snapshot, con
   </Section>
 }
 
-function DecisionCard({ proposal, refresh }: { proposal: Proposal, refresh: () => Promise<void> }) {
+function DecisionCard({ proposal, evidence, refresh }: { proposal: Proposal, evidence: Snapshot['evidence'], refresh: () => Promise<void> }) {
+  // 卡片指纹覆盖假设陈述与证据关系，这里必须展示同一份内容；锚点带假设 ID，同一观测挂在多个假设下时不会跳错。
+  const basis = evidence?.find(item => item.hypothesis_id === proposal.hypothesis_id)
   const { error, busy, submit } = useSubmission()
   const [reason, setReason] = useState('')
   const hash = proposal.card_hash
@@ -205,8 +208,13 @@ function DecisionCard({ proposal, refresh }: { proposal: Proposal, refresh: () =
       </table></div>
     </>}
     <dl className="details">
+      {basis && <div><dt>关联假设</dt><dd>{basis.statement}</dd></div>}
       <div><dt>依据</dt><dd>{proposal.reason}</dd></div>
-      {proposal.evidence_ids.length > 0 && <div><dt>关联证据</dt><dd>{proposal.evidence_ids.map(id => <a className="evidence-link" href={`#${id}`} key={id}>{id}</a>)}</dd></div>}
+      {proposal.evidence_ids.length > 0 && <div><dt>关联证据</dt><dd>{proposal.evidence_ids.map(id => {
+        const obs = basis?.observations.find(item => item.id === id)
+        const label = obs?.relation ? relationLabels[obs.relation] : '观测'
+        return <a className="evidence-link" href={basis ? `#${observationAnchor(basis.hypothesis_id, id)}` : undefined} key={id}>{label} · {id}</a>
+      })}</dd></div>}
       {proposal.prediction && <div><dt>预期结果</dt><dd>{proposal.prediction}</dd></div>}
       <div><dt>风险说明</dt><dd><ul>{proposal.risk.map((reason, index) => <li key={index}>{reason}</li>)}</ul></dd></div>
       <div><dt>验证方式</dt><dd>{proposal.verification}</dd></div>
@@ -277,13 +285,13 @@ function Vigil() {
           {!snapshot.evidence?.length && <p className="muted">暂时没有观测记录。</p>}
           {snapshot.evidence?.map(item => <article className="hypothesis" key={item.hypothesis_id}>
             <h3>{item.statement}</h3><Tag>{hypothesisLabels[item.status]}</Tag>
-            {item.observations.map(obs => <div className="observation" id={obs.id} key={obs.id}>
+            {item.observations.map(obs => <div className="observation" id={observationAnchor(item.hypothesis_id, obs.id)} key={obs.id}>
               <small>{obs.relation ? relationLabels[obs.relation] : obs.status === 'empty' ? '无结果' : obs.status === 'error' ? '查询失败' : '观测'}</small>
               <p>{obs.summary}</p>
             </div>)}
           </article>)}
         </Section>
-        {snapshot.proposal && <DecisionCard key={snapshot.proposal.id} proposal={snapshot.proposal} refresh={refresh} />}
+        {snapshot.proposal && <DecisionCard key={snapshot.proposal.id} proposal={snapshot.proposal} evidence={snapshot.evidence} refresh={refresh} />}
         {(snapshot.outcome || !!snapshot.followups?.length) && <Execution snapshot={snapshot} />}
       </>}
     </main>

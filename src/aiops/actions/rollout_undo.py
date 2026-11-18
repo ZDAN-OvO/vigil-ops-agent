@@ -380,8 +380,12 @@ class RolloutUndoAdapter:
     def wait_rolled_out(self, plan: RolloutPlan, timeout_seconds: float) -> bool:
         apps = self._api()
         deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            deployment = apps.read_namespaced_deployment(plan.name, plan.namespace)
+        while (remaining := deadline - time.monotonic()) > 0:
+            # 单次读取也受剩余时限约束；连接挂起时抛出异常，由执行器按"已写入、待核实"收尾。
+            per_call = max(1.0, min(self._timeout[1], remaining))
+            deployment = apps.read_namespaced_deployment(
+                plan.name, plan.namespace, _request_timeout=(per_call, per_call)
+            )
             status = deployment.status
             replicas = deployment.spec.replicas or 1
             if (
@@ -397,7 +401,9 @@ class RolloutUndoAdapter:
     def state(self, namespace: str, name: str) -> dict[str, Any]:
         apps = self._api()
         core = self._core_api()
-        deployment = apps.read_namespaced_deployment(name, namespace)
+        deployment = apps.read_namespaced_deployment(
+            name, namespace, _request_timeout=self._timeout
+        )
         annotations = deployment.metadata.annotations or {}
         container = deployment.spec.template.spec.containers[0]
         memory_limit, memory_request = _container_memory(container)
@@ -406,7 +412,9 @@ class RolloutUndoAdapter:
             for key, value in sorted((deployment.spec.selector.match_labels or {}).items())
         )
         try:
-            pods = core.list_namespaced_pod(namespace, label_selector=selector).items
+            pods = core.list_namespaced_pod(
+                namespace, label_selector=selector, _request_timeout=self._timeout
+            ).items
         except ApiException as exc:
             raise ActionError("api_error", f"读取 Pod 失败：HTTP {exc.status}") from exc
         pod_states = []

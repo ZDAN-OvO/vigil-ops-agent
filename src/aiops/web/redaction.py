@@ -12,12 +12,20 @@ SENSITIVE = re.compile(
 PATTERNS = [
     re.compile(r"(?i)\b(?:authorization\s*[:=]\s*)?(?:bearer|basic)\s+[^\s,;]+"),
     re.compile(
-        r"(?i)\b(?:password|passwd|pwd|secret|token|api[-_. ]?key|authorization|access[-_. ]?key)"
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S
+    ),
+    # 键名允许带前缀或后缀（DB_PASSWORD、SSL_PRIVATE_KEY、MY_API_TOKEN），因此不用 \b 起界。
+    re.compile(
+        r"(?i)(?<![A-Za-z0-9])[A-Za-z0-9_.-]*"
+        r"(?:password|passwd|pwd|secret|token|api[-_. ]?key|authorization|access[-_. ]?key"
+        r"|private[-_. ]?key|credential)[A-Za-z0-9_.-]*"
         r"""["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)"""
     ),
     re.compile(r"""\b[a-zA-Z][a-zA-Z0-9+.-]+://[^\s/@'"<>]+@[^\s'"<>]+"""),
     re.compile(r"(?i)\b(?:sk[-_]|gh[pousr]_|github_pat_|AKIA|xox[baprs]-)[A-Za-z0-9_./+-]+"),
-    re.compile(r"(?i)\b(?:[a-f0-9]{24,}|[a-z0-9_+-]{32,}={0,2})\b"),
+    # 镜像摘要（sha256:…）是公开标识，保留它，卡片才能看清回滚到哪个镜像。
+    re.compile(r"(?i)\b(?<!sha256:)(?:[a-f0-9]{24,}|[a-z0-9_+-]{32,}={0,2})\b"),
+    re.compile(r"""(?i)\bfile:[^\s'"`<>()\[\],;]+"""),
     re.compile(r"""(?<![\w:])(?:/|~\/|(?:\./)?runtime/)[^\s'"`<>()\[\],;]+"""),
 ]
 
