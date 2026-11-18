@@ -329,6 +329,8 @@ def test_redaction_keeps_digest_only_in_card_image_and_handles_long_input():
     assert "MIIfakekeybody" not in clean("private_key: " + pem)
     assert "fake-bearer-value" not in clean("Authorization: Bearer fake-bearer-value")
     assert "fake-spaced-value" not in clean("api key: fake-spaced-value")
+    quoted = clean('password="lead fake-mid Bearer tail" more')
+    assert "fake-mid" not in quoted and quoted.endswith(" more"), quoted
     known = Redactor(Settings(_env_file=None, model_api_key="registry-secret-xyz"))
     leaked = known.change(
         {

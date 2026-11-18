@@ -10,7 +10,8 @@ SENSITIVE = re.compile(
     r"(?i)env|secret|authorization|password|credential|token|private.?key|cookie|access.?key"
 )
 PATTERNS = [
-    re.compile(r"(?i)\b(?:authorization\s*[:=]\s*)?(?:bearer|basic)\s+[^\s,;]+"),
+    # 凭据不含引号：吞掉闭合引号会让后续键值规则只遮住引号内的首个单词。
+    re.compile(r"""(?i)\b(?:authorization\s*[:=]\s*)?(?:bearer|basic)\s+[^\s,;"']+"""),
     re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S
     ),

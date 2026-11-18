@@ -382,10 +382,11 @@ class RolloutUndoAdapter:
         deadline = time.monotonic() + timeout_seconds
         while (remaining := deadline - time.monotonic()) > 0:
             # 单次读取也受剩余时限约束；连接挂起时抛出异常，由执行器按"已写入、待核实"收尾。
-            # 客户端只把 int 当总时限，浮点数会被忽略；用 (connect, read) 时两段相加不超过剩余预算。
-            half = min(self._timeout[1], remaining) / 2
+            # 客户端只把 int 当总时限，浮点数会被忽略；连接与读取各自不超过配置值和剩余的一半。
+            half = remaining / 2
+            per_call = (min(self._timeout[0], half), min(self._timeout[1], half))
             deployment = apps.read_namespaced_deployment(
-                plan.name, plan.namespace, _request_timeout=(half, half)
+                plan.name, plan.namespace, _request_timeout=per_call
             )
             if time.monotonic() >= deadline:
                 return False
