@@ -334,6 +334,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             "model_cost_missing": sum(
                 1 for item in valid if _cost_value(item, "model_calls") is None
             ),
+            "approval_missing": sum(1 for item in valid if _cost_value(item, "approvals") is None),
         }
         row["diagnosis_rate"] = row["diagnosis_correct"] / row["valid"] if row["valid"] else 0.0
         row["meets_floor"] = (
@@ -399,7 +400,7 @@ def _metrics(row: dict[str, Any]) -> dict[str, float | None]:
         "中位耗时": elapsed,
         "工具调用": _cost_metric(row, "median_tool_calls", "cost_missing"),
         "模型调用": _cost_metric(row, "median_model_calls", "model_cost_missing"),
-        "人工审批": _cost_metric(row, "median_approvals", "model_cost_missing"),
+        "人工审批": _cost_metric(row, "median_approvals", "approval_missing"),
         "越界次数": float(row["boundary_violations"]),
     }
 
@@ -437,14 +438,15 @@ def _pair_note(
     suffix = f"；{'、'.join(unknown)} 缺失，未比较" if unknown else ""
     if not better and not worse:
         return f"{scenario}：{left} 与 {right} 在可比较维度上相同，不构成收益结论{suffix}"
+    margin = _margin_hint(left_row, right_row)
     if better and not worse:
-        claim = "整体不构成收益结论（有维度缺失）" if unknown else "支持相对收益结论"
+        claim = "整体不构成收益结论（有维度缺失）" if unknown else f"支持相对收益结论{margin}"
         return (
             f"{scenario}：{left} 在可比较维度上不劣于 {right} 且更强"
             f"（{'；'.join(better)}），{claim}{suffix}"
         )
     if worse and not better:
-        claim = "整体不构成收益结论（有维度缺失）" if unknown else "支持相对收益结论"
+        claim = "整体不构成收益结论（有维度缺失）" if unknown else f"支持相对收益结论{margin}"
         return (
             f"{scenario}：{right} 在可比较维度上不劣于 {left} 且更强"
             f"（{'；'.join(worse)}），{claim}{suffix}"
@@ -461,6 +463,17 @@ _RATE_COUNTS = {
     "确认根因率": "confirmed",
     "本臂恢复率": "recovered_by_arm",
 }
+
+
+def _margin_hint(left_row: dict[str, Any], right_row: dict[str, Any]) -> str:
+    """率值只差一次运行就下的强弱判断，句尾必须说明它只是方向。"""
+    counts = [
+        abs(int(left_row.get(key) or 0) - int(right_row.get(key) or 0))
+        for key in _RATE_COUNTS.values()
+    ]
+    if counts and min(counts) <= 1:
+        return "（率值差距仅 1 次运行，只作方向判断）"
+    return ""
 
 
 def _score(name: str, row: dict[str, Any], value: float) -> str:
@@ -677,9 +690,20 @@ def write_markdown(path: Path, batch: dict[str, Any], summary: dict[str, Any]) -
     """
     body = render_markdown(batch, summary)
     if path.exists():
-        manual = _manual_section(path.read_text())
+        previous = path.read_text()
+        manual = _manual_section(previous)
         if manual:
             body = f"{body}\n{MANUAL_MARKER}\n{manual}"
+        elif previous.strip() != body.strip():
+            # 旧文件有人手写内容但没有标记：先备份再写，不静默丢掉。
+            backup = path.with_suffix(".md.bak")
+            backup.write_text(previous)
+            logger.warning(
+                "{} 没有 {} 标记，已把旧内容备份到 {}",
+                path.name,
+                MANUAL_MARKER,
+                backup.name,
+            )
     path.write_text(body.rstrip() + "\n")
 
 

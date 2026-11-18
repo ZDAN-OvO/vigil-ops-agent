@@ -29,10 +29,10 @@
 
 ## 对照结论
 
-- a01-pod-rebuild：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 2/3 vs rules 3/3；确认根因率 agent 2/3 vs rules 3/3；本臂恢复率 agent 2/3 vs rules 3/3；中位耗时 agent 423.4s vs rules 177.6s；工具调用 agent 27 vs rules 11；模型调用 agent 17 vs rules 0），支持相对收益结论
+- a01-pod-rebuild：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 2/3 vs rules 3/3；确认根因率 agent 2/3 vs rules 3/3；本臂恢复率 agent 2/3 vs rules 3/3；中位耗时 agent 423.4s vs rules 177.6s；工具调用 agent 27 vs rules 11；模型调用 agent 17 vs rules 0），支持相对收益结论（率值差距仅 1 次运行，只作方向判断）
 - f01-bad-release：达到门槛的臂不足两个（rules），本轮不构成对照结论
 - f02-memory-limit-oom：达到门槛的臂不足两个（rules），本轮不构成对照结论
-- f03-redis-latency：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 2/3 vs rules 3/3；确认根因率 agent 1/3 vs rules 3/3；中位耗时 agent 196.9s vs rules 2.3s；工具调用 agent 29 vs rules 11；模型调用 agent 12 vs rules 0），支持相对收益结论
+- f03-redis-latency：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 2/3 vs rules 3/3；确认根因率 agent 1/3 vs rules 3/3；中位耗时 agent 196.9s vs rules 2.3s；工具调用 agent 29 vs rules 11；模型调用 agent 12 vs rules 0），支持相对收益结论（率值差距仅 1 次运行，只作方向判断）
 
 <!-- manual:begin -->
 ## 本轮读法
@@ -75,9 +75,11 @@
    阈值，但这不能证明"跑之前就冻结"。结论只作方向判断；下一批必须先把协议版本与执行
    版本提交成锚点再开跑。
 
-5. **代码锚点是评审后补采的。** 记录里的 `git_head`、提示词指纹、场景脚本 sha256、
-   运行时版本都是 2026-11-18 补采，不是运行时的值；运行时记录的模型名也缺失。锚点能
-   说明"记录对应哪一版代码"，不能证明"跑之前就冻结"，所以本批只作探索性数据。
+5. **代码锚点与判定快照都是评审后补采的。** 记录里的 `git_head`、提示词指纹、场景脚本
+   sha256、运行时版本都是 2026-11-18 补采，不是运行时的值；运行时记录的模型名也缺失。
+   同理，25 条记录的 `facts.snapshot` 全是 `snapshot_source=db`，即从库里补采——补采前
+   若有人批准过 f01 的待审批提案或清理过数据，已经反映在快照里。锚点能说明"记录对应哪
+   一版代码"，不能证明"跑之前就冻结"，所以本批只作探索性数据。
 
 6. **每格 3 次，差 1 次不足以支撑强弱。** 汇总里的比较同时写绝对次数（如 `2/3 vs 3/3`）：
    Pod 重建与 Redis 延迟两格都是"规则臂 3/3 对 Agent 臂 2/3"，加上成本与耗时同向，

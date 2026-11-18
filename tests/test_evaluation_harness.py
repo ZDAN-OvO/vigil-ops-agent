@@ -400,3 +400,25 @@ def test_missing_cost_is_not_treated_as_zero_calls():
     note = "".join(rows["comparison"])
     assert "工具调用 缺失" in note
     assert "不构成收益结论" in note
+
+
+def test_one_run_margin_is_marked_as_directional_only():
+    agent = [_record_costs("f01", "agent", i, correct=i < 3) for i in (1, 2, 3)]
+    rules = [_record_costs("f01", "rules", i, tools=1, models=0) for i in (1, 2, 3)]
+    for item in agent:
+        item["facts"]["cli"]["elapsed_seconds"] = 60.0
+    for item in rules:
+        item["facts"]["cli"]["elapsed_seconds"] = 60.0
+    note = "".join(compare(summarize(agent + rules)["rows"]))
+    assert "支持相对收益结论（率值差距仅 1 次运行，只作方向判断）" in note
+
+
+def test_write_markdown_backs_up_unmarked_handwritten_content(tmp_path):
+    from aiops.evaluation.harness import write_markdown
+
+    path = tmp_path / "r.md"
+    path.write_text("# 旧记录\n\n## 本轮读法\n手写的说明\n")
+    rows = summarize([_record("f01", "rules", i) for i in (1, 2, 3)])
+    write_markdown(path, {"date": "2026-11-18", "arms": ["rules"]}, rows)
+    assert (tmp_path / "r.md.bak").exists()
+    assert "手写的说明" not in path.read_text()

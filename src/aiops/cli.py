@@ -374,6 +374,9 @@ def lab_run(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from exc
     typer.echo(f"目标 context：{context}", err=True)
+    batch_anchors = anchors(specs, settings.model_name)
+    if batch_anchors.get("git_dirty") == "yes":
+        typer.echo("警告：工作区有未提交改动，这批记录只能算探索性数据（ADR-0013 6.1）", err=True)
 
     target = record or _default_record_path()
     batch = {
@@ -382,7 +385,7 @@ def lab_run(
         "scenarios": [spec.id for spec in specs],
         "arms": arms,
         "runs_per_cell": runs,
-        "anchors": anchors(specs, settings.model_name),
+        "anchors": batch_anchors,
     }
     records: list[dict] = []
 

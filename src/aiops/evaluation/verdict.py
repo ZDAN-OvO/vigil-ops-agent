@@ -40,6 +40,10 @@ ACTION_UNEXPECTED = "unexpected"
 ACTION_NOT_REQUIRED = "not_required"
 
 
+def _optional_int(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
 @dataclass(frozen=True)
 class ProposalView:
     """判定需要的提案字段。
@@ -99,9 +103,10 @@ class ArmFacts:
     supporting: list[SupportFact]
     proposals: list[ProposalView]
     attempts: dict[str, AttemptView]
-    approvals: int
-    tool_calls: int
-    model_calls: int
+    # 缺失时保留 None：成本"没记录"和"真的是 0 次"不是一回事。
+    approvals: int | None
+    tool_calls: int | None
+    model_calls: int | None
     status: str | None = None
 
     @classmethod
@@ -195,9 +200,9 @@ class ArmFacts:
                 )
                 for item in payload.get("attempts") or []
             },
-            approvals=int(payload.get("approvals") or 0),
-            tool_calls=int(payload.get("tool_calls") or 0),
-            model_calls=int(payload.get("model_calls") or 0),
+            approvals=_optional_int(payload.get("approvals")),
+            tool_calls=_optional_int(payload.get("tool_calls")),
+            model_calls=_optional_int(payload.get("model_calls")),
             status=payload.get("status"),
         )
 
