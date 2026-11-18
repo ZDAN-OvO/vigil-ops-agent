@@ -410,7 +410,7 @@ def test_one_run_margin_is_marked_as_directional_only():
     for item in rules:
         item["facts"]["cli"]["elapsed_seconds"] = 60.0
     note = "".join(compare(summarize(agent + rules)["rows"]))
-    assert "支持相对收益结论（率值差距仅 1 次运行，只作方向判断）" in note
+    assert "支持相对收益结论（率值差距不超过 1 次运行，只作方向判断）" in note
 
 
 def test_write_markdown_backs_up_unmarked_handwritten_content(tmp_path):
@@ -440,7 +440,7 @@ def test_margin_hint_only_fires_on_a_real_one_run_gap():
     assert "率值相同" not in _margin_hint(same, other_valid)
 
     one = {"diagnosis_correct": 2, "confirmed": 2, "recovered_by_arm": 1, "valid": 3}
-    assert "仅 1 次运行" in _margin_hint(one, same)
+    assert "不超过 1 次运行" in _margin_hint(one, same)
 
 
 def test_write_markdown_keeps_an_empty_marker_and_the_first_backup(tmp_path):

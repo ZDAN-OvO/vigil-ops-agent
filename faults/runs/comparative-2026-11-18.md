@@ -29,10 +29,10 @@
 
 ## 对照结论
 
-- a01-pod-rebuild：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 2/3 vs rules 3/3；确认根因率 agent 2/3 vs rules 3/3；本臂恢复率 agent 2/3 vs rules 3/3；中位耗时 agent 423.4s vs rules 177.6s；工具调用 agent 27 vs rules 11；模型调用 agent 17 vs rules 0），支持相对收益结论（率值差距仅 1 次运行，只作方向判断）
+- a01-pod-rebuild：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 2/3 vs rules 3/3；确认根因率 agent 2/3 vs rules 3/3；本臂恢复率 agent 2/3 vs rules 3/3；中位耗时 agent 423.4s vs rules 177.6s；工具调用 agent 27 vs rules 11；模型调用 agent 17 vs rules 0），支持相对收益结论（率值差距不超过 1 次运行，只作方向判断）
 - f01-bad-release：达到门槛的臂不足两个（rules），本轮不构成对照结论
 - f02-memory-limit-oom：达到门槛的臂不足两个（rules），本轮不构成对照结论
-- f03-redis-latency：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 2/3 vs rules 3/3；确认根因率 agent 1/3 vs rules 3/3；中位耗时 agent 196.9s vs rules 2.3s；工具调用 agent 29 vs rules 11；模型调用 agent 12 vs rules 0），支持相对收益结论（率值差距仅 1 次运行，只作方向判断）
+- f03-redis-latency：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 2/3 vs rules 3/3；确认根因率 agent 1/3 vs rules 3/3；中位耗时 agent 196.9s vs rules 2.3s；工具调用 agent 29 vs rules 11；模型调用 agent 12 vs rules 0），支持相对收益结论（率值差距不超过 1 次运行，只作方向判断）
 
 <!-- manual:begin -->
 ## 本轮读法

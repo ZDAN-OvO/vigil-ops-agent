@@ -476,7 +476,7 @@ def _margin_hint(left_row: dict[str, Any], right_row: dict[str, Any]) -> str:
     if not gaps:
         return "（率值相同，优势来自率值以外的维度）"
     if min(gaps) <= 1:
-        return "（率值差距仅 1 次运行，只作方向判断）"
+        return "（率值差距不超过 1 次运行，只作方向判断）"
     return ""
 
 
