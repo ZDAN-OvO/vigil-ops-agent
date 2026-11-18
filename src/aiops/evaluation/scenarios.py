@@ -440,7 +440,12 @@ def check_kube_context(settings: Settings) -> str:
 
 
 def run_verb(
-    spec: ScenarioSpec, verb: str, *, settings: Settings, timeout_seconds: float = 900.0
+    spec: ScenarioSpec,
+    verb: str,
+    *,
+    settings: Settings,
+    timeout_seconds: float = 900.0,
+    lock_fd: int | None = None,
 ) -> VerbOutcome:
     """同步执行一个场景动词；超时按失败处理，不重试。"""
     if verb not in VERBS:
@@ -452,6 +457,7 @@ def run_verb(
             ["bash", str(spec.script), verb],
             cwd=str(PROJECT_ROOT),
             env=_environment(settings),
+            pass_fds=(lock_fd,) if lock_fd is not None else (),
             capture_output=True,
             text=True,
             timeout=timeout_seconds,

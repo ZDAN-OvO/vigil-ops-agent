@@ -100,6 +100,7 @@ async def open_runtime(
     incident: Incident,
     investigation: Investigation,
     arm: str = "agent",
+    read_only: bool = False,
 ) -> AsyncIterator[LangChainInvestigation | RulesInvestigator]:
     """按对照臂装配调查运行时；三条臂共用同一套工具与动作执行器。
 
@@ -108,6 +109,8 @@ async def open_runtime(
     """
     async with _open_io(settings, store=store) as (toolbox, executor):
         if arm == "rules":
+            if read_only:
+                raise ValueError("规则基线无法以只读模式运行")
             yield RulesInvestigator(
                 store=store,
                 incident=incident,
@@ -128,7 +131,7 @@ async def open_runtime(
             incident=incident,
             investigation=investigation,
             toolbox=toolbox,
-            executor=executor,
+            executor=None if read_only else executor,
             runtime_path=settings.runtime_path,
             arm=arm,
         )
@@ -143,6 +146,7 @@ async def open_agent(
     incident: Incident,
     investigation: Investigation,
     arm: str = "agent",
+    read_only: bool = False,
 ) -> AsyncIterator[LangChainInvestigation | RulesInvestigator]:
     async with open_runtime(
         settings=settings,
@@ -151,6 +155,7 @@ async def open_agent(
         incident=incident,
         investigation=investigation,
         arm=arm,
+        read_only=read_only,
     ) as runtime:
         yield runtime
 

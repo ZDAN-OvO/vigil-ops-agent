@@ -166,6 +166,7 @@ async def default_runner(
             dsn=settings.database_url,
             incident=incident,
             investigation=investigation,
+            read_only=True,
         ) as runtime:
             await runtime.run()
     except Exception as exc:  # noqa: BLE001 - 后台任务失败必须落状态，不能静默

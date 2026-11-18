@@ -119,7 +119,7 @@ propose_restart() {
   require_owned_namespace
   pod=$(active_pod) || fail "找不到可用 Pod"
   say "RESTART pod=$pod reason=$reason"
-  ( cd "$ROOT" && VIGIL_KUBECONFIG="$KUBECONFIG" uv run --frozen aiops act \
+  ( cd "$ROOT" && VIGIL_KUBECONFIG="$KUBECONFIG" uv run --frozen aiops dev act \
       --kind restart-pod --namespace "$NS" --pod "$pod" --service "$DEP" \
       --path /work --reason "$reason" --actor operator )
 }

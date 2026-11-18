@@ -1247,6 +1247,19 @@ class Store:
             )
             return cursor.rowcount == 1
 
+    async def has_unfinished_attempt(self) -> bool:
+        """开放监听前检查是否还有未结束的执行记录。"""
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT 1 FROM action_attempts
+                 WHERE status IN ('intent', 'executing')
+                    OR result->>'send_state' = 'sending'
+                 LIMIT 1
+                """
+            )
+            return await cursor.fetchone() is not None
+
     async def task_has_write_intent(self, investigation_id: str) -> bool:
         """是否存在已发出或结果未知的写意图；用于中断后禁止接管重放。"""
         async with self._pool.connection() as conn:

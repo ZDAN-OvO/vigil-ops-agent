@@ -150,8 +150,8 @@ kubectl port-forward -n vigil-monitoring svc/prometheus 9090:9090 --address 127.
 迁移与连接检查：
 
 ```bash
-uv run --frozen aiops db migrate
-uv run --frozen aiops db status
+uv run --frozen aiops dev db migrate
+uv run --frozen aiops dev db status
 ```
 
 业务表迁移在 `src/aiops/migrations/`，可重复执行；LangGraph checkpoint 表由官方 saver 管理，不在这组迁移中。

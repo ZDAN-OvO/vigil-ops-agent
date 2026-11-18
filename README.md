@@ -16,8 +16,9 @@ make init                                   # 安装锁定依赖与开发工具
 cp .env.example .env                        # 按需填写 VIGIL_ 配置
 make check-all                              # 格式、lint 与测试；无数据库时相关用例跳过
 uv run --frozen aiops --help
-uv run --frozen aiops db migrate            # 需要 VIGIL_DATABASE_URL
-uv run --frozen aiops investigate --service frontend --symptoms "首页 500"
+uv run --frozen aiops doctor
+uv run --frozen aiops dev db migrate            # 需要 VIGIL_DATABASE_URL
+uv run --frozen aiops dev investigate --service frontend --symptoms "首页 500"
 ```
 
 调查需要实验集群、Prometheus、PostgreSQL 和模型网关。

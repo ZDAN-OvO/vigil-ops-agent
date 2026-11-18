@@ -1,4 +1,4 @@
-"""CLI 入口；W0 仅提供不访问外部服务的实现状态查询。"""
+"""Vigil 的服务、自检与开发命令。"""
 
 import asyncio
 import json
@@ -30,6 +30,7 @@ from aiops.contracts import (
     TimeRange,
 )
 from aiops.db import Store, StoreUnavailable
+from aiops.doctor import check_dependencies
 from aiops.evaluation.harness import (
     ARMS,
     anchors,
@@ -51,18 +52,21 @@ from aiops.evaluation.scenarios import (
 from aiops.investigation.factory import arm_for_runtime, open_agent, open_executor
 from aiops.investigation.rules import RULES_MODEL_NAME
 from aiops.knowledge import load_runbooks
+from aiops.process_lock import acquire
 from aiops.report import Report, delegation_payloads
 from aiops.webhook import build_app
 
 app = typer.Typer(
-    help="Vigil AIOps：故障调查与受控修复；实验命名空间的可丢弃 Pod 重建会被自动执行。",
+    help="Vigil AIOps：故障调查与受控修复。",
     no_args_is_help=True,
     add_completion=False,
 )
+dev_app = typer.Typer(help="开发、故障演练与对照评估。", no_args_is_help=True)
+app.add_typer(dev_app, name="dev", hidden=True)
 db_app = typer.Typer(help="实验 PostgreSQL 的迁移与连接检查。", no_args_is_help=True)
-app.add_typer(db_app, name="db")
+dev_app.add_typer(db_app, name="db")
 lab_app = typer.Typer(help="对照评估：跑场景、看记录、比门槛。", no_args_is_help=True)
-app.add_typer(lab_app, name="lab")
+dev_app.add_typer(lab_app, name="lab")
 
 
 class OutputFormat(StrEnum):
@@ -86,9 +90,40 @@ def _require_dsn() -> str:
     return dsn
 
 
+def _take_lock(
+    *, serving: bool = False, inherit_lab_lock: bool = False, settings: Settings | None = None
+) -> int:
+    try:
+        return acquire((settings or Settings()).runtime_path, inherit_lab_lock=inherit_lab_lock)
+    except BlockingIOError as exc:
+        message = (
+            "已有 Vigil 进程持有推进者锁，无法启动 serve。"
+            if serving
+            else "Vigil 正在运行，请在页面上操作。"
+        )
+        typer.echo(message, err=True)
+        raise typer.Exit(code=1) from exc
+    except (OSError, ValueError) as exc:
+        typer.echo("无法取得 Vigil 推进者锁，请检查运行目录。", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def doctor() -> None:
+    """检查运行依赖是否就绪，并给出修复提示。"""
+    passed = True
+    for name, ok, hint in asyncio.run(check_dependencies(Settings())):
+        typer.echo(f"{'通过' if ok else '失败'}  {name}" + (f" · {hint}" if not ok else ""))
+        passed &= ok
+    if not passed:
+        raise typer.Exit(code=1)
+
+
 @db_app.command("migrate")
 def db_migrate(output: OutputFormat = OutputFormat.TEXT) -> None:
     """应用尚未执行的业务表迁移；可重复执行。"""
+
+    _take_lock()
 
     async def run() -> list[str]:
         async with Store.open(_require_dsn()) as store:
@@ -129,7 +164,7 @@ def main() -> None:
     """业务命令按阶段接入，帮助输出不初始化数据库或集群。"""
 
 
-@app.command()
+@dev_app.command()
 def status(output: OutputFormat = OutputFormat.TEXT) -> None:
     """查看当前实现范围；不是集群健康检查。"""
     payload = {
@@ -227,7 +262,7 @@ def _print_report(report: Report, output: OutputFormat) -> None:
         typer.echo(f"  - [{hypothesis['status']}] {hypothesis['statement']}{parent}")
 
 
-@app.command()
+@dev_app.command()
 def investigate(
     service: str = typer.Option(..., help="业务服务名"),
     symptoms: str = typer.Option(..., help="观察到的现象"),
@@ -239,6 +274,8 @@ def investigate(
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
     """运行一次调查；命中自动规则的可丢弃 Pod 重建会立即执行，其余只提案等待审批。"""
+
+    _take_lock(inherit_lab_lock=True)
     settings = Settings()
     model_name = RULES_MODEL_NAME if arm is Arm.RULES else settings.model_name
     if not model_name:
@@ -360,6 +397,8 @@ def lab_run(
     有效运行的定义：健康基线成立、注入成立、故障核验成立。任一步失败都记为无效，
     不计入分母以外的地方，也不删除记录。
     """
+
+    lock_fd = _take_lock()
     dsn = _require_dsn()
     settings = Settings()
     specs = [get_scenario(name) for name in scenario] if scenario else list(SCENARIOS)
@@ -417,6 +456,7 @@ def lab_run(
                             index,
                             settings=settings,
                             on_record=persist,
+                            lock_fd=lock_fd,
                         )
 
     asyncio.run(run_batch())
@@ -512,7 +552,7 @@ def lab_summarize(
         typer.echo(f"- {note}")
 
 
-@app.command()
+@dev_app.command()
 def incidents(
     limit: int = typer.Option(20, min=1, max=200),
     output: OutputFormat = OutputFormat.TEXT,
@@ -553,7 +593,7 @@ def incidents(
         typer.echo(f"  调查：{ids or '无'}")
 
 
-@app.command()
+@dev_app.command()
 def report(investigation_id: str, output: OutputFormat = OutputFormat.TEXT) -> None:
     """按调查 ID 查看已持久化的结论与证据统计。"""
 
@@ -633,18 +673,36 @@ def report(investigation_id: str, output: OutputFormat = OutputFormat.TEXT) -> N
 
 @app.command()
 def serve(
-    host: str | None = typer.Option(None, help="监听地址，默认读配置"),
-    port: int | None = typer.Option(None, help="监听端口，默认读配置"),
+    host: str | None = typer.Option(None, help="告警监听地址，默认读配置"),
+    port: int | None = typer.Option(None, help="告警监听端口，默认读配置"),
 ) -> None:
     """启动 AlertManager webhook 服务；收到告警后异步发起调查。"""
     settings = Settings()
     if settings.webhook_token is None:
         typer.echo("未配置 VIGIL_WEBHOOK_TOKEN，拒绝启动无鉴权的 webhook。", err=True)
         raise typer.Exit(code=2)
-    _require_dsn()
+    dsn = _require_dsn()
     if settings.model_name is None:
         typer.echo("未配置 VIGIL_MODEL_NAME，无法发起调查。", err=True)
         raise typer.Exit(code=2)
+
+    _take_lock(serving=True, settings=settings)
+
+    async def check_startup() -> None:
+        async with Store.open(dsn) as store:
+            await store.migrate()
+            if await store.has_unfinished_attempt():
+                raise StoreUnavailable(
+                    "存在命令行来源或归属不明的未决执行，请用 aiops dev followups 核实并收尾。"
+                )
+            if await store.has_unfinished_attempt():
+                raise StoreUnavailable("仍有未决执行，无法启动 serve。")
+
+    try:
+        asyncio.run(check_startup())
+    except StoreUnavailable as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
 
     import uvicorn
 
@@ -717,17 +775,20 @@ def _duration(since: datetime) -> str:
     return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
 
 
-@app.command("knowledge")
+@dev_app.command("knowledge")
 def knowledge(
     action: str = typer.Argument("list", help="list 或 import"),
     path: str = typer.Option("runbooks", help="import 时的 JSON 文件或目录"),
 ) -> None:
     """登记与查看结构化 runbook；导入只写知识表，不改集群。"""
 
+    if action == "import":
+        _take_lock()
+
     async def run():
         async with Store.open(_require_dsn()) as store:
-            await store.migrate()
             if action == "import":
+                await store.migrate()
                 target = Path(path)
                 files = sorted(target.glob("*.json")) if target.is_dir() else [target]
                 # 先解析全部文件再写库；有坏文件时一条都不写，避免半套知识生效。
@@ -767,7 +828,7 @@ def act_exit_code(proposal_status: str, attempt_status: str | None) -> int:
     return 3
 
 
-@app.command("act")
+@dev_app.command("act")
 def act(
     kind: str = typer.Option("rollout-undo", help="动作类型：rollout-undo 或 restart-pod"),
     deployment: str | None = typer.Option(None, help="目标 Deployment，rollout-undo 必填"),
@@ -781,6 +842,8 @@ def act(
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
     """提交一个受控动作；自动允许的当场执行，其余只提案等待审批。"""
+
+    _take_lock()
 
     async def run():
         async with Store.open(_require_dsn()) as store:
@@ -882,7 +945,7 @@ def act(
     raise typer.Exit(code=act_exit_code(proposal.status.value, attempt and attempt.status.value))
 
 
-@app.command()
+@dev_app.command()
 def approvals(
     status: str = typer.Option("pending_approval", help="按状态过滤"),
     limit: int = typer.Option(20, min=1, max=200),
@@ -933,7 +996,7 @@ def approvals(
         )
 
 
-@app.command()
+@dev_app.command()
 def followups(
     status: str = typer.Option("open", help="按状态过滤：open 或 resolved"),
     limit: int = typer.Option(20, min=1, max=200),
@@ -978,15 +1041,21 @@ def followups(
         )
 
 
-@app.command()
+@dev_app.command()
 def followup(
     followup_id: str,
+    resolve_id: str | None = typer.Argument(None, help="使用 followup resolve 时的待办 ID"),
     resolve: bool = typer.Option(False, "--resolve", help="标记为解决"),
     actor: str = typer.Option("operator", help="解决人"),
     note: str = typer.Option("", help="解决说明"),
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
-    """查看或解决一条人工待办。"""
+    """查看待办，或用 followup resolve <待办 ID> 记录核实结果。"""
+    if resolve_id is not None:
+        if followup_id != "resolve" or resolve:
+            typer.echo("用法：followup resolve <待办 ID> --note <核实结果>", err=True)
+            raise typer.Exit(code=2)
+        followup_id, resolve = resolve_id, True
     if resolve and not note.strip():
         typer.echo("--resolve 需要非空 --note", err=True)
         raise typer.Exit(code=2)
@@ -1028,7 +1097,7 @@ def followup(
         )
 
 
-@app.command()
+@dev_app.command()
 def approve(
     proposal_id: str,
     actor: str = typer.Option("operator", help="审批人"),
@@ -1037,6 +1106,8 @@ def approve(
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
     """批准提案：单 Agent 任务继续原任务；旧提案仍走原执行器并当场执行。"""
+
+    _take_lock()
 
     async def run():
         settings = Settings()
@@ -1050,7 +1121,7 @@ def approve(
             arm = await _arm_for_proposal(store, proposal) if target is not None else "agent"
             if arm == "rules":
                 raise ResumeNotSupported(
-                    "规则基线调查没有可恢复的 checkpoint；需要执行时用 aiops act 重新提案"
+                    "规则基线调查没有可恢复的 checkpoint；需要执行时用 aiops dev act 重新提案"
                 )
             async with _open_executor(settings, store) as executor:
                 if target is None:
@@ -1092,23 +1163,25 @@ def approve(
         raise typer.Exit(code=report.exit_code())
     if mode == "defer":
         typer.echo(f"提案 {proposal_id}：approved（未执行）")
-        typer.echo(f"继续执行：aiops resume {proposal_id}")
+        typer.echo(f"继续执行：aiops dev resume {proposal_id}")
         return
     if attempt is None:
         typer.echo(f"提案 {proposal_id}：approved（未执行）")
-        typer.echo(f"继续执行：aiops resume {proposal_id}")
+        typer.echo(f"继续执行：aiops dev resume {proposal_id}")
         return
     _report_attempt(attempt, output)
     raise typer.Exit(code=0 if attempt.status.value == "verified" else 1)
 
 
-@app.command()
+@dev_app.command()
 def resume(
     proposal_id: str,
     actor: str = typer.Option("operator", help="继续执行的人"),
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
     """继续已批准提案：单 Agent 任务恢复原 checkpoint，旧提案走原执行器。"""
+
+    _take_lock()
 
     async def run():
         settings = Settings()
@@ -1126,7 +1199,7 @@ def resume(
             arm = await _arm_for_proposal(store, proposal)
             if arm == "rules":
                 raise ResumeNotSupported(
-                    "规则基线调查没有可恢复的 checkpoint；需要执行时用 aiops act 重新提案"
+                    "规则基线调查没有可恢复的 checkpoint；需要执行时用 aiops dev act 重新提案"
                 )
             incident, investigation = target
             async with open_agent(
@@ -1161,7 +1234,7 @@ def resume(
     raise typer.Exit(code=0 if attempt.status.value == "verified" else 1)
 
 
-@app.command("proposal")
+@dev_app.command("proposal")
 def show_proposal(
     proposal_id: str,
     output: OutputFormat = OutputFormat.TEXT,
@@ -1239,7 +1312,7 @@ def show_proposal(
         typer.echo(f"  {event.occurred_at.isoformat()} {event.actor} {event.event}")
 
 
-@app.command()
+@dev_app.command()
 def reject(
     proposal_id: str,
     actor: str = typer.Option("operator", help="审批人"),
@@ -1247,6 +1320,8 @@ def reject(
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
     """拒绝提案：新任务把拒绝结果交回 Agent 继续只读调查；不执行任何写操作。"""
+
+    _take_lock()
 
     async def run():
         settings = Settings()
@@ -1296,7 +1371,7 @@ def reject(
         raise typer.Exit(code=report.exit_code())
 
 
-@app.command()
+@dev_app.command()
 def cancel(
     investigation_id: str,
     actor: str = typer.Option("operator", help="发起取消的人"),
@@ -1304,6 +1379,8 @@ def cancel(
     output: OutputFormat = OutputFormat.TEXT,
 ) -> None:
     """取消任务：持久化取消请求；运行中的进程在模型/工具检查点消费。"""
+
+    _take_lock()
 
     async def run():
         dsn = _require_dsn()

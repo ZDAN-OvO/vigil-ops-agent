@@ -3,6 +3,7 @@ init:
 	uv sync --group dev
 help:
 	uv run --frozen aiops --help
+	uv run --frozen aiops dev --help
 format:
 	uv run --frozen ruff check --select I --fix src tests
 	uv run --frozen ruff format src tests
