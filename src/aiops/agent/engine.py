@@ -305,6 +305,8 @@ class LangChainInvestigation:
                 ]
             )
         middleware.append(subagent)
+        # 装配结果留一份，测试用它守住"generic 只去掉方法论、不丢委派"。
+        self._graph_middleware = [type(item).__name__ for item in middleware]
         return create_agent(
             self._model,
             tools=AGENT_TOOLS,

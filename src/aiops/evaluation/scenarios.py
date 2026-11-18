@@ -295,7 +295,8 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
             ("状态", "state"),
         ),
         evidence_checks=(
-            EvidenceCheck("Pod 平台状态", ("kubernetes.list_pods",)),
+            # Pod 列表和事件流都能证明"平台侧没有重启/驱逐"，不能只认一种查法。
+            EvidenceCheck("Pod 平台状态", ("kubernetes.list_pods", "kubernetes.list_events")),
             EvidenceCheck("业务 5xx", ("kubernetes.list_logs",), fact="http_5xx"),
         ),
         preflight_creates=True,

@@ -94,3 +94,36 @@ def test_no_references_to_removed_material():
             if REMOVED.search(line):
                 hits.append(f"{path.relative_to(PROJECT_ROOT)}:{number}: {line.strip()[:80]}")
     assert not hits, hits
+
+
+def test_adr_thresholds_match_the_code():
+    """ADR 里写死的阈值必须和代码常量一致，否则读文档的人会被误导。"""
+    from aiops.evaluation.harness import MIN_DIAGNOSIS_RATE, MIN_VALID_RUNS
+    from aiops.investigation.rules import (
+        LATENCY_THRESHOLD_SECONDS,
+        LOW_MEMORY_LIMIT_MIB,
+        OOM_RESTART_THRESHOLD,
+    )
+
+    adr = (PROJECT_ROOT / "docs" / "adr" / "0013-comparative-evaluation.md").read_text()
+    assert f"{LATENCY_THRESHOLD_SECONDS * 1000:.0f}ms" in adr
+    assert f"{LOW_MEMORY_LIMIT_MIB}Mi" in adr
+    assert f"≥ {OOM_RESTART_THRESHOLD}" in adr
+    assert f"{MIN_VALID_RUNS} 次有效运行" in adr
+    assert f"{MIN_DIAGNOSIS_RATE:.0%}".replace("67%", "2/3") in adr or "2/3" in adr
+
+
+def test_run_record_markdown_matches_the_json():
+    """记录 md 的机器生成段必须等于按 JSON 重算的结果，防止手改或过期。"""
+    import json
+
+    from aiops.evaluation.harness import MANUAL_MARKER, render_markdown, summarize
+
+    record = PROJECT_ROOT / "faults" / "runs" / "comparative-2026-11-18.json"
+    markdown = record.with_suffix(".md")
+    if not record.exists() or not markdown.exists():
+        return
+    payload = json.loads(record.read_text())
+    expected = render_markdown(payload["batch"], summarize(payload["records"]))
+    actual = markdown.read_text().split(MANUAL_MARKER)[0]
+    assert actual.strip() == expected.strip()

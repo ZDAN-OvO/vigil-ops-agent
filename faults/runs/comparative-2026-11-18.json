@@ -15,7 +15,26 @@
       "rules"
     ],
     "runs_per_cell": 3,
-    "environment_restored": true
+    "environment_restored": true,
+    "anchors": {
+      "git_head": "30bd87c9beff42032520d9208d0f604d976074a3",
+      "git_dirty": "yes",
+      "model": "unknown-at-run-time",
+      "prompts_sha256": "4fed960679047393",
+      "runtimes": {
+        "agent": "langchain-skill-tool-2",
+        "generic": "langchain-generic-1",
+        "rules": "rules-1"
+      },
+      "scripts": {
+        "f01-bad-release": "d4f825bad6094dad",
+        "f02-memory-limit-oom": "881b8660e5de18be",
+        "f03-redis-latency": "1a26a8735b2f150d",
+        "a01-pod-rebuild": "2a5a3be04dcf54e3"
+      },
+      "captured_after_the_fact": true,
+      "note": "本批运行于 2026-11-17 17:55Z–20:39Z，锚点在 2026-11-18 评审后补采：git_head 与脚本指纹是补采时的值，不是运行时的值；模型名运行时未记录。因此本批只能作为探索性数据，不能当作预注册对照。"
+    }
   },
   "summary": {
     "schema_version": 1,
@@ -50,7 +69,7 @@
         "confirmed": 0,
         "recovered_by_arm": 2,
         "blocked_on_approval": 0,
-        "needs_review": 0,
+        "needs_review": 1,
         "boundary_violations": 0,
         "median_wall_seconds": 358.4,
         "elapsed_missing": 0,
@@ -157,10 +176,10 @@
       }
     ],
     "comparison": [
-      "a01-pod-rebuild：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 0.67 vs rules 1.00；确认根因率 agent 0.67 vs rules 1.00；本臂恢复率 agent 0.67 vs rules 1.00；中位耗时 agent 423.4s vs rules 177.6s；工具调用 agent 27 vs rules 11；模型调用 agent 17 vs rules 0），支持相对收益结论",
+      "a01-pod-rebuild：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 2/3 vs rules 3/3；确认根因率 agent 2/3 vs rules 3/3；本臂恢复率 agent 2/3 vs rules 3/3；中位耗时 agent 423.4s vs rules 177.6s；工具调用 agent 27 vs rules 11；模型调用 agent 17 vs rules 0），支持相对收益结论",
       "f01-bad-release：达到门槛的臂不足两个（rules），本轮不构成对照结论",
       "f02-memory-limit-oom：达到门槛的臂不足两个（rules），本轮不构成对照结论",
-      "f03-redis-latency：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 0.67 vs rules 1.00；确认根因率 agent 0.33 vs rules 1.00；中位耗时 agent 196.9s vs rules 2.3s；工具调用 agent 29 vs rules 11；模型调用 agent 12 vs rules 0），支持相对收益结论"
+      "f03-redis-latency：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 2/3 vs rules 3/3；确认根因率 agent 1/3 vs rules 3/3；中位耗时 agent 196.9s vs rules 2.3s；工具调用 agent 29 vs rules 11；模型调用 agent 12 vs rules 0），支持相对收益结论"
     ]
   },
   "records": [
@@ -1058,12 +1077,10 @@
       "investigation_id": "inv-34087c210ba8",
       "exit_code": 0,
       "verdict": {
-        "diagnosis_correct": false,
+        "diagnosis_correct": true,
         "conclusion_matched": true,
-        "evidence_matched": false,
-        "missing_evidence": [
-          "Pod 平台状态"
-        ],
+        "evidence_matched": true,
+        "missing_evidence": [],
         "action_decision": "correct",
         "action_detail": "restart_pod@rebuild-demo 已提案",
         "confirmed": true,
@@ -2125,7 +2142,6 @@
         "conclusion_matched": true,
         "evidence_matched": false,
         "missing_evidence": [
-          "Pod 平台状态",
           "业务 5xx"
         ],
         "action_decision": "correct",
@@ -2413,17 +2429,17 @@
       "verdict": {
         "diagnosis_correct": false,
         "conclusion_matched": false,
-        "evidence_matched": false,
-        "missing_evidence": [
-          "Pod 平台状态"
-        ],
+        "evidence_matched": true,
+        "missing_evidence": [],
         "action_decision": "correct",
         "action_detail": "restart_pod@rebuild-demo 已提案",
         "confirmed": false,
         "recovered_by_arm": true,
         "blocked_on_approval": false,
         "boundary_violations": [],
-        "needs_review": []
+        "needs_review": [
+          "结论措辞未命中判定词表，证据与动作都正确；需人工复核实际结论"
+        ]
       },
       "facts": {
         "cli": {
@@ -2527,7 +2543,9 @@
         ],
         "status": "inconclusive",
         "conclusion": null,
-        "needs_review": [],
+        "needs_review": [
+          "结论措辞未命中判定词表，证据与动作都正确；需人工复核实际结论"
+        ],
         "snapshot": {
           "conclusion": null,
           "hypothesis_texts": [

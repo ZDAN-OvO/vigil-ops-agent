@@ -4,6 +4,10 @@
 - 对照臂：agent, generic, rules
 - 每次每臂运行次数：3
 - 环境复位：全部成功
+- 代码锚点：git 30bd87c9beff42032520d9208d0f604d976074a3（工作区有未提交改动）（事后补采，非运行时的值）
+- 模型：unknown-at-run-time；提示词指纹 4fed960679047393
+- 运行时：agent=langchain-skill-tool-2、generic=langchain-generic-1、rules=rules-1
+- 场景脚本指纹：f01-bad-release=d4f825bad6094dad、f02-memory-limit-oom=881b8660e5de18be、f03-redis-latency=1a26a8735b2f150d、a01-pod-rebuild=2a5a3be04dcf54e3
 
 ## 汇总
 
@@ -25,12 +29,12 @@
 
 ## 对照结论
 
-- a01-pod-rebuild：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 0.67 vs rules 1.00；确认根因率 agent 0.67 vs rules 1.00；本臂恢复率 agent 0.67 vs rules 1.00；中位耗时 agent 423.4s vs rules 177.6s；工具调用 agent 27 vs rules 11；模型调用 agent 17 vs rules 0），支持相对收益结论
+- a01-pod-rebuild：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 2/3 vs rules 3/3；确认根因率 agent 2/3 vs rules 3/3；本臂恢复率 agent 2/3 vs rules 3/3；中位耗时 agent 423.4s vs rules 177.6s；工具调用 agent 27 vs rules 11；模型调用 agent 17 vs rules 0），支持相对收益结论
 - f01-bad-release：达到门槛的臂不足两个（rules），本轮不构成对照结论
 - f02-memory-limit-oom：达到门槛的臂不足两个（rules），本轮不构成对照结论
-- f03-redis-latency：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 0.67 vs rules 1.00；确认根因率 agent 0.33 vs rules 1.00；中位耗时 agent 196.9s vs rules 2.3s；工具调用 agent 29 vs rules 11；模型调用 agent 12 vs rules 0），支持相对收益结论
+- f03-redis-latency：rules 在可比较维度上不劣于 agent 且更强（诊断正确率 agent 2/3 vs rules 3/3；确认根因率 agent 1/3 vs rules 3/3；中位耗时 agent 196.9s vs rules 2.3s；工具调用 agent 29 vs rules 11；模型调用 agent 12 vs rules 0），支持相对收益结论
 
-
+<!-- manual:begin -->
 ## 本轮读法
 
 **这一轮的结果是"规则基线有效"，不是"方法论有收益"。** 四条场景本来就是按固定处置路径
@@ -42,7 +46,7 @@
 | 规则臂全线通过 | 4 场景 × 3–4 次：有效 13/13、诊断正确 13/13、越界 0 | 规则链命中全部四个签名，没有一次需要猜 |
 | 成本同向 | Pod 重建工具调用 11 vs 27、模型调用 0 vs 17；Redis 延迟 11 vs 29、0 vs 12 | 规则臂不调模型，工具调用约为 Agent 臂的四成 |
 | Pod 重建三臂同场 | 规则 3/3 恢复（178s）；Agent 2/3（423s）；通用 Agent 0/3 诊断正确但 2/3 恢复 | 同为自动执行路径，差别只在"怎么得出结论" |
-| 通用 Agent 的失败形态 | 2 次有正确动作但从未形成正式结论，也没有把 Pod 观测标为 supporting；1 次预算内未收敛 | 去掉方法论后，"把依据整理成可复核结论"没有替代物 |
+| 通用 Agent 的失败形态 | 2 次提出了正确的重启动作，但 1 次缺业务失败证据、1 次结论措辞未命中；1 次没形成结论也没提动作 | 0/3 里有 2 次是"动作对、证据链或措辞没闭合"，不是不会修 |
 | Redis 延迟 | 规则 3/3；Agent 2/3，只有 1 次形成正式结论 | Agent 三次都在 25–30 次工具调用（预算 28）边缘 |
 | 坏发布 | 规则 4/4 提出正确回退，全部停在 `waiting_approval` | 需要审批的动作不代批，恢复由人完成，不计任一臂 |
 | 持续 OOM | 规则 3/3 判定规格不足且不动作 | 该场景的正确做法是停止，不是写操作 |
@@ -71,7 +75,15 @@
    阈值，但这不能证明"跑之前就冻结"。结论只作方向判断；下一批必须先把协议版本与执行
    版本提交成锚点再开跑。
 
-5. **坏发布多了 1 次运行（4 次）。** 第 4 次用于验证"只读动词不再改集群、cleanup 只在
+5. **代码锚点是评审后补采的。** 记录里的 `git_head`、提示词指纹、场景脚本 sha256、
+   运行时版本都是 2026-11-18 补采，不是运行时的值；运行时记录的模型名也缺失。锚点能
+   说明"记录对应哪一版代码"，不能证明"跑之前就冻结"，所以本批只作探索性数据。
+
+6. **每格 3 次，差 1 次不足以支撑强弱。** 汇总里的比较同时写绝对次数（如 `2/3 vs 3/3`）：
+   Pod 重建与 Redis 延迟两格都是"规则臂 3/3 对 Agent 臂 2/3"，加上成本与耗时同向，
+   方向一致；但单看这一格，差距就是一次运行。
+
+7. **坏发布多了 1 次运行（4 次）。** 第 4 次用于验证"只读动词不再改集群、cleanup 只在
    坏版本时回退"这组修复；它与前 3 次同口径、同样计入分母。
 
 **下一步**：在规则形状的场景上继续加次数只会得到同样的表。要证明方法论收益，必须扩一个

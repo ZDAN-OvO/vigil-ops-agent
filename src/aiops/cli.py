@@ -32,12 +32,13 @@ from aiops.contracts import (
 from aiops.db import Store, StoreUnavailable
 from aiops.evaluation.harness import (
     ARMS,
+    anchors,
     execute,
     load_records,
     merge_records,
-    render_markdown,
     rescore,
     summarize,
+    write_markdown,
     write_records,
 )
 from aiops.evaluation.scenarios import (
@@ -381,6 +382,7 @@ def lab_run(
         "scenarios": [spec.id for spec in specs],
         "arms": arms,
         "runs_per_cell": runs,
+        "anchors": anchors(specs, settings.model_name),
     }
     records: list[dict] = []
 
@@ -418,8 +420,7 @@ def lab_run(
     batch, records = merged()
     summary = summarize(records)
     write_records(target, batch, records)
-    markdown_path = target.with_suffix(".md")
-    markdown_path.write_text(render_markdown(batch, summary) + "\n")
+    write_markdown(target.with_suffix(".md"), batch, summary)
 
     if output == OutputFormat.JSON:
         typer.echo(
@@ -434,7 +435,7 @@ def lab_run(
         )
         return
     typer.echo(f"记录：{target}")
-    typer.echo(f"汇总：{markdown_path}")
+    typer.echo(f"汇总：{target.with_suffix('.md')}")
     typer.echo("")
     for row in summary["rows"]:
         typer.echo(
@@ -471,7 +472,7 @@ def lab_rescore(
         "records": result["records"],
     }
     record.write_text(json.dumps(body, ensure_ascii=False, indent=2, default=str) + "\n")
-    record.with_suffix(".md").write_text(render_markdown(batch, result["summary"]) + "\n")
+    write_markdown(record.with_suffix(".md"), batch, result["summary"])
     if output == OutputFormat.JSON:
         typer.echo(json.dumps(result["summary"], ensure_ascii=False))
         return

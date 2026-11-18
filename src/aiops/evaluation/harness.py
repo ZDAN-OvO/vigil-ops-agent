@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -23,10 +24,13 @@ from typing import Any
 
 from loguru import logger
 
+from aiops.agent.prompts import GENERIC_SYSTEM_PROMPT, SYSTEM_PROMPT
 from aiops.config import PROJECT_ROOT, Settings
+from aiops.contracts import AGENT_RUNTIME_VERSION, GENERIC_RUNTIME_VERSION
 from aiops.db import Store
 from aiops.evaluation.scenarios import ScenarioSpec, VerbOutcome, get_scenario, run_verb
 from aiops.evaluation.verdict import ArmFacts, Verdict, judge, load_arm_facts
+from aiops.investigation.rules import RULES_RUNTIME_VERSION
 
 SCHEMA_VERSION = 1
 ARMS = ("agent", "generic", "rules")
@@ -432,7 +436,10 @@ def _pair_note(
             continue
         lower_better = name in _LOWER_IS_BETTER
         left_wins = left_value < right_value if lower_better else left_value > right_value
-        detail = f"{name} {left} {_fmt(name, left_value)} vs {right} {_fmt(name, right_value)}"
+        detail = (
+            f"{name} {left} {_score(name, left_row, left_value)} vs "
+            f"{right} {_score(name, right_row, right_value)}"
+        )
         (better if left_wins else worse).append(detail)
     suffix = f"；{'、'.join(unknown)} 缺失，未比较" if unknown else ""
     if not better and not worse:
@@ -453,6 +460,21 @@ def _pair_note(
         f"{scenario}：{left} 与 {right} 各有强弱（{left} 更强：{'、'.join(better) or '无'}；"
         f"{right} 更强：{'、'.join(worse) or '无'}），不构成收益结论{suffix}"
     )
+
+
+# 率值同时给绝对次数：3 次样本里差 1 次就能翻转支配关系，读者得看得见这一点。
+_RATE_COUNTS = {
+    "诊断正确率": "diagnosis_correct",
+    "确认根因率": "confirmed",
+    "本臂恢复率": "recovered_by_arm",
+}
+
+
+def _score(name: str, row: dict[str, Any], value: float) -> str:
+    key = _RATE_COUNTS.get(name)
+    if key is None:
+        return _fmt(name, value)
+    return f"{row.get(key, 0)}/{row.get('valid', 0)}"
 
 
 def _fmt(name: str, value: float) -> str:
@@ -574,6 +596,73 @@ def _show(value: float | None) -> str:
     return "—" if value is None else f"{value:g}"
 
 
+def _git(*args: str) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+def anchors(specs: list[ScenarioSpec], model: str) -> dict[str, Any]:
+    """这批实验跑在什么代码、什么模型、什么脚本上。
+
+    没有这层锚点，"跑之前冻结"只是一句自述：读者无法确认记录里的场景脚本、
+    提示词、规则集和判定口径与提交的是同一版本。
+    """
+    return {
+        "git_head": _git("rev-parse", "HEAD") or "unknown",
+        "git_dirty": "yes" if _git("status", "--porcelain") else "no",
+        "model": model,
+        "prompts_sha256": _digest((SYSTEM_PROMPT + GENERIC_SYSTEM_PROMPT).encode()),
+        "runtimes": {
+            "agent": AGENT_RUNTIME_VERSION,
+            "generic": GENERIC_RUNTIME_VERSION,
+            "rules": RULES_RUNTIME_VERSION,
+        },
+        "scripts": {
+            spec.id: _digest(spec.script.read_bytes()) if spec.script.exists() else "missing"
+            for spec in specs
+        },
+    }
+
+
+MANUAL_MARKER = "<!-- manual:begin -->"
+
+
+def write_markdown(path: Path, batch: dict[str, Any], summary: dict[str, Any]) -> None:
+    """写汇总时保留人工写的读法段。
+
+    读法（收益属于哪条臂、哪些格没做、哪几次被排除）是结论的一部分，但重算会
+    重建机器生成的那半张表。没有这层保护，下一次合规的 rescore 就会把读者最需要
+    看到的说明删掉，只剩两句"支持相对收益结论"。
+    """
+    body = render_markdown(batch, summary)
+    if path.exists():
+        manual = _manual_section(path.read_text())
+        if manual:
+            body = f"{body}\n{MANUAL_MARKER}\n{manual}"
+    path.write_text(body.rstrip() + "\n")
+
+
+def _manual_section(text: str) -> str:
+    index = text.find(MANUAL_MARKER)
+    if index < 0:
+        return ""
+    return text[index + len(MANUAL_MARKER) :].strip()
+
+
 def render_markdown(batch: dict[str, Any], summary: dict[str, Any]) -> str:
     """生成人读汇总：只陈述计数与门槛，不复述单次结论。"""
     lines = [
@@ -583,6 +672,21 @@ def render_markdown(batch: dict[str, Any], summary: dict[str, Any]) -> str:
         f"- 对照臂：{', '.join(batch.get('arms') or [])}",
         f"- 每次每臂运行次数：{batch.get('runs_per_cell', 0)}",
         f"- 环境复位：{'全部成功' if batch.get('environment_restored') else '有失败，见逐次记录'}",
+    ]
+    anchor = batch.get("anchors") or {}
+    if anchor:
+        lines += [
+            f"- 代码锚点：git {anchor.get('git_head', 'unknown')}"
+            f"（工作区{'有' if anchor.get('git_dirty') == 'yes' else '无'}未提交改动）"
+            + ("（事后补采，非运行时的值）" if anchor.get("captured_after_the_fact") else ""),
+            f"- 模型：{anchor.get('model', 'unknown')}"
+            f"；提示词指纹 {anchor.get('prompts_sha256', '—')}",
+            "- 运行时："
+            + "、".join(f"{key}={value}" for key, value in (anchor.get("runtimes") or {}).items()),
+            "- 场景脚本指纹："
+            + "、".join(f"{key}={value}" for key, value in (anchor.get("scripts") or {}).items()),
+        ]
+    lines += [
         "",
         "## 汇总",
         "",

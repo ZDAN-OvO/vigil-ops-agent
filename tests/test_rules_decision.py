@@ -175,3 +175,40 @@ def test_healthy_looking_data_returns_unknown_without_guessing():
     assert decision.signature == Signature.UNKNOWN
     assert decision.confirmed is False
     assert decision.action == ""
+
+
+def test_release_regression_needs_a_recent_pod_start():
+    """镜像变了、入口挂了，但 Pod 不是新起的：可能是别的原因，不能一律回退。"""
+    old = "registry/productcatalog@sha256:" + "a" * 64
+    new = "vigil/productcatalog:canary-20261104"
+    long_ago = NOW - timedelta(hours=6)
+    facts = _facts(
+        service="productcatalogservice",
+        deployments=[
+            _deployment(
+                "productcatalogservice",
+                [(95, old, long_ago, 0), (96, new, long_ago, 1)],
+                new,
+            )
+        ],
+        pods=[_pod("productcatalogservice-1", [_container(started_at=long_ago)])],
+        probe_success=0.0,
+        probe_duration=0.4,
+    )
+    assert decide(facts).signature is not Signature.RELEASE_REGRESSION
+
+
+def test_oom_with_a_generous_limit_is_not_a_spec_shortage():
+    """OOMKilled 且反复重启，但限额 128Mi：不是"规格不足"，不猜。"""
+    facts = _facts(
+        service="currencyservice",
+        pods=[
+            _pod(
+                "currencyservice-1",
+                [_container(restarts=5, limit="128Mi", last_reason="OOMKilled")],
+            )
+        ],
+        probe_success=0.5,
+        probe_duration=0.5,
+    )
+    assert decide(facts).signature is not Signature.SPEC_SHORTAGE

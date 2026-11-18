@@ -22,6 +22,12 @@ async def _run(case):
     return await case.runtime.run()
 
 
+def _delegation_tool_names(runtime) -> list[str]:
+    """委派是靠中间件挂上的，取装配阶段的中间件名判断有没有真的装上。"""
+    names = getattr(runtime, "_graph_middleware", []) or []
+    return [name for name in names if name == "SubAgentMiddleware"]
+
+
 def test_generic_arm_uses_a_neutral_prompt_and_generic_runtime(ids):
     async def scenario():
         responses = [
@@ -52,6 +58,9 @@ def test_generic_arm_uses_a_neutral_prompt_and_generic_runtime(ids):
     assert task is not None and task.runtime_version == GENERIC_RUNTIME_VERSION
     assert detail is not None and detail.skills == []
     assert report.investigation_id == case.investigation.id
+    # 委派能力必须保留：第一版把它一起删了，导致 3 次运行作废。
+    assert _delegation_tool_names(case.runtime)
+    assert "SkillsMiddleware" not in (case.runtime._graph_middleware or [])
 
 
 def test_agent_arm_keeps_the_methodology_prompt(ids):
@@ -71,3 +80,7 @@ def test_agent_arm_keeps_the_methodology_prompt(ids):
     case, task = asyncio.run(scenario())
     assert case.runtime._system_prompt == SYSTEM_PROMPT
     assert task is not None and task.runtime_version != GENERIC_RUNTIME_VERSION
+    # Agent 臂两样都要：方法论中间件 + 委派。
+    middleware = case.runtime._graph_middleware or []
+    assert "SkillsMiddleware" in middleware
+    assert _delegation_tool_names(case.runtime)
