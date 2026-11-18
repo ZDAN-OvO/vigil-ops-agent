@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 import httpx
 from kubernetes import client, config
 
-from aiops.config import Settings
+from aiops.config import PROJECT_ROOT, Settings
 from aiops.db import Store, migration_files
 
 
@@ -103,7 +103,7 @@ async def check_dependencies(settings: Settings) -> list[tuple[str, bool, str]]:
             ok = False
         return name, ok, hint
 
-    return list(
+    health = list(
         await asyncio.gather(
             check("数据库", database, "检查连接设置，运行 uv run aiops dev db migrate。"),
             check("模型网关", model, "检查 VIGIL_MODEL_BASE_URL 和 VIGIL_MODEL_NAME。"),
@@ -117,3 +117,6 @@ async def check_dependencies(settings: Settings) -> list[tuple[str, bool, str]]:
             check("Deployment 准入", admission, "检查匹配 Deployment 更新的可变更准入规则。"),
         )
     )
+
+    page = (PROJECT_ROOT / "web" / "dist" / "index.html").is_file()
+    return [*health, ("页面文件", page, "运行 make web-build。")]

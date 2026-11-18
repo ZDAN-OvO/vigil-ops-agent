@@ -31,3 +31,6 @@ logs/
 
 # 本地证据产物：截图只贴在 PR 评论里，不提交
 .evidence/
+
+/web/node_modules/
+/web/dist/
