@@ -615,7 +615,12 @@ def _anchor_list(anchors: Any) -> list[dict[str, Any]]:
     variants = anchors.get("variants")
     if isinstance(variants, list):
         return [item for item in variants if isinstance(item, dict)]
-    return [{key: value for key, value in anchors.items() if key != "mix"}]
+    # 兼容中间那一版的 {"mixed": true, "also": {...}}：它是两份锚点，不是一个。
+    also = anchors.get("also")
+    current = {key: value for key, value in anchors.items() if key not in {"mix", "mixed", "also"}}
+    if isinstance(also, dict) and also:
+        return [current, also]
+    return [current]
 
 
 def _merge_anchors(existing: Any, incoming: Any) -> dict[str, Any]:
@@ -633,7 +638,7 @@ def _merge_anchors(existing: Any, incoming: Any) -> dict[str, Any]:
     if len(variants) == 1:
         return dict(variants[0])
     # 首尾各占一份时最容易只留两个：这里显式按出现顺序全部列出。
-    return {"mix": True, "head": variants[0].get("git_head"), "variants": variants}
+    return {"mix": True, "variants": variants}
 
 
 def write_records(path: Path, batch: dict[str, Any], records: list[dict[str, Any]]) -> None:
@@ -755,10 +760,7 @@ def render_markdown(batch: dict[str, Any], summary: dict[str, Any]) -> str:
         variants = anchor.get("variants") or []
         lines.append(
             f"- 代码锚点：混用了 {len(variants)} 个版本 —— "
-            + "、".join(
-                f"git {item.get('git_head', 'unknown')}（{item.get('records', '?')} 条记录）"
-                for item in variants
-            )
+            + "、".join(f"git {item.get('git_head', 'unknown')}" for item in variants)
         )
         anchor = variants[0] if variants else {}
     if anchor:

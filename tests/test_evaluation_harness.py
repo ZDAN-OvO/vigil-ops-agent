@@ -492,3 +492,17 @@ def test_empty_arm_facts_do_not_claim_zero_cost():
     assert empty.approvals is None
     rows = summarize([_record("f01", "rules", i) for i in (1, 2, 3)])
     assert rows["rows"][0]["median_tool_calls"] != 0
+
+
+def test_old_two_layer_anchors_expand_into_two_versions():
+    """中间那版 {"mixed": true, "also": {...}} 是两份锚点，不是一个。"""
+    from aiops.evaluation.harness import _merge_anchors
+
+    old = {
+        "git_head": "aaa",
+        "model": "m",
+        "mixed": True,
+        "also": {"git_head": "bbb", "model": "m"},
+    }
+    merged = _merge_anchors(old, None)
+    assert [item["git_head"] for item in merged["variants"]] == ["aaa", "bbb"]
