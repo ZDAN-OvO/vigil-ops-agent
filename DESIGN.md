@@ -443,7 +443,7 @@ aiops serve（单进程、单事件循环）
 新增一个迁移：
 
 - 会话表、会话消息表、请求防重表、工作表、会话事件表、`serve` 运行标记表。
-- 调查任务表新增 `ready_proposal_id`、`actions_disabled`。
+- 调查任务表新增 `ready_proposal_id`、`actions_disabled`；审批表新增可空的 `card_hash`，已有命令行审批保持原记录。
 - 执行记录的 `result` 中新增 `send_state`、`stage`、`not_executed_reason` 字段（jsonb，不改表结构）。
 - 回滚的固定内容与探针查询存于现有提案参数，不改提案表结构。
 

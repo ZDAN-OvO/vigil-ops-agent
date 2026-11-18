@@ -406,6 +406,7 @@ class Approval(Contract):
     reason: str
     decided_at: AwareDatetime
     expires_at: AwareDatetime | None = None
+    card_hash: str | None = None
 
 
 class RiskDisposition(StrEnum):
@@ -472,6 +473,8 @@ class InvestigationTask(Contract):
     outcome: TaskOutcome | None = None
     termination_code: str | None = None
     proposal_id: str | None = None
+    ready_proposal_id: str | None = None
+    actions_disabled: bool = False
     runtime_version: str = AGENT_RUNTIME_VERSION
     used_model_calls: int = Field(default=0, ge=0)
     used_tool_calls: int = Field(default=0, ge=0)
