@@ -382,7 +382,7 @@ class RolloutUndoAdapter:
         deadline = time.monotonic() + timeout_seconds
         while (remaining := deadline - time.monotonic()) > 0:
             # 单次读取也受剩余时限约束；连接挂起时抛出异常，由执行器按"已写入、待核实"收尾。
-            per_call = max(1.0, min(self._timeout[1], remaining))
+            per_call = min(self._timeout[1], remaining)
             deployment = apps.read_namespaced_deployment(
                 plan.name, plan.namespace, _request_timeout=(per_call, per_call)
             )
@@ -395,7 +395,7 @@ class RolloutUndoAdapter:
                 and (status.unavailable_replicas or 0) == 0
             ):
                 return True
-            time.sleep(2)
+            time.sleep(max(0.0, min(2.0, deadline - time.monotonic())))
         return False
 
     def state(self, namespace: str, name: str) -> dict[str, Any]:

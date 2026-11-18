@@ -309,3 +309,23 @@ def test_open_followup_resolved_during_running_investigation(web_dsn):
             assert snapshot.followups[0].resolution == "已核实"
 
     asyncio.run(scenario())
+
+
+def test_redaction_keeps_digest_only_in_card_image_and_handles_long_input():
+    import time
+
+    from aiops.web.redaction import Redactor
+
+    clean = Redactor(Settings(_env_file=None))
+    digest = "sha256:" + "1" * 64
+    assert "1" * 64 not in clean(f"plain {digest}")
+    image = f"gcr.io/demo/app@{digest}"
+    card = clean.change({"path": "containers[server].image", "from": "demo:canary", "to": image})
+    assert image in card["after"]
+    other = clean.change({"path": "containers[server].args", "from": None, "to": digest})
+    assert "1" * 64 not in other["after"]
+    pem = "-----BEGIN PRIVATE KEY-----\nMIIfakekeybody\n-----END PRIVATE KEY-----"
+    assert "MIIfakekeybody" not in clean(pem)
+    started = time.monotonic()
+    clean("-" * 8000 + "=:" * 4000)
+    assert time.monotonic() - started < 0.5

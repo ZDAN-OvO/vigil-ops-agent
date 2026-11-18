@@ -62,9 +62,12 @@ def observation_summary(row: dict, settings: Settings, clean: Redactor) -> str:
             return clean(f"{label}：{len(series)} 条序列，末次样本 {', '.join(map(str, samples))}")
         items = payload["items"]
         if row.get("tool") == "kubernetes.list_logs":
-            chunks = [item.get("lines", [])[-2:] for item in items[:3]]
-            # 先过滤再截断，避免截断把凭据切成过滤规则认不出的片段。
-            lines = [clean(line)[:240] for chunk in chunks for line in chunk]
+            # 先按完整日志块过滤（跨行的私钥块才能整体遮住），再取末两行并截断。
+            chunks = [
+                clean("\n".join(map(str, item.get("lines", [])))).splitlines()[-2:]
+                for item in items[:3]
+            ]
+            lines = [line[:240] for chunk in chunks for line in chunk]
             return clean(
                 f"{label}：{len(items)} 个采集对象" + ("\n" + "\n".join(lines) if lines else "")
             )

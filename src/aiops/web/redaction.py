@@ -14,20 +14,27 @@ PATTERNS = [
     re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S
     ),
-    # 键名允许带前缀或后缀（DB_PASSWORD、SSL_PRIVATE_KEY、MY_API_TOKEN），因此不用 \b 起界。
-    re.compile(
-        r"(?i)(?<![A-Za-z0-9])[A-Za-z0-9_.-]*"
-        r"(?:password|passwd|pwd|secret|token|api[-_. ]?key|authorization|access[-_. ]?key"
-        r"|private[-_. ]?key|credential)[A-Za-z0-9_.-]*"
-        r"""["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)"""
-    ),
     re.compile(r"""\b[a-zA-Z][a-zA-Z0-9+.-]+://[^\s/@'"<>]+@[^\s'"<>]+"""),
     re.compile(r"(?i)\b(?:sk[-_]|gh[pousr]_|github_pat_|AKIA|xox[baprs]-)[A-Za-z0-9_./+-]+"),
-    # 镜像摘要（sha256:…）是公开标识，保留它，卡片才能看清回滚到哪个镜像。
-    re.compile(r"(?i)\b(?<!sha256:)(?:[a-f0-9]{24,}|[a-z0-9_+-]{32,}={0,2})\b"),
+    re.compile(r"(?i)\b(?:[a-f0-9]{24,}|[a-z0-9_+-]{32,}={0,2})\b"),
     re.compile(r"""(?i)\bfile:[^\s'"`<>()\[\],;]+"""),
     re.compile(r"""(?<![\w:])(?:/|~\/|(?:\./)?runtime/)[^\s'"`<>()\[\],;]+"""),
 ]
+# 键名允许带前缀或后缀（DB_PASSWORD、SSL_PRIVATE_KEY、MY_API_TOKEN）。先在分隔符边界取完整键名，
+# 再检查是否含敏感词，不在键名内部逐位置尝试，长串标点不会拖慢过滤。
+KEY_VALUE = re.compile(
+    r"""(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)"""
+)
+SECRET_KEY = re.compile(
+    r"(?i)password|passwd|pwd|secret|token|api[-_. ]?key|authorization|access[-_. ]?key"
+    r"|private[-_. ]?key|credential"
+)
+# 只有卡片变更清单的镜像字段允许显示摘要，且必须是完整的镜像引用。
+IMAGE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]*@sha256:[a-f0-9]{64}$")
+
+
+def _hide_secret_pair(match: re.Match[str]) -> str:
+    return "【已隐藏】" if SECRET_KEY.search(match.group(1)) else match.group(0)
 
 
 class Redactor:
@@ -51,6 +58,7 @@ class Redactor:
     def __call__(self, text: str) -> str:
         for value in self.known:
             text = text.replace(value, "【已隐藏】")
+        text = KEY_VALUE.sub(_hide_secret_pair, text)
         for pattern in PATTERNS:
             text = pattern.sub("【已隐藏】", text)
         return text
@@ -64,6 +72,8 @@ class Redactor:
                 return None
             if sensitive:
                 return "已变化"
+            if path.endswith(".image") and isinstance(item, str) and IMAGE_REF.match(item):
+                return json.dumps(item)
             return self(json.dumps(item, ensure_ascii=False, sort_keys=True))
 
         # 涉及整个对象或列表时，键内也可能含敏感内容，整项隐藏。

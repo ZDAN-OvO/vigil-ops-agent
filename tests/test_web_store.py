@@ -1125,6 +1125,9 @@ def test_cli_pending_write_without_followup_can_be_adopted_and_resolved(web_dsn)
                 "vigil-lab/vigil-shop/Deployment/productcatalogservice"
             )
 
+            with pytest.raises(StoreUnavailable, match="adopt-pending"):
+                await ConversationRunner(store, settings).startup()  # 待办未关闭仍拒绝
+
             assert await store.resolve_followup(created[0], actor="op", note="集群已核实")
             assert not await store.target_is_locked(
                 "vigil-lab/vigil-shop/Deployment/productcatalogservice"

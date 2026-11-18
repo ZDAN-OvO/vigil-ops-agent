@@ -1405,7 +1405,15 @@ class Store:
                 SELECT 1 FROM action_attempts a
                 JOIN action_proposals p ON p.id = a.proposal_id
                 LEFT JOIN conversations c ON c.investigation_id = p.investigation_id
-                WHERE (a.status IN ('intent', 'executing') OR a.result->>'send_state' = 'sending')
+                WHERE (
+                        a.status IN ('intent', 'executing')
+                        OR a.result->>'send_state' = 'sending'
+                        -- adopt-pending 转出的命令行中断执行，待办关闭前仍算未决。
+                        OR (c.id IS NULL AND EXISTS (
+                            SELECT 1 FROM action_followups f
+                             WHERE f.attempt_id = a.id AND f.status = 'open'
+                               AND f.evidence->>'adopted' = 'true'))
+                      )
                   AND (NOT %s OR c.id IS NULL)
                 LIMIT 1
                 """,
@@ -1474,7 +1482,7 @@ class Store:
                                 row["target_kind"],
                                 row["target_name"],
                                 "命令行执行中断，写入结果未明，请人工核实",
-                                Jsonb({"result": row["result"], **marker}),
+                                Jsonb({"result": row["result"], "adopted": True, **marker}),
                             ),
                         )
                         created.append(followup_id)
