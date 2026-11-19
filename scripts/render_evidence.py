@@ -5,7 +5,7 @@
     python3 scripts/render_evidence.py \
         --title "Pod 重建：故障持续" \
         --command "bash faults/a01-pod-rebuild/repeat.sh verify" \
-        --source faults/a01-pod-rebuild/runs/02-verify.txt \
+        --source .evidence/pod-rebuild/02-verify.txt \
         --out .evidence/pod-rebuild/02-fault-sustained.png
 """
 

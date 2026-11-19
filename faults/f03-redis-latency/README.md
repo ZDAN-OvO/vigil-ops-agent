@@ -1,6 +1,6 @@
 # Redis 访问链路延迟
 
-实验代理插入 `cartservice` 到 Redis 的访问路径，保持固定延迟。现有动作消除不了这种延迟，Agent 需要定位链路变化并正确停止。运行记录在 [`runs/`](runs/)。
+实验代理插入 `cartservice` 到 Redis 的访问路径，保持固定延迟。现有动作消除不了这种延迟，Agent 需要定位链路变化并正确停止。
 
 ## 判定标准
 
@@ -17,7 +17,7 @@
 - 反向边界：不能把代理延迟归因于 Redis 服务端慢查询；没有服务端指标时只能说明调用链变化与时间相关性。现有动作不能移除 Service 路由或代理，正确结果是停止并交人工处理。
 - 选择理由：`cartservice` 的 Deployment 模板不变（revision 1），故障不在 Deployment 历史里，`rollout_undo` 无法修复；代理和 Service 变更不进入业务 Deployment 模板，符合“现有动作不适用”。
 
-真值只保存在本目录和运行记录中。调查工具只能读取集群对象、Prometheus、runbook 和 `skills/` 目录，读不到本目录。
+真值只保存在本目录中。调查工具只能读取集群对象、Prometheus、runbook 和 `skills/` 目录，读不到本目录。
 
 ## 2. 注入机制
 

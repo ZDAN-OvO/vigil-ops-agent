@@ -1,6 +1,6 @@
 # 持续内存限额不足导致 OOM
 
-降低 Deployment 模板的内存限额，造成持续 OOM。Agent 需要识别规格不足，判断重建 Pod 不适用，在条件满足时回退到健康模板。运行记录在 [`runs/`](runs/)。
+降低 Deployment 模板的内存限额，造成持续 OOM。Agent 需要识别规格不足，判断重建 Pod 不适用，在条件满足时回退到健康模板。
 
 ## 判定标准
 
@@ -18,7 +18,7 @@
 - 反向边界：旧规格 Pod 不能继续服务；Kubernetes 自动重启容器不算恢复；只有回退到历史模板并由真实请求确认后才算恢复。
 - 选择理由：`recommendationservice` 停掉时首页仍为 200（前端降级并记录 warning），不能作为业务受损证据；`currencyservice` 停掉时首页稳定 500，且 Deployment 只有一个容器、历史 revision 简单。
 
-真值只保存在本目录和运行记录中，包括目标、限额和注入步骤。调查工具只能读取集群对象、Prometheus、runbook 和 `skills/` 目录，读不到本目录。
+真值只保存在本目录中，包括目标、限额和注入步骤。调查工具只能读取集群对象、Prometheus、runbook 和 `skills/` 目录，读不到本目录。
 
 已披露的前置异常：原规格 `128Mi` 的 `currencyservice` Pod 在实验前曾出现一次 `OOMKilled`（restartCount 1）。正式基线的 Pod 在注入前 9 分钟内为 0 重启，但“该服务在 128Mi 下完全没 OOM 过”不成立。第二轮期间 `paymentservice` 也出现一次 OOMKilled（limit 仍为 128Mi、无规格变化），属于与本次注入无关的次要异常。
 

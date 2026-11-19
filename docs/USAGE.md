@@ -119,7 +119,7 @@ kubectl -n vigil-monitoring get secret vigil-webhook-token -o jsonpath='{.data.t
 
 - 业务数据：PostgreSQL `vigil` 库。事件/调查/假设/观测/工具账本/委派/提案/审批/执行/审计/待办/runbook 各一张表，迁移文件在 `src/aiops/migrations/`。
 - 运行产物：`runtime/`（`VIGIL_RUNTIME_DIR`），存放大观测的原始文件，不入库。它是临时工作目录，不是证据存档。
-- 验收记录：`faults/<场景>/runs/` 保存结论，`.evidence/` 保存不提交的本地截图。
+- 验收截图：`.evidence/` 保存不提交的本地截图。
 - 历史遗留：一次演练会在库里留若干 `pending_approval` 提案与 `open` 待办，属正常记录；旧提案过期后再批准会因 `approval_expired` 拒绝。需要干净基线时可以重建库。
 
   > **警告**：下面的命令会删除 `vigil` 库中的全部业务数据和 checkpoint，无法恢复。只在确认不再需要现有记录时执行。
