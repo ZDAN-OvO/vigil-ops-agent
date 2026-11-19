@@ -1,8 +1,6 @@
-.PHONY: init help format lint test check-all
+.PHONY: init format lint test check-all
 init:
 	uv sync --group dev
-help:
-	uv run --frozen aiops --help
 format:
 	uv run --frozen ruff check --select I --fix src tests
 	uv run --frozen ruff format src tests

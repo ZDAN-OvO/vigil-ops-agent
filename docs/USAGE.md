@@ -4,15 +4,15 @@
 
 ## 1. 操作入口
 
-三条链路，日常用法各不同：
+三条链路，日常用法各不同。命令行入口正在重做，见设计文档；本节只写链路分工，操作步骤等新入口落地后补。
 
 | 链路 | 入口 | 谁触发 | 产物 |
 |---|---|---|---|
-| 告警 → 调查 | `aiops serve` + AlertManager | Prometheus 真实告警 | 事件、调查、提案；满足自动规则时可执行 Pod 重建 |
-| 手动调查 | `aiops investigate` | 你自己 | 事件、调查、Skill 与委派记录、提案 |
-| 受控处置 | `aiops act` / `approve` / `resume` | 操作者提交与审批 | 提案、审批、执行尝试、验证结果、审计 |
+| 告警 → 调查 | AlertManager webhook | Prometheus 真实告警 | 事件、调查、提案；满足自动规则时可执行 Pod 重建 |
+| 手动调查 | 对话式入口 | 你自己 | 事件、调查、Skill 与委派记录、提案 |
+| 受控处置 | 对话式入口中的审批 | 操作者提交与审批 | 提案、审批、执行尝试、验证结果、审计 |
 
-调查默认只读；单 Agent 在 `vigil-experiment` 内可对满足规则的 `restart_pod` 自动执行，其余动作等人工审批。操作者入口 `act`/`approve`/`resume` 写集群，动作只有 `rollout_undo`（回退到上一 revision）和 `restart_pod`（重建 Pod）两种。实验命名空间之外默认拒绝。
+调查默认只读；`vigil-experiment` 内满足规则的 `restart_pod` 自动执行，其余动作等人工审批。动作只有 `rollout_undo`（回退到上一 revision）和 `restart_pod`（重建 Pod）两种。实验命名空间之外默认拒绝。
 
 ## 2. 前置：先确认环境活着
 
@@ -34,7 +34,7 @@ docker ps --filter name=vigil-postgres
 curl -s http://127.0.0.1:3425/v1/models | head -c 200
 ```
 
-`kubectl` 默认不读 `~/.kube/vigil-lab.yaml`，但 `aiops` 通过 `VIGIL_KUBECONFIG` 读它，两者互不影响。`repeat.sh` 等脚本会自己 export，不必依赖 shell 环境。
+`kubectl` 默认不读 `~/.kube/vigil-lab.yaml`，但 Vigil 通过 `VIGIL_KUBECONFIG` 读它，两者互不影响。`repeat.sh` 等脚本会自己 export，不必依赖 shell 环境。
 
 宿主机端口被别的项目占用时先看 `ss -ltnp | grep <端口>`：本机 8081 被另一个前端项目占用，因此 webhook 用 8091、前端 port-forward 用 8082。
 
@@ -47,7 +47,7 @@ kubectl -n vigil-monitoring port-forward svc/alertmanager 9093:9093
 kubectl -n vigil-shop port-forward svc/frontend 8082:80
 ```
 
-port-forward 随 Pod 重启会断，`aiops` 报 `Prometheus 不可用` 时先重连。
+port-forward 随 Pod 重启会断，Vigil 报 `Prometheus 不可用` 时先重连。
 
 ## 3. 配置：`.env`
 
@@ -83,76 +83,21 @@ kubectl -n vigil-monitoring get secret vigil-webhook-token -o jsonpath='{.data.t
 
 迁移同时删除旧 `hypothesis_revisions` 与 `tool_calls` 表，见 [0011 迁移](../src/aiops/migrations/0011_skills_and_delegations.sql)。迁移前的导出应覆盖需要保留的旧记录。
 
-```bash
-uv run --frozen aiops db status   # 期望列出 0001_init … 0011_skills_and_delegations
-uv run --frozen aiops db migrate  # 幂等；升级后先跑这个
-```
+迁移原本靠旧 CLI 执行，入口随命令行一起重做，见设计文档；迁移 SQL 本身仍在 `src/aiops/migrations/` 并可重复执行。
 
 ## 4. 命令手册
 
-| 命令 | 作用 | 写集群 |
-|---|---|---|
-| `aiops status` | 版本与能力范围，不探测集群 | 否 |
-| `aiops db status` / `db migrate` | 迁移状态 / 应用缺失迁移 | 否 |
-| `aiops investigate --service --symptoms` | 跑一次调查；单 Agent 可能等待审批（退出 3） | 仅自动允许的实验命名空间 `restart_pod` |
-| `aiops incidents [--limit N]` | 最近事件与关联调查 | 否 |
-| `aiops report <inv-id>` | 已存结论、假设、Skill、委派与观测条数 | 否 |
-| `aiops act --kind rollout-undo --deployment X --reason "..."` | 提交回退提案 | 自动允许时当场执行 |
-| `aiops act --kind restart-pod --pod P --service S --reason "..."` | 提交重建提案 | 实验命名空间自动执行 |
-| `aiops approvals [--status]` | 待审批提案列表 | 否 |
-| `aiops proposal <act-id>` | 单个提案 + 审批 + 执行 + 审计 + 待办 | 否 |
-| `aiops approve <act-id> [--defer]` | 批准并执行；`--defer` 只记录审批 | 是 |
-| `aiops resume <act-id>` | 执行已批准未执行的提案 | 是 |
-| `aiops reject <act-id>` | 拒绝，不写集群 | 否 |
-| `aiops cancel <inv-id>` | 请求取消运行中的单 Agent 任务；等待审批时直接终止 | 否 |
-| `aiops followups` / `followup <fol-id>` | 异常执行留下的人工待办 | 否 |
-| `aiops knowledge list` / `knowledge import --path <文件或目录>` | 结构化 runbook 查询与登记 | 否 |
-| `aiops serve` | 启动 AlertManager webhook | 否 |
-
-除 `serve`、`knowledge` 外，表中命令支持 `--output json`，便于脚本消费。
-
-### 退出码
-
-退出码 0 的异步 `accepted` 只表示请求已接收，不代表调查或修复成功；任务仍需通过报告核实。
-
-| 码 | `investigate`（单 Agent） | `approve` / `resume` / `act` |
-|---|---|---|
-| 0 | 任务 recovered 或仅诊断完成 | 执行且验证通过 |
-| 1 | 运行失败、预算耗尽等 | 已执行但未验证通过 / 存储或参数错误 |
-| 2 | 参数／用法错误 | 参数／用法错误 |
-| 3 | 等待审批，或 report 有需人工跟进项 | 提案已创建，等待审批（没有执行） |
-| 4 | 策略拒绝 | 策略拒绝，未执行 |
-| 5 | 信息不足，未形成根因候选 | — |
-
-调查任务状态看 `report` 与 `data.task`（phase/outcome/termination_code）；`investigations.status` 只表示诊断结论。`data.skills` 记录本轮加载的 Skill 与内容哈希，`data.delegations` 记录只读委派，每条包含委派 ID、子任务 Skill 和 `observation_ids`（该委派返回的观测）。
+命令行入口正在重做，见设计文档。本节原有的命令已随旧 CLI 删除，不再提供参数、退出码和 `--output json` 说明；入口实现后在此重写。
 
 ## 5. 调查与审批
 
-环境就绪后，手动发起调查并读取报告：
+环境就绪后由入口发起调查，再按报告核对流程：
 
-```bash
-uv run --frozen aiops investigate --service frontend --symptoms "首页 500"
-uv run --frozen aiops report <inv-id>
-```
+1. 读报告里的假设、观测与缺失证据，确认结论是根因候选还是信息不足。
+2. 等待审批时，核对提案的目标、参数和审计记录，再决定批准或拒绝。
+3. 执行后核查提案里的验证结果；出现人工待办时，按待办原因人工核实。
 
-告警触发时先启动 `aiops serve`。收到 webhook 后返回 202；同一指纹重复投递返回 `deduplicated`。用 `aiops incidents --limit 3` 找到事件与调查 ID。
-
-报告列出假设、观测与缺失证据。等待审批时，核对提案的目标、参数和审计记录，再决定批准或拒绝：
-
-```bash
-uv run --frozen aiops approvals
-uv run --frozen aiops proposal <act-id>
-uv run --frozen aiops approve <act-id>
-```
-
-拒绝提案使用 `aiops reject <act-id>`。没有现成提案时，操作者可以提交回退请求：
-
-```bash
-uv run --frozen aiops act --kind rollout-undo \
-  --deployment <deployment> --reason "回退原因" --investigation <inv-id>
-```
-
-审批有效期由 `VIGIL_ACTION_APPROVAL_TTL_SECONDS` 控制，默认 900 秒。超时、目标 resourceVersion 变化或提案哈希不一致都会拒绝执行，需要重新提案。执行后核查提案中的验证结果；有人工待办时，用 `aiops followups` 查看原因。
+审批有效期由 `VIGIL_ACTION_APPROVAL_TTL_SECONDS` 控制，默认 900 秒。超时、目标 resourceVersion 变化或提案哈希不一致都会拒绝执行，需要重新提案。
 
 故障注入与复位使用[场景操作步骤](../faults/README.md)，操作者复位与 Agent 恢复分别记录。
 
@@ -163,12 +108,12 @@ uv run --frozen aiops act --kind rollout-undo \
 | `未配置 VIGIL_DATABASE_URL` | 缺 `.env` 或没在仓库根目录 | 检查根目录 `.env` |
 | `StoreUnavailable` / 连接拒绝 | `vigil-postgres` 没起 | `docker start vigil-postgres` |
 | Prometheus 相关报错 | port-forward 断了 | 重连 9090 |
-| webhook `401 unauthorized` | token 与集群 secret 不一致 | 改成 secret 里的值并重启 `serve` |
-| AlertManager 投递不到 | `serve` 只监听 127.0.0.1 / 端口不对 | `VIGIL_WEBHOOK_HOST=0.0.0.0`，配置里的 `172.20.0.1:<端口>` 对齐 |
+| webhook `401 unauthorized` | token 与集群 secret 不一致 | 改成 secret 里的值并重启接收端 |
+| AlertManager 投递不到 | 接收端只监听 127.0.0.1 / 端口不对 | `VIGIL_WEBHOOK_HOST=0.0.0.0`，配置里的 `172.20.0.1:<端口>` 对齐 |
 | 模型调用失败 | 网关模型 ID 已下线 | `curl 127.0.0.1:3425/v1/models` 重新选别名 |
 | `unable to find container named` | 用了 Deployment 名当容器名 | 先 `kubectl get deploy X -o jsonpath='{.spec.template.spec.containers[*].name}'` |
-| `approval_expired` / `target_drift` | 审批过期或目标已变 | 重新 `act` 提案，不复用旧授权 |
-| 执行后出现 followup 而非 verified | 动作没改善或样本不足 | `aiops followups` 看原因，人工核实 |
+| `approval_expired` / `target_drift` | 审批过期或目标已变 | 重新提交提案，不复用旧授权 |
+| 执行后出现 followup 而非 verified | 动作没改善或样本不足 | 查待办原因，人工核实 |
 
 ## 7. 数据在哪、怎么清
 
@@ -181,15 +126,13 @@ uv run --frozen aiops act --kind rollout-undo \
 
   ```bash
   docker exec vigil-postgres psql -U vigil -d vigil -c 'drop schema public cascade; create schema public;'
-  uv run --frozen aiops db migrate
   ```
+
+  清空后需要重新应用迁移；迁移入口随命令行一起重做，见设计文档。
 
 ## 8. 自检
 
 ```bash
-uv run --frozen aiops db status
-uv run --frozen aiops investigate --service frontend --symptoms "冒烟"
-uv run --frozen aiops report <上一步返回的 inv-id>
 uv run --frozen python scripts/skill_runtime_gate.py
 ```
 

@@ -147,20 +147,13 @@ kubectl port-forward -n vigil-monitoring svc/prometheus 9090:9090 --address 127.
 | 用户／库 | `vigil` / `vigil` |
 | 连接串 | `.env` 中的 `VIGIL_DATABASE_URL`，不写入仓库 |
 
-迁移与连接检查：
-
-```bash
-uv run --frozen aiops db migrate
-uv run --frozen aiops db status
-```
-
-业务表迁移在 `src/aiops/migrations/`，可重复执行；LangGraph checkpoint 表由官方 saver 管理，不在这组迁移中。
+业务表迁移在 `src/aiops/migrations/`，可重复执行；LangGraph checkpoint 表由官方 saver 管理，不在这组迁移中。迁移与连接检查原本靠旧 CLI 完成，入口随命令行一起重做，见设计文档。
 
 这是单机实验实例，没有备份、副本或连接池容量规划，不构成生产建议。
 
 ## 8. 告警入口
 
-AlertManager 通过 webhook 把 firing 告警交给 `aiops serve`。接收端只保留白名单标签，`scenario` 等实验标记不会进入事件。
+AlertManager 通过 webhook 把 firing 告警交给 Vigil 的接收端。接收端只保留白名单标签，`scenario` 等实验标记不会进入事件。
 
 | 项目 | 实测值 |
 |---|---|
@@ -183,9 +176,7 @@ kubectl create secret generic vigil-webhook-token -n vigil-monitoring \
   --from-literal=token="$(grep '^VIGIL_WEBHOOK_TOKEN=' .env | cut -d= -f2-)"
 ```
 
-```bash
-uv run --frozen aiops serve --host 172.20.0.1 --port 8091
-```
+接收端的启动入口随命令行一起重做，见设计文档；启动参数仍读 `VIGIL_WEBHOOK_HOST`、`VIGIL_WEBHOOK_PORT`。
 
 接收端运行期间保持 Prometheus 的 port-forward 在线。
 

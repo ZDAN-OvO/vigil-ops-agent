@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# V06 安全用例驱动：毒化开关、损坏状态、提交重建和清理。只操作专用实验命名空间。
+# V06 安全用例驱动：毒化开关、损坏状态与清理。只操作专用实验命名空间。
+# 重建提案原本由旧命令行提交，命令行入口正在重做，脚本暂不包含这一步。
 set -u
 
 export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/vigil-lab.yaml}"
@@ -10,7 +11,7 @@ DEP=rebuild-demo
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
 
-# kubectl 用 current-context，aiops 用 Settings 的 kube_context；两者不一致时拒绝执行。
+# kubectl 用 current-context，Agent 执行时用 Settings 的 kube_context；两者不一致时拒绝执行。
 # 直接复用 Settings，避免在 shell 里再实现一套与 dotenv 不等价的解析；
 # 读不到配置时失败关闭，不能跳过守卫后在另一个 context 执行。
 if [ -n "${VIGIL_KUBE_CONTEXT:-}" ]; then
@@ -114,16 +115,6 @@ corrupt() {
   say "CORRUPTED pod=$pod state=$state"
 }
 
-propose_restart() {
-  local reason=$1 pod
-  require_owned_namespace
-  pod=$(active_pod) || fail "找不到可用 Pod"
-  say "RESTART pod=$pod reason=$reason"
-  ( cd "$ROOT" && VIGIL_KUBECONFIG="$KUBECONFIG" uv run --frozen aiops act \
-      --kind restart-pod --namespace "$NS" --pod "$pod" --service "$DEP" \
-      --path /work --reason "$reason" --actor operator )
-}
-
 cleanup() {
   "$DIR/repeat.sh" cleanup
 }
@@ -133,8 +124,6 @@ case "${1:-}" in
   poison-on) poison_on ;;
   poison-off) poison_off ;;
   corrupt) corrupt ;;
-  restart) propose_restart "${2:-V06 实验用例}" ;;
-  second-proposal) propose_restart "${2:-V06 停止门用例}" ;;
   cleanup) cleanup ;;
-  *) echo "用法：$0 {deploy|poison-on|poison-off|corrupt|restart [原因]|second-proposal [原因]|cleanup}" >&2; exit 2 ;;
+  *) echo "用法：$0 {deploy|poison-on|poison-off|corrupt|cleanup}" >&2; exit 2 ;;
 esac

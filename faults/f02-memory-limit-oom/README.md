@@ -58,12 +58,7 @@ bash faults/f02-memory-limit-oom/repeat.sh restore   # 注入器恢复规格并�
 
 脚本依赖宿主机 `kubectl`、`curl`、`python3`，默认端口 8080 用于前端 port-forward。`restore` 是注入器的复位动作，单独记录 actor；若 Agent 已回退，它只做 no-op 确认，不计 Agent 成功。
 
-Agent 链路由告警或手工调查触发，使用：
-
-```bash
-uv run --frozen aiops investigate --service frontend --symptoms "..." --context "alertname=FrontendProbeFailed"
-uv run --frozen aiops approve <提案 ID> --actor <审批人>
-```
+Agent 链路由告警或手工调查触发；命令行入口正在重做，见设计文档，本节不提供发起与审批命令。
 
 ## 5. 已知缺口
 

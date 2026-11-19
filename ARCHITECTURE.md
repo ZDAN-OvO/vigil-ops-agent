@@ -14,7 +14,7 @@ Vigil 在同一进程内组织接入、调查与受控处置。
 
 ```mermaid
 flowchart TD
-    A[接入：AlertManager webhook / CLI] --> B[任务入口：Incident 与去重]
+    A[接入：AlertManager webhook] --> B[任务入口：Incident 与去重]
     B --> C[主 Agent 调查循环]
     S[排查方法 Skill] --> C
     K[Runbook 查询] --> C
@@ -34,7 +34,7 @@ flowchart TD
 
 | 模块 | 源码入口 | 依赖与职责边界 |
 |---|---|---|
-| 接入与操作 | [cli.py](src/aiops/cli.py)、[webhook.py](src/aiops/webhook.py) | 校验输入、鉴权、去重和命令输出；通过 factory 装配调查或操作者执行器 |
+| 接入 | [webhook.py](src/aiops/webhook.py) | 告警接入：校验输入、鉴权与去重；通过 factory 装配调查 |
 | 调查 | [agent/](src/aiops/agent)、[factory.py](src/aiops/investigation/factory.py) | 编排模型、预算、假设、证据与终态；依赖工具、Store 和动作执行器 |
 | 排查能力 | [skills.py](src/aiops/skills.py)、[registry.py](src/aiops/tools/registry.py)、[toolbox.py](src/aiops/investigation/toolbox.py) | 装配 Skill 与工具；委派共享预算和观测，只有只读能力 |
 | 受控处置 | [actions/](src/aiops/actions) | 风险规则、授权、资源快照、锁、外部写入与业务验证；不以模型结论代替授权 |

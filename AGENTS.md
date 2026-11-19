@@ -6,7 +6,7 @@ Linux + uv，Python。文档、注释、提交信息用简体中文，标识符�
 
 ```text
 .
-├── src/aiops/        # 应用源码；CLI 与 webhook 接入
+├── src/aiops/        # 应用源码；webhook 接入与调查、处置（命令行入口正在重做）
 │   ├── agent/       # 调查、取证与只读委派
 │   ├── actions/     # 提案、授权、执行与验证
 │   ├── tools/       # 集群与监控查询
@@ -22,7 +22,7 @@ Linux + uv，Python。文档、注释、提交信息用简体中文，标识符�
 ├── ARCHITECTURE.md  # 模块关系与架构约束
 ├── GLOSSARY.md      # 领域术语
 ├── docs/
-│   ├── USAGE.md     # 配置、命令与排障
+│   ├── USAGE.md     # 配置、使用流程与排障
 │   └── adr/         # 决策背景、取舍与后果；后续决策注明取代关系
 └── deprecated/      # 旧项目封存；新代码不导入、不自动加载
 ```

@@ -42,7 +42,7 @@ k3d image import vigil/pod-rebuild-demo:20261105-v06 -c vigil-lab
 - 基础镜像 `python:3.12-slim`。
 - 当前镜像标签 `20261105-v06`，基础镜像 `python:3.12-slim`。
 - 镜像只在本地构建和导入，没有推送外部仓库。
-- [`v06.sh`](v06.sh) 驱动异常结果用例的毒化、损坏、重建和清理；脚本只接受 `vigil-experiment`，归属不符或读不到归属时直接停止，并把 `KUBECONFIG` 显式传给 `aiops`，避免检查与执行落在不同集群。
+- [`v06.sh`](v06.sh) 驱动异常结果用例的毒化、损坏和清理；脚本只接受 `vigil-experiment`，归属不符或读不到归属时直接停止，并核对 Settings 的 `kube_context` 与 `kubectl` current-context 一致，避免检查与执行落在不同集群。重建提案原本由旧命令行提交，这部分随命令行入口一起重做。
 
 ## 3. 两类信号
 
