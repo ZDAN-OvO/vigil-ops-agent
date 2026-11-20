@@ -210,6 +210,7 @@ def test_once_streams_during_work_and_keeps_real_sequence(child_env, tmp_path):
         env, "SELECT seq, type FROM session_events WHERE session_id = %s ORDER BY seq", session_id
     )
     assert all((event["seq"], event["type"]) in expected for event in events)
+    assert [event["seq"] for event in events] == [seq for seq, _ in expected]
     assert _sql(env, "SELECT lease_owner FROM sessions WHERE id = %s", session_id) == [(None,)]
     resumed = _stream(_run(child_env, "-c", "--output", "stream-json"), 0)
     marker = resumed[0]

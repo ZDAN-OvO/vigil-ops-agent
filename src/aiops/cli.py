@@ -40,14 +40,6 @@ from aiops.sessions.store import SessionStore
 from aiops.skills import SkillLoadError, load_skill_catalog
 
 POLL_SECONDS = 0.5
-STREAM_EVENTS = {
-    "session",
-    "message",
-    "tool_call",
-    "hypothesis",
-    "approval_required",
-    "action_result",
-}
 TERMINAL_CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
@@ -247,7 +239,7 @@ class OnceOutput:
     async def emit(self, event: SessionEvent) -> None:
         if event.type == "approval_required":
             self.cards.append(event)
-        if self.mode == "stream-json" and event.type in STREAM_EVENTS:
+        if self.mode == "stream-json" and event.type != "result":
             await _write(_json(event.as_dict()))
         elif self.mode == "text" and event.type != "result":
             await _emit_text(event)
@@ -466,7 +458,7 @@ class TerminalChat:
             if session.state == "closed":
                 return
             if session.last_seq != seen:
-                with suppress(SessionClosed):
+                try:
                     async with self.driver.claim(self.session_id, lane=lane) as run:
                         if run is not None and not self.stop.is_set():
                             seen = session.last_seq
@@ -475,6 +467,11 @@ class TerminalChat:
                                 await _pause(self.stop)
                                 if not self.stop.is_set():
                                     outcome = await run.drive()
+                except SessionClosed:
+                    return
+                except (AwaitingActionReceipt, LeaseLost):
+                    # 接手仍在验证的卡片时，让出会话租约并等待回执。
+                    seen = -1
             await _pause(self.stop)
 
     async def handle(self, line: str) -> None:
