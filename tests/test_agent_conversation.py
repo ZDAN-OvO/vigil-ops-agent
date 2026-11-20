@@ -94,6 +94,11 @@ def test_queries_again_next_turn_and_projects_only_public_fields(tmp_path):
             assert "demo-secret" not in str(events)
             assert "/home/demo/credentials" not in str(events)
             assert "raw_ref" not in str(events)
+            assert any(
+                '"replicas": 3' in (event.get("observation") or "")
+                for event in events
+                if event["type"] == "tool_call"
+            )
             for incoming in (first, second):
                 saved = await driver.sessions.get_input(incoming.id)
                 assert saved.checkpoint_id is not None
@@ -214,6 +219,9 @@ class CardExecutor(FakeAgentExecutor):
     async def get_card_decision(self, proposal_id, *, session_id):
         assert self.lease.session_id == session_id
         return await self.driver.store.get_approval(proposal_id)
+
+    async def read_action_attempt(self, proposal_id):
+        return await self.driver.store.get_attempt(proposal_id)
 
     async def publish_card(self, proposal_id, *, lease, turn_id):
         assert lease == self.lease and turn_id == self.turn_id

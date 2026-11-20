@@ -91,8 +91,14 @@ def test_card_is_bound_to_pause_scope_and_saved_fingerprint(tmp_path, cleanup):
     async def run():
         plan = replace(
             rollout_plan(),
+            replicas=2,
             changes=[
-                {"op": "remove", "path": "/spec/containers/0/extra"},
+                {"op": "remove", "path": "/spec/containers/0/extra", "current": "removed-value"},
+                {
+                    "op": "remove",
+                    "path": "/spec/containers/0/env/0",
+                    "current": {"name": "CREDENTIAL", "value": "original-private-value"},
+                },
                 {
                     "op": "add",
                     "path": "/spec/containers/0/env",
@@ -128,6 +134,9 @@ def test_card_is_bound_to_pause_scope_and_saved_fingerprint(tmp_path, cleanup):
                 f"/sessions/{proposal.session_id}#card-{proposal.id}"
             )
             assert card.payload["template_diff"][0]["op"] == "remove"
+            assert card.payload["template_diff"][0]["current"] == "removed-value"
+            assert card.payload["parameters"]["replicas"] == 2
+            assert "original-private-value" not in json.dumps(card.payload)
             assert "opaque-fake-password" not in json.dumps(card.payload)
             assert "synthetic-key" not in json.dumps(card.payload)
             assert await safety.list_runnable_card_sessions() == []
@@ -158,6 +167,9 @@ def test_card_is_bound_to_pause_scope_and_saved_fingerprint(tmp_path, cleanup):
                 "status"
             ] == "rejected"
             assert await store.get_attempt(proposal.id) is None
+            events = await SessionStore(store).list_events(proposal.session_id, after_seq=card.seq)
+            (decision,) = [event for event in events if event.type == "card_decision"]
+            assert decision.payload["expires_at"] is None
             assert adapter.calls == []
 
     asyncio.run(run())
@@ -302,18 +314,17 @@ def test_recovery_distinguishes_lock_intent_and_send_grant(
                 await executor.execute_authorized(proposal.id)
             assert adapter.calls.count(False) == 0
             await _expire(recovery, proposal)
-            await ActionSafety(recovery).recover_target(_key(proposal))
-            attempt = await recovery.get_attempt(proposal.id)
+            lease = await SessionStore(recovery).acquire_main_lease(proposal.session_id, "recovery")
+            executor._session_lease = lease
+            if crash_after == "reserve":
+                await ActionSafety(recovery).recover_target(_key(proposal))
+            attempt = await executor.read_action_attempt(proposal.id)
             saved = await recovery.get_proposal(proposal.id)
             if crash_after == "grant_send":
                 assert saved.status == ProposalStatus.UNKNOWN
                 assert await recovery.target_is_locked(_key(proposal))
                 assert attempt.status == AttemptStatus.UNKNOWN
                 assert project_action_result(attempt)["written"] is None
-                lease = await SessionStore(recovery).acquire_main_lease(
-                    proposal.session_id, "recovery"
-                )
-                executor._session_lease = lease
                 monkeypatch.setattr(ActionSafety, crash_after, original)
                 assert await executor.execute_authorized(proposal.id) == attempt
             else:

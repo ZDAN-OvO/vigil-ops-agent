@@ -44,12 +44,14 @@ class RolloutPlan:
     replica_set_uid: str = ""
     replica_set_version: str = ""
     changes: list[dict[str, Any]] = field(default_factory=list)
+    replicas: int | None = None
 
     def approved_parameters(self) -> dict[str, Any]:
         return {
             "from_revision": self.current_revision,
             "to_revision": self.target_revision,
             "target_image": self.target_image,
+            "replicas": self.replicas,
             "from_memory_limit": self.current_memory_limit,
             "to_memory_limit": self.target_memory_limit,
             "workload": self.deployment_uid,
@@ -112,7 +114,7 @@ def _template_diff(old: Any, new: Any, path: str = "") -> list[dict[str, Any]]:
             if key not in old:
                 changes.append({"op": "add", "path": child, "value": new[key]})
             elif key not in new:
-                changes.append({"op": "remove", "path": child})
+                changes.append({"op": "remove", "path": child, "current": old[key]})
             else:
                 changes.extend(_template_diff(old[key], new[key], child))
         return changes
@@ -120,11 +122,11 @@ def _template_diff(old: Any, new: Any, path: str = "") -> list[dict[str, Any]]:
         for index, (before, after) in enumerate(zip(old, new, strict=False)):
             changes.extend(_template_diff(before, after, f"{path}/{index}"))
         for index in reversed(range(len(new), len(old))):
-            changes.append({"op": "remove", "path": f"{path}/{index}"})
+            changes.append({"op": "remove", "path": f"{path}/{index}", "current": old[index]})
         for index in range(len(old), len(new)):
             changes.append({"op": "add", "path": f"{path}/{index}", "value": new[index]})
         return changes
-    return [{"op": "replace", "path": path, "value": new}]
+    return [{"op": "replace", "path": path, "current": old, "value": new}]
 
 
 def _identity_tests(uid: str, version: str) -> list[dict[str, str]]:
@@ -256,6 +258,7 @@ class RolloutUndoAdapter:
             replica_set_uid=replicaset.metadata.uid,
             replica_set_version=replicaset.metadata.resource_version,
             changes=_template_diff(current_template, target_template),
+            replicas=deployment.spec.replicas,
         )
 
     def apply(self, plan: RolloutPlan, *, dry_run: bool, proposal_id: str) -> dict[str, Any]:

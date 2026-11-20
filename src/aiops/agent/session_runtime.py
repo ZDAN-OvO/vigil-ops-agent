@@ -24,6 +24,8 @@ class CardActions(Protocol):
 
     async def get_card_decision(self, proposal_id: str, *, session_id: str) -> Approval | None: ...
 
+    async def read_action_attempt(self, proposal_id: str) -> ActionAttempt | None: ...
+
 
 _CREDENTIAL = re.compile(
     r"""(?ix)

@@ -421,6 +421,8 @@ class ActionExecutor:
                 "discardable": plan.discardable,
                 "template_hash": plan.template_hash,
                 "restart_count": plan.restart_count,
+                "node_name": plan.node_name,
+                "last_exit_reason": applicability.get("last_terminated_reason"),
                 "service": service,
                 "path": path,
                 "applicability": applicability,
@@ -621,6 +623,27 @@ class ActionExecutor:
     async def get_card_decision(self, proposal_id: str, *, session_id: str) -> Approval | None:
         return await self._safety.get_card_decision(proposal_id, session_id=session_id)
 
+    async def read_action_attempt(self, proposal_id: str) -> ActionAttempt | None:
+        """先收敛旧尝试，再向接手的驱动返回回执。"""
+        lease, turn_id = self._scope()
+        proposal = await self._store.get_proposal(proposal_id)
+        if proposal is None or (proposal.session_id, proposal.session_turn_id) != (
+            lease.session_id,
+            turn_id,
+        ):
+            raise ActionError("scope_mismatch", "提案不属于当前主线轮次")
+        attempt = await self._store.get_attempt(proposal_id)
+        if attempt is not None and attempt.status in {
+            AttemptStatus.INTENT,
+            AttemptStatus.EXECUTING,
+        }:
+            target = proposal.target
+            await self._safety.recover_target(
+                target_key(target.cluster, target.namespace, target.kind, target.name)
+            )
+            return await self._store.get_attempt(proposal_id)
+        return attempt
+
     async def execute_authorized(
         self, proposal_id: str, *, actor: str = "operator"
     ) -> ActionAttempt:
@@ -671,7 +694,9 @@ class ActionExecutor:
             # 失败与关闭、失租、恢复竞争时，原驱动不能覆盖已持久化的状态。
             status = "expired" if exc.code == "expired" else "failed"
             with suppress(ActionError, LeaseLost):
-                await self._safety.fail_unsent(reservation, status=status, code=exc.code)
+                await self._safety.fail_unsent(
+                    reservation, status=status, code=exc.code, reason=exc.message
+                )
             raise
         except Exception as exc:  # noqa: BLE001 - 基础设施异常只能结束已确认未发送的动作
             with suppress(Exception):

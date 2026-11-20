@@ -117,7 +117,9 @@ def test_rollback_chooses_only_the_expected_deployment_replicaset(monkeypatch):
                 REVISION_ANNOTATION: "3",
             },
         ),
-        spec=SimpleNamespace(template=template("v3"), selector=SimpleNamespace(match_labels={})),
+        spec=SimpleNamespace(
+            template=template("v3"), selector=SimpleNamespace(match_labels={}), replicas=1
+        ),
     )
 
     def rs(name, replicaset_uid, image, revision, **owner_overrides):

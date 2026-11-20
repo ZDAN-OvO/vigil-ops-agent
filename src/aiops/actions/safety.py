@@ -152,9 +152,17 @@ class ActionSafety:
         await self.store._insert_approval(conn, approval)
         return approval
 
-    def _card(self, row: dict) -> dict[str, Any]:
+    async def _card(self, conn: AsyncConnection, row: dict) -> dict[str, Any]:
         proposal = _proposal_from_row(row)
         parameters = proposal.parameters
+        refs = await conn.execute(
+            """
+            SELECT id, observation_id FROM hypothesis_evidence
+            WHERE investigation_id = %s AND hypothesis_id = %s AND observation_id = ANY(%s)
+            """,
+            (proposal.investigation_id, proposal.hypothesis_id, proposal.evidence_ids),
+        )
+        by_observation = {ref["observation_id"]: ref["id"] for ref in await refs.fetchall()}
         return {
             "card_id": proposal.id,
             "action": proposal.kind.value,
@@ -167,6 +175,7 @@ class ActionSafety:
             "url": card_url(self.web_url, row["session_id"], proposal.id),
             "status": proposal.status.value,
             "fingerprint": proposal_hash(proposal),
+            "evidence_ids": [by_observation.get(obs, obs) for obs in proposal.evidence_ids],
             "reason": project_text(proposal.reason),
             "parameters": project_payload(
                 {
@@ -174,11 +183,15 @@ class ActionSafety:
                     for key in (
                         "from_revision",
                         "to_revision",
+                        "replicas",
                         "target_image",
                         "from_memory_limit",
                         "to_memory_limit",
                         "replica_set",
                         "pod",
+                        "node_name",
+                        "restart_count",
+                        "last_exit_reason",
                         "service",
                         "path",
                     )
@@ -231,7 +244,7 @@ class ActionSafety:
                 conn,
                 lease.session_id,
                 "approval_required",
-                self._card(row),
+                await self._card(conn, row),
                 turn_id=turn_id,
             )
             await conn.execute(
@@ -379,6 +392,7 @@ class ActionSafety:
                     "card_id": proposal.id,
                     "status": decision.value,
                     "decision_id": approval.id,
+                    "expires_at": approval.expires_at.isoformat() if approval.expires_at else None,
                     "actor": project_text(actor),
                     "reason": project_text(reason),
                 },
@@ -662,13 +676,15 @@ class ActionSafety:
             raise ActionError("expired", "审批已过期，未发送写请求")
         return receipt
 
-    async def fail_unsent(self, reservation: Reservation, *, status: str, code: str) -> None:
+    async def fail_unsent(
+        self, reservation: Reservation, *, status: str, code: str, reason: str = ""
+    ) -> None:
         async with self.store.transaction() as conn:
             row, attempt, lock = await self._locked_reservation(conn, reservation)
             await self._require_unsent(conn, reservation, row, lock)
             if attempt and (attempt["status"] != "intent" or attempt["send_granted_at"]):
                 raise ActionError("already_executed", "动作可能已发送")
-            await self._end_unsent(conn, row, attempt, status, code=code)
+            await self._end_unsent(conn, row, attempt, status, code=code, reason=reason)
 
     async def finish(
         self,
@@ -860,6 +876,7 @@ class ActionSafety:
         *,
         code: str,
         actor: str = "action-executor",
+        reason: str = "",
     ) -> None:
         await self._status(conn, row["id"], status)
         await conn.execute(
@@ -884,7 +901,7 @@ class ActionSafety:
                 raise ActionError("attempt_lost", "执行尝试不再处于未发送状态")
             receipt = _attempt_from_row(updated)
         await self._unlock(conn, row)
-        await self._emit_result(conn, row, receipt, status=status)
+        await self._emit_result(conn, row, receipt, status=status, reason=reason or code)
         await self.audit(conn, row["id"], actor, f"action.{status}", {"code": code})
 
     async def _void(
@@ -992,10 +1009,13 @@ class ActionSafety:
         attempt: ActionAttempt | None,
         *,
         status: str | None = None,
+        reason: str = "",
     ) -> None:
         if row["session_id"] is not None:
             payload = project_action_result(attempt, proposal_id=row["id"], status=status)
             payload["proposal_status"] = status or row["status"]
+            if reason:
+                payload["reason"] = project_text(reason)
             await self.sessions.append_event(
                 conn,
                 row["session_id"],

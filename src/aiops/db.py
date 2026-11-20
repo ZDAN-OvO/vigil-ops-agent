@@ -1426,7 +1426,7 @@ class Store:
             rows = await cursor.fetchall()
         return [_observation_from_row(row) for row in rows]
 
-    async def upsert_hypothesis_evidence(self, link: HypothesisEvidence) -> None:
+    async def upsert_hypothesis_evidence(self, link: HypothesisEvidence) -> str | None:
         """同一（假设，观测）只保留一条关系，重复标注按最新判断更新。"""
         async with self._ledger_connection(link.investigation_id) as conn:
             if self._turn_scope is not None:
@@ -1442,7 +1442,7 @@ class Store:
                 ).fetchone()
                 if refs is None:
                     raise LeaseLost("证据关系必须属于当前轮")
-            await conn.execute(
+            cursor = await conn.execute(
                 """
                 INSERT INTO hypothesis_evidence (
                     id, investigation_id, hypothesis_id, observation_id, relation, rationale
@@ -1451,6 +1451,7 @@ class Store:
                     relation = EXCLUDED.relation,
                     rationale = EXCLUDED.rationale
                 WHERE hypothesis_evidence.investigation_id = EXCLUDED.investigation_id
+                RETURNING id
                 """,
                 (
                     link.id,
@@ -1461,6 +1462,8 @@ class Store:
                     link.rationale,
                 ),
             )
+            row = await cursor.fetchone()
+            return row["id"] if row else None
 
     async def list_hypothesis_evidence(self, investigation_id: str) -> list[HypothesisEvidence]:
         async with self._connection() as conn:

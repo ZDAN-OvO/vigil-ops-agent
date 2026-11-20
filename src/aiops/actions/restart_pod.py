@@ -42,6 +42,7 @@ class PodPlan:
     ip: str | None = None
     workload_name: str | None = None
     workload_uid: str | None = None
+    node_name: str | None = None
 
 
 def _hash(value: Any) -> str:
@@ -169,6 +170,7 @@ class PodRestartAdapter:
             ip=pod.status.pod_ip,
             workload_name=workload_name,
             workload_uid=workload_uid,
+            node_name=pod.spec.node_name,
         )
 
     def applicability(self, namespace: str, name: str) -> dict[str, Any]:

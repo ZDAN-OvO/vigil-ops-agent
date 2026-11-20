@@ -137,10 +137,11 @@ def project_template_diff(changes: list[dict[str, Any]]) -> list[dict[str, Any]]
     for change in changes:
         path = change["path"]
         item = {"op": change["op"], "path": project_text(path)}
-        if "value" in change:
-            item["value"] = (
-                REDACTED if _TEMPLATE_PRIVATE.search(path) else _project_template(change["value"])
-            )
+        for field in ("current", "value"):
+            if field in change:
+                item[field] = (
+                    REDACTED if _TEMPLATE_PRIVATE.search(path) else _project_template(change[field])
+                )
         projected.append(item)
     return projected
 
@@ -206,6 +207,9 @@ def project_action_result(
             "verification": None,
         }
     stage = (attempt.result or {}).get("stage")
+    reason = (attempt.verification or {}).get("outcome_reason") or (attempt.result or {}).get(
+        "code"
+    )
     sent = attempt.send_granted_at is not None or attempt.status in {
         AttemptStatus.EXECUTING,
         AttemptStatus.UNKNOWN,
@@ -228,5 +232,6 @@ def project_action_result(
         "status": attempt.status.value,
         "phase": phase,
         "written": written,
+        "reason": project_text(reason) if isinstance(reason, str) else None,
         "verification": project_payload(attempt.verification),
     }
