@@ -4,6 +4,37 @@ metadata:
   name: vigil-monitoring
 ---
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vigil-prometheus
+  namespace: vigil-monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vigil-prometheus-cadvisor
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vigil-prometheus-cadvisor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vigil-prometheus-cadvisor
+subjects:
+  - kind: ServiceAccount
+    name: vigil-prometheus
+    namespace: vigil-monitoring
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: prometheus-config
@@ -46,6 +77,52 @@ data:
             target_label: instance
           - target_label: __address__
             replacement: blackbox-exporter:9115
+      - job_name: vigil-entry-probe
+        metrics_path: /probe
+        params:
+          module: [http_2xx]
+        static_configs:
+          - labels:
+              application: online-boutique
+            targets:
+              - "http://frontend.vigil-shop.svc.cluster.local./"
+              - "http://frontend.vigil-shop.svc.cluster.local./product/OLJCESPC7Z"
+              - "http://frontend.vigil-shop.svc.cluster.local./cart"
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: address
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: blackbox-exporter:9115
+      - job_name: kubelet-cadvisor
+        scheme: https
+        metrics_path: /metrics/cadvisor
+        kubernetes_sd_configs:
+          - role: node
+        authorization:
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: node
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: "container_cpu_usage_seconds_total|container_memory_working_set_bytes"
+            action: keep
+          - source_labels: [namespace, pod, container]
+            regex: ".+;.+;.+"
+            action: keep
+          - source_labels: [container]
+            regex: "POD"
+            action: drop
+      - job_name: vigil-releases
+        scrape_interval: 1m
+        static_configs:
+          - targets: ["host.k3d.internal:8092"]
   rules.yml: |
     groups:
       - name: vigil-business
@@ -133,6 +210,7 @@ spec:
       labels:
         app: prometheus
     spec:
+      serviceAccountName: vigil-prometheus
       securityContext:
         fsGroup: 65534
       containers:
