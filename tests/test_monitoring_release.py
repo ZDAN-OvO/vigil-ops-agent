@@ -12,7 +12,7 @@ from psycopg.types.json import Jsonb
 
 from aiops.db import Store
 from aiops.monitoring.exporter import create_app, release_metrics
-from aiops.monitoring.releases import PostgresRollbackHistory
+from aiops.monitoring.releases import CHANGE_CAUSE, REVISION, PostgresRollbackHistory, changes
 
 
 @pytest.mark.skipif(not DSN, reason="未配置 VIGIL_DATABASE_URL，跳过真实库测试")
@@ -110,9 +110,12 @@ def test_rollback_query_from_current_schema(cleanup):
                         ),
                     )
         query = PostgresRollbackHistory(DSN, cluster=cluster, namespace=namespace)
-        return await query(start, now)
+        current = await query(start, now)
+        with_history = await query(start, now, referenced=(f"{cluster}-3",))
+        return current, with_history
 
-    (row,) = asyncio.run(scenario())
+    current, with_history = asyncio.run(scenario())
+    (row,) = current
     assert row.proposal_id == f"{cluster}-0"
     assert row.started_at == started_at
     assert (row.deployment_uid, row.service, row.target_revision, row.target_image) == (
@@ -122,6 +125,28 @@ def test_rollback_query_from_current_schema(cleanup):
         "shop:v1",
     )
     assert row.approved_by == "批准人"
+    assert {item.proposal_id for item in with_history} == {f"{cluster}-0", f"{cluster}-3"}
+
+    new_revision = {
+        "metadata": {
+            "uid": "new-revision-uid",
+            "owner_references": [{"controller": True, "kind": "Deployment", "uid": "catalog-uid"}],
+            "creation_timestamp": (now - timedelta(minutes=2)).isoformat(),
+            "annotations": {REVISION: "4", CHANGE_CAUSE: f"vigil rollback {cluster}-3"},
+        },
+        "spec": {"template": {"spec": {"containers": [{"image": "shop:v1"}]}}},
+    }
+    panel = changes(
+        namespace,
+        [{"metadata": {"uid": "catalog-uid", "name": "catalog"}}],
+        [new_revision],
+        with_history,
+        now,
+    )
+    assert panel["status"] == "ok"
+    assert [(item["kind"], item["version"]) for item in panel["data"]["items"]] == [
+        ("release", "r4")
+    ]
 
 
 def _panel():

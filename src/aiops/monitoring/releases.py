@@ -32,7 +32,9 @@ class RollbackRecord:
 
 
 class RollbackHistory(Protocol):
-    async def __call__(self, start: datetime, end: datetime) -> list[RollbackRecord]: ...
+    async def __call__(
+        self, start: datetime, end: datetime, *, referenced: tuple[str, ...] = ()
+    ) -> list[RollbackRecord]: ...
 
 
 class PostgresRollbackHistory:
@@ -43,7 +45,9 @@ class PostgresRollbackHistory:
         self._cluster = cluster
         self._namespace = namespace
 
-    async def __call__(self, start: datetime, end: datetime) -> list[RollbackRecord]:
+    async def __call__(
+        self, start: datetime, end: datetime, *, referenced: tuple[str, ...] = ()
+    ) -> list[RollbackRecord]:
         async with await psycopg.AsyncConnection.connect(
             self._dsn, row_factory=dict_row, connect_timeout=5
         ) as conn:
@@ -75,10 +79,10 @@ class PostgresRollbackHistory:
                  WHERE p.cluster = %s AND p.namespace = %s AND p.target_kind = 'Deployment'
                    AND p.kind = 'rollout_undo' AND p.status = 'succeeded'
                    AND a.status = 'verified' AND a.finished_at <= %s
-                   AND COALESCE(a.send_granted_at, a.started_at) >= %s
+                   AND (COALESCE(a.send_granted_at, a.started_at) >= %s OR p.id = ANY(%s))
                    AND a.finished_at >= COALESCE(a.send_granted_at, a.started_at)
                 """,
-                (self._cluster, self._namespace, end, start),
+                (self._cluster, self._namespace, end, start, list(referenced)),
             )
             return [
                 RollbackRecord(**(row | {"target_revision": int(row["target_revision"])}))
@@ -102,6 +106,16 @@ class Revision:
     image: str | None
     cause: str
     uid: str
+
+
+def rollback_references(replicasets: list[dict] | None) -> tuple[str, ...]:
+    referenced = set()
+    for item in replicasets or []:
+        annotations = item.get("metadata", {}).get("annotations") or {}
+        cause = annotations.get(CHANGE_CAUSE) or ""
+        if isinstance(cause, str) and cause.startswith(VIGIL_ROLLBACK_CAUSE):
+            referenced.add(cause.removeprefix(VIGIL_ROLLBACK_CAUSE))
+    return tuple(sorted(referenced))
 
 
 def _revisions(deployments: list[dict], replicasets: list[dict]) -> tuple[list[Revision], bool]:
@@ -188,12 +202,10 @@ def changes(
     start = now - HISTORY_WINDOW
     rows = []
     missing = ["replicaset_history"] if incomplete else []
-    verified = {
-        record.proposal_id: record
-        for record in rollbacks or []
-        if start <= record.started_at <= now
-    }
+    verified = {record.proposal_id: record for record in rollbacks or []}
     for record in verified.values():
+        if not start <= record.started_at <= now:
+            continue
         revision = _retained_revision(record, revisions)
         if revision is None:
             continue

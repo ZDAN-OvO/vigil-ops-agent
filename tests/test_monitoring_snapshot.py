@@ -230,7 +230,7 @@ class FakeHttp:
                 raise AssertionError(request.url)
 
 
-async def _rollbacks(start, end):
+async def _rollbacks(start, end, *, referenced=()):
     assert end == NOW and start == NOW - timedelta(hours=24)
     return [
         RollbackRecord(

@@ -17,6 +17,7 @@ from aiops.monitoring.releases import (
     RollbackHistory,
     RollbackRecord,
     changes,
+    rollback_references,
 )
 from aiops.monitoring.services import restart_query, service_health
 from aiops.monitoring.signals import (
@@ -148,19 +149,24 @@ class Monitoring:
             self._timeout,
         )
 
-    async def _rollback_items(self, now: datetime) -> list[RollbackRecord] | None:
+    async def _rollback_items(
+        self, now: datetime, replicasets: list[dict] | None
+    ) -> list[RollbackRecord] | None:
         if self._rollbacks is None:
             return None
-        return await _read(self._rollbacks(now - HISTORY_WINDOW, now), self._timeout)
+        return await _read(
+            self._rollbacks(now - HISTORY_WINDOW, now, referenced=rollback_references(replicasets)),
+            self._timeout,
+        )
 
     async def release_changes(self, *, now: datetime | None = None) -> dict:
         """发布抓取只查询其三个来源。"""
         now = now or datetime.now(UTC)
-        deployments, replicasets, rollbacks = await asyncio.gather(
+        deployments, replicasets = await asyncio.gather(
             self._kube_items("deployments"),
             self._kube_items("replicasets"),
-            self._rollback_items(now),
         )
+        rollbacks = await self._rollback_items(now, replicasets)
         return _project(
             changes,
             self.namespace,
@@ -198,7 +204,11 @@ class Monitoring:
             restarts = tasks.create_task(
                 _read(prometheus_series(prom, restart_query(self.namespace), now), timeout)
             )
-            rollbacks = tasks.create_task(self._rollback_items(now))
+
+            async def load_rollbacks() -> list[RollbackRecord] | None:
+                return await self._rollback_items(now, await replicasets)
+
+            rollbacks = tasks.create_task(load_rollbacks())
             alert_panel = tasks.create_task(_panel(alert_groups(am, now), "alertmanager", timeout))
             probe_panel = tasks.create_task(_panel(probes(prom, now), "prometheus", timeout))
             node_panel = tasks.create_task(_panel(nodes(prom, now), "kube_state_metrics", timeout))
