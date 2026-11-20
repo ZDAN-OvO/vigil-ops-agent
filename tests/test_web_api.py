@@ -72,6 +72,34 @@ async def _card(store, tmp_path, settings):
     return executor, proposal, card, adapter
 
 
+def test_create_session_requires_browser_login_and_can_accept_first_message(isolated_serve_dsn):
+    async def run():
+        async with Store.open(isolated_serve_dsn) as store:
+            await store.migrate()
+            settings = Settings(_env_file=None)
+            auth = BrowserAuth(interactive=True)
+            async with _client(settings, store, auth) as client:
+                headers = {"Origin": settings.web_origin}
+                assert (await client.post("/api/sessions", headers=headers)).status_code == 403
+                await _login(client, auth, settings.web_origin)
+                assert (await client.post("/api/sessions")).status_code == 403
+                created = await client.post("/api/sessions", headers=headers)
+                assert created.status_code == 201
+                session = created.json()["session"]
+                assert session["source"] == "user" and session["state"] == "idle"
+                response = await client.post(
+                    f"/api/sessions/{session['id']}/messages",
+                    headers=headers,
+                    json={"text": "checkout 健康吗"},
+                )
+                assert response.status_code == 202
+                assert response.json()["queued_seq"] == 2
+                listing = await client.get("/api/sessions")
+                assert listing.json()["sessions"][0]["id"] == session["id"]
+
+    asyncio.run(run())
+
+
 def test_card_decision_requires_exact_host_origin_cookie_and_bound_fingerprint(
     isolated_serve_dsn, tmp_path
 ):

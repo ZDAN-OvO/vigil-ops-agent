@@ -242,6 +242,11 @@ if (token) {{
         pending = await safety.pending_card_sessions([row.id for row in rows])
         return JSONResponse({"sessions": [_summary(row, pending) for row in rows]})
 
+    async def create_session(request: Request) -> JSONResponse:
+        require_write(request)
+        session = await sessions.create_session(title="新会话")
+        return JSONResponse({"session": _summary(session, set())}, status_code=201)
+
     async def session_snapshot(request: Request) -> JSONResponse:
         session = await require_session(request)
         pending = await safety.pending_card_sessions([session.id])
@@ -348,6 +353,7 @@ if (token) {{
             Route("/login", login_page, methods=["GET"]),
             Route("/login", login, methods=["POST"]),
             Route("/api/sessions", list_sessions),
+            Route("/api/sessions", create_session, methods=["POST"]),
             Route("/api/sessions/{session_id}", session_snapshot),
             Route("/api/sessions/{session_id}/events", list_events),
             Route("/api/sessions/{session_id}/messages", send_message, methods=["POST"]),
