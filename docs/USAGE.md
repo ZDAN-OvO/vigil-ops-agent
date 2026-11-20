@@ -1,139 +1,127 @@
-# 操作手册：怎样用起来
+# Vigil 操作手册
 
-配置 Vigil、发起调查、审批动作，并核查结果。
+## 1. 安装与配置
 
-## 1. 操作入口
-
-三条链路，日常用法各不同。命令行入口正在重做，见设计文档；本节只写链路分工，操作步骤等新入口落地后补。
-
-| 链路 | 入口 | 谁触发 | 产物 |
-|---|---|---|---|
-| 告警 → 调查 | AlertManager webhook | Prometheus 真实告警 | 事件、调查、提案；满足自动规则时可执行 Pod 重建 |
-| 手动调查 | 对话式入口 | 你自己 | 事件、调查、Skill 与委派记录、提案 |
-| 受控处置 | 对话式入口中的审批 | 操作者提交与审批 | 提案、审批、执行尝试、验证结果、审计 |
-
-调查默认只读；`vigil-experiment` 内满足规则的 `restart_pod` 自动执行，其余动作等人工审批。动作只有 `rollout_undo`（回退到上一 revision）和 `restart_pod`（重建 Pod）两种。实验命名空间之外默认拒绝。
-
-## 2. 前置：先确认环境活着
-
-四样东西缺一不可。本机现状与检查命令：
+在源码目录运行 `uv sync --frozen --group dev`，以下命令可加 `uv run --frozen` 前缀。
+如需在没有源码的主机上运行，先用 `uv build --wheel` 构建，再把 wheel 安装到独立环境：
 
 ```bash
-# 1) 实验集群
-k3d cluster list                      # 期望 vigil-lab 1/1
-export KUBECONFIG=$HOME/.kube/vigil-lab.yaml
-kubectl -n vigil-shop get deploy      # 期望 12 个工作负载 1/1
-
-# 2) 观测栈（告警来源）
-kubectl -n vigil-monitoring get pods  # prometheus / alertmanager / blackbox / ksm
-
-# 3) 实验 PostgreSQL
-docker ps --filter name=vigil-postgres
-
-# 4) 模型网关（仅 agent 模式需要）
-curl -s http://127.0.0.1:3425/v1/models | head -c 200
+uv venv --python 3.12 /path/to/vigil-env
+uv pip install --python /path/to/vigil-env/bin/python dist/vigil_aiops-0.1.0-py3-none-any.whl
 ```
 
-`kubectl` 默认不读 `~/.kube/vigil-lab.yaml`，但 Vigil 通过 `VIGIL_KUBECONFIG` 读它，两者互不影响。`repeat.sh` 等脚本会自己 export，不必依赖 shell 环境。
+从源码运行时，配置在仓库的 `.env`。安装版使用 `$XDG_CONFIG_HOME/vigil/.env`，
+默认是 `~/.config/vigil/.env`。同名环境变量优先。复制仓库的 `.env.example` 后填入
+本机设置。数据库连接串和令牌保存在本地受限文件中。
 
-宿主机端口被别的项目占用时先看 `ss -ltnp | grep <端口>`：本机 8081 被另一个前端项目占用，因此 webhook 用 8091、前端 port-forward 用 8082。
+| 配置 | 用途 |
+| --- | --- |
+| `VIGIL_DATABASE_URL` | 指向用于会话、审批与 checkpoint 的 PostgreSQL |
+| `VIGIL_KUBECONFIG`、`VIGIL_KUBE_CONTEXT` | 实验集群的 kubeconfig 和 context |
+| `VIGIL_CLUSTER`、`VIGIL_NAMESPACE` | 调查范围与记录身份 |
+| `VIGIL_MODEL_BASE_URL`、`VIGIL_MODEL_NAME` | OpenAI 兼容网关地址和已启用的模型 ID |
+| `VIGIL_PROMETHEUS_URL`、`VIGIL_ALERTMANAGER_URL` | 默认 `http://127.0.0.1:9090` 与 `http://127.0.0.1:9093` |
+| `VIGIL_WEB_PORT` | 本机网页端口，默认 8090 |
+| `VIGIL_WEB_URL` | 可选。与本机网页源相同，例如 `http://127.0.0.1:8090`，用于生成卡片链接 |
+| `VIGIL_GRAFANA_URL` | 可选。配置后值班面板提供大盘链接 |
+| `VIGIL_SKILLS_DIR`、`VIGIL_RUNTIME_DIR` | 可选。覆盖内置 Skill 目录和运行时观测文件存放位置 |
 
-### 需要时启动的服务
+接入 AlertManager 时额外配置 `VIGIL_WEBHOOK_HOST`、`VIGIL_WEBHOOK_PORT` 和
+`VIGIL_WEBHOOK_TOKEN`。监听主机填实验 k3d 的具体网关地址，令牌和 AlertManager 的
+Bearer 文件使用同一值。部署方式见[实验环境](../env/README.md#8-告警入口)。
+
+在新库初始化后检查配置、迁移和内置 Skill：
 
 ```bash
-# Prometheus / AlertManager / 前端，各自一个终端（或交给进程管理器）
-kubectl -n vigil-monitoring port-forward svc/prometheus 9090:9090
-kubectl -n vigil-monitoring port-forward svc/alertmanager 9093:9093
-kubectl -n vigil-shop port-forward svc/frontend 8082:80
+vigil admin migrate
+vigil admin doctor
 ```
 
-port-forward 随 Pod 重启会断，Vigil 报 `Prometheus 不可用` 时先重连。
+## 2. 对话与恢复
 
-## 3. 配置：`.env`
+| 命令 | 用途 |
+| --- | --- |
+| `vigil` 或 `vigil "首页打不开"` | 在交互终端新建会话，可带首条消息 |
+| `vigil -p "checkoutservice 有几个 Ready 副本？"` | 运行一轮并退出 |
+| `vigil --resume SESSION_ID`、`vigil -c` | 恢复指定会话或最近会话，可加 `-p` 追问 |
+| `vigil sessions` | 列出用户会话和告警会话 |
+| `vigil serve` | 启动本机网页，以及已配置的告警监听 |
+| `vigil admin --help` | 查看迁移、诊断、runbook、待办与人工核实命令 |
 
-仓库根目录 `.env`（`gitignore` 已忽略，`.env.example` 只有占位）。下面是本机实跑用的一份：
+调查正在运行时可以追加线索。看到“已送入”后，线索已保存进本轮 checkpoint。
+会话等待审批时，另一个进程用 `vigil -p "现在几个副本？" --resume SESSION_ID`
+可以走独立旁路。会话和事件支持在 CLI 与网页互相接手。
 
-```ini
-VIGIL_DATABASE_URL=postgresql://vigil:<password>@127.0.0.1:55432/vigil
-VIGIL_KUBECONFIG=/home/zdan/.kube/vigil-lab.yaml
-VIGIL_PROMETHEUS_URL=http://127.0.0.1:9090
-VIGIL_CLUSTER=vigil-lab
-VIGIL_NAMESPACE=vigil-shop
+`--output text` 是默认输出。供脚本读取时用 `--output json` 获取本次结果与卡片，
+或用 `--output stream-json` 获取逐行 JSON。最后一行始终是 `result`。数据库事件的
+`seq` 在同一会话中递增，客户端用 `session_id` 与 `seq` 去重。连接级恢复提示或本地
+结束信息用 `seq: null` 和 `persisted: false`。
 
-# OpenAI 兼容网关，模型 ID 必填；实际返回模型由网关决定
-VIGIL_MODEL_BASE_URL=http://127.0.0.1:3425
-VIGIL_MODEL_NAME=auto/deepseek-v4.1-flash
+| 退出码 | 含义 |
+| --- | --- |
+| 0 | 本轮完成或已读取结束状态 |
+| 1 | 运行业务或配置错误 |
+| 2 | 参数错误 |
+| 3 | 有待审批卡片，或从待审批会话启动的旁路已结束 |
+| 4 | 预算耗尽，结论不完整 |
 
-# webhook 鉴权与监听。token 与集群 secret 一致，否则 401
-VIGIL_WEBHOOK_TOKEN=<与 vigil-monitoring/vigil-webhook-token 相同>
-VIGIL_WEBHOOK_HOST=0.0.0.0   # 集群经 docker 网关 172.20.0.1 访问宿主机
-VIGIL_WEBHOOK_PORT=8091
-```
+### 审批和验证
 
-密码和 token 只放在 `.env`；需要重取时：
+在交互终端核对目标、变更及验证方式，然后输入卡片显示的 `/approve XXXX` 或
+`/reject XXXX`。网页从交互式 `vigil serve` 启动时，打开终端打印的一次性链接登录，
+在卡片上点击批准或拒绝。没有网页登录凭证时，页面可以查看会话和值班面板。
+
+非交互输入和机器输出只返回卡片与查看地址，批准和拒绝仅由交互终端或已登录浏览器完成。
+只有满足规则的 `vigil-experiment` 可丢弃 Pod 重建能自动执行。授权默认有效 900 秒。
+收到授权过期或目标已变的结果后，应重新调查并生成符合当前目标的新卡片。
+
+## 3. 告警
+
+AlertManager 的首次 firing 为同一 `groupKey` 创建会话和首轮调查。重复推送和组内部分
+恢复追加会话消息，整组 resolved 关闭会话。带凭证的网页也可关闭告警会话。
+
+关闭会话时，尚未取得发送权的动作作废。已取得发送权的动作继续验证并记录回执。
+结果为不确定时保留目标锁，核实后才能再次处置该目标。
+
+## 4. 人工核实和旧库切换
+
+用 `vigil admin followups` 查待办。在实际管理终端运行
+`vigil admin reconcile-action CARD_ID`，按提示核对原执行者已退出或超过等待时限。
+回滚核实会先推进 Deployment 的资源版本，再读取实际状态。确认是否已经写入及验证结果，
+记录结论和依据。隔离失败或状态无法确定时，保留目标锁。
+
+旧版升级采用停机切换。先停旧 webhook 和驱动，确认进程已退出且禁止自动重启。备份
+PostgreSQL，并将备份恢复到独立库验证可读。对切换目标运行 `vigil admin migrate`，
+然后先预览，再实际执行：
 
 ```bash
-docker inspect vigil-postgres --format '{{range .Config.Env}}{{println .}}{{end}}' | grep POSTGRES_PASSWORD
-kubectl -n vigil-monitoring get secret vigil-webhook-token -o jsonpath='{.data.token}' | base64 -d
+vigil admin prepare-legacy-cutover
+vigil admin prepare-legacy-cutover --apply --confirm \
+  --old-processes-stopped --restart-disabled --backup-complete
 ```
 
-### 升级限制
+活跃旧租约或无法分类的记录会阻断执行。确认旧驱动状态并核对遗留动作后再运行。
+已确认未发送的旧提案会作废，可能已发送的动作保留目标锁，进入人工核实。处理未结动作后再切换
+AlertManager 入口。
 
-在 0010 版本上做过的调查，其旧 `evidence` 表记录会在升级到 `0011_skills_and_delegations` 时被丢弃，不会转成 `observations`；需要保留时，升级前先导出，旧调查与旧报告不保证可读。
+如要恢复旧版，先停止新接入和驱动，保留切换后的会话、授权、尝试和目标锁并核对集群。
+有未核实写入或请求仍在途时保持停写。数据库恢复前须确认旧授权不会重新变为可执行。
 
-迁移同时删除旧 `hypothesis_revisions` 与 `tool_calls` 表，见 [0011 迁移](../src/aiops/migrations/0011_skills_and_delegations.sql)。迁移前的导出应覆盖需要保留的旧记录。
+## 5. 常见问题
 
-迁移原本靠旧 CLI 执行，入口随命令行一起重做，见设计文档；迁移 SQL 本身仍在 `src/aiops/migrations/` 并可重复执行。
+| 现象 | 检查 |
+| --- | --- |
+| 数据库连接异常 | 确认指向预期库，运行 `vigil admin doctor` |
+| 网站可读但无法写入 | 确认 `vigil serve` 从交互终端启动，并在当前浏览器打开其一次性链接 |
+| 告警 webhook 返回 401 | 核对两个服务的 Bearer 配置 |
+| Prometheus 查询失败 | 核对端口转发是否仍绑定当前 Pod |
+| 值班面板某块缺数据 | 检查该数据源。Prometheus、AlertManager、Kubernetes 和 Grafana 的配置见[实验部署](../env/README.md#10-值班数据与-grafana) |
+| `unknown` 或人工待办 | 从 `vigil admin followups` 找对应动作，核对原发送者和集群结果后人工处理 |
 
-## 4. 命令手册
-
-命令行入口正在重做，见设计文档。本节原有的命令已随旧 CLI 删除，不再提供参数、退出码和 `--output json` 说明；入口实现后在此重写。
-
-## 5. 调查与审批
-
-环境就绪后由入口发起调查，再按报告核对流程：
-
-1. 读报告里的假设、观测与缺失证据，确认结论是根因候选还是信息不足。
-2. 等待审批时，核对提案的目标、参数和审计记录，再决定批准或拒绝。
-3. 执行后核查提案里的验证结果；出现人工待办时，按待办原因人工核实。
-
-审批有效期由 `VIGIL_ACTION_APPROVAL_TTL_SECONDS` 控制，默认 900 秒。超时、目标 resourceVersion 变化或提案哈希不一致都会拒绝执行，需要重新提案。
-
-故障注入与复位使用[场景操作步骤](../faults/README.md)，操作者复位与 Agent 恢复分别记录。
-
-## 6. 常见故障
-
-| 现象 | 原因 | 处理 |
-|---|---|---|
-| `未配置 VIGIL_DATABASE_URL` | 缺 `.env` 或没在仓库根目录 | 检查根目录 `.env` |
-| `StoreUnavailable` / 连接拒绝 | `vigil-postgres` 没起 | `docker start vigil-postgres` |
-| Prometheus 相关报错 | port-forward 断了 | 重连 9090 |
-| webhook `401 unauthorized` | token 与集群 secret 不一致 | 改成 secret 里的值并重启接收端 |
-| AlertManager 投递不到 | 接收端只监听 127.0.0.1 / 端口不对 | `VIGIL_WEBHOOK_HOST=0.0.0.0`，配置里的 `172.20.0.1:<端口>` 对齐 |
-| 模型调用失败 | 网关模型 ID 已下线 | `curl 127.0.0.1:3425/v1/models` 重新选别名 |
-| `unable to find container named` | 用了 Deployment 名当容器名 | 先 `kubectl get deploy X -o jsonpath='{.spec.template.spec.containers[*].name}'` |
-| `approval_expired` / `target_drift` | 审批过期或目标已变 | 重新提交提案，不复用旧授权 |
-| 执行后出现 followup 而非 verified | 动作没改善或样本不足 | 查待办原因，人工核实 |
-
-## 7. 数据在哪、怎么清
-
-- 业务数据：PostgreSQL `vigil` 库。事件/调查/假设/观测/工具账本/委派/提案/审批/执行/审计/待办/runbook 各一张表，迁移文件在 `src/aiops/migrations/`。
-- 运行产物：`runtime/`（`VIGIL_RUNTIME_DIR`），存放大观测的原始文件，不入库。它是临时工作目录，不是证据存档。
-- 验收截图：`.evidence/` 保存不提交的本地截图。
-- 历史遗留：一次演练会在库里留若干 `pending_approval` 提案与 `open` 待办，属正常记录；旧提案过期后再批准会因 `approval_expired` 拒绝。需要干净基线时可以重建库。
-
-  > **警告**：下面的命令会删除 `vigil` 库中的全部业务数据和 checkpoint，无法恢复。只在确认不再需要现有记录时执行。
-
-  ```bash
-  docker exec vigil-postgres psql -U vigil -d vigil -c 'drop schema public cascade; create schema public;'
-  ```
-
-  清空后需要重新应用迁移；迁移入口随命令行一起重做，见设计文档。
-
-## 8. 自检
+源码环境可以用 `make check-all` 检查代码。要覆盖数据库路径，请明确设置独占的
+`VIGIL_DATABASE_URL`。网页静态检查和浏览器 fixture 可分别运行：
 
 ```bash
-uv run --frozen python scripts/skill_runtime_gate.py
+uv run --frozen --with tinycss2==1.5.1 python tests/web/check_styles.py
+uv run --frozen --with playwright==1.61.0 python tests/web/browser_cases.py
 ```
-
-`skill_runtime_gate.py` 检查网关 tool calling、结构化终态、checkpoint、Skill 信号匹配与只读子 Agent；失败项会写明原因，不要在未通过时宣称接入完成。
