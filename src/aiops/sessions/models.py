@@ -1,6 +1,6 @@
 """会话持久化记录与出站事件外壳。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
@@ -55,6 +55,7 @@ class SessionInput:
     turn_id: str | None
     delivered_step: int | None
     checkpoint_id: str | None
+    alert_names: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

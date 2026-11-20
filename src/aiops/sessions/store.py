@@ -206,6 +206,8 @@ class SessionStore:
         text: str,
         display_text: str,
         input_id: str | None = None,
+        *,
+        alert_names: tuple[str, ...] = (),
     ) -> SessionInput:
         if (await self.lock_session(conn, session_id)).state == "closed":
             raise SessionClosed(session_id)
@@ -224,10 +226,10 @@ class SessionStore:
         row = await _one(
             conn,
             """
-            INSERT INTO session_inputs (id, session_id, queued_seq, text)
-            VALUES (%s, %s, %s, %s) RETURNING *
+            INSERT INTO session_inputs (id, session_id, queued_seq, text, alert_names)
+            VALUES (%s, %s, %s, %s, %s) RETURNING *
             """,
-            (input_id, session_id, event.seq, text),
+            (input_id, session_id, event.seq, text, list(alert_names)),
         )
         return SessionInput(**row)
 
@@ -261,13 +263,16 @@ class SessionStore:
         text: str,
         display_text: str,
         repeat_display_text: str,
+        alert_names: tuple[str, ...] = (),
     ) -> AlertReceipt:
         """在 alert_transaction 中归并 firing，首轮与首次输入同事务持久化。"""
         session = await self.get_open_alert_session(conn, group_key)
         if session is None:
             session = await self._insert_session(conn, title=title, group_key=group_key)
             if session is not None:
-                incoming = await self._enqueue_input(conn, session.id, text, display_text)
+                incoming = await self._enqueue_input(
+                    conn, session.id, text, display_text, alert_names=alert_names
+                )
                 turn = await self._new_turn(conn, incoming, lane="main")
                 event = await _one(
                     conn,
@@ -290,6 +295,17 @@ class SessionStore:
         return await self.append_event(
             conn, session_id, "message", {"role": "user", "text": display_text, "source": "alert"}
         )
+
+    async def list_open_alert_sessions(self, group_keys: list[str]) -> list[Session]:
+        if not group_keys:
+            return []
+        async with self._store.transaction() as conn:
+            rows = await conn.execute(
+                f"SELECT {SESSION_COLUMNS} FROM sessions "
+                "WHERE group_key = ANY(%s) AND closed_at IS NULL",
+                (group_keys,),
+            )
+            return [Session(**row) for row in await rows.fetchall()]
 
     async def close_session(
         self, conn: AsyncConnection, session_id: str, *, reason: str

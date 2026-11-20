@@ -170,6 +170,7 @@ class ConversationRun:
         if settings.model_name is None:
             raise ValueError("未配置 VIGIL_MODEL_NAME")
         now = datetime.now(UTC)
+        from_alert = session.source == "alert" and turn.lane == "main" and first.queued_seq == 2
         incident = Incident(
             id=f"inc-{turn.id}",
             environment=settings.environment,
@@ -177,12 +178,8 @@ class ConversationRun:
             namespace=settings.namespace,
             service="",
             symptoms=first.text,
-            trigger="alert"
-            if session.source == "alert"
-            and turn.lane == "main"
-            and turn.created_at >= session.created_at
-            and first.queued_seq == 2
-            else "manual",
+            trigger="alert" if from_alert else "manual",
+            alert_names=first.alert_names if from_alert else [],
             time_range=TimeRange(start=now - timedelta(minutes=15), end=now),
         )
         investigation = Investigation(

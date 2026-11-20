@@ -58,10 +58,141 @@
 
 ## 进度
 
-- [ ] 监听与只读会话 API
-- [ ] 审批入口和租约接手
-- [ ] 告警归并、关闭与恢复
+- [x] 监听与只读会话 API
+- [x] 审批入口和租约接手
+- [x] 告警归并、关闭与恢复
 
 ## 范围外的问题
 
 远程运维接入和用户身份体系留待另案。
+
+## 服务接入
+
+CLI 调用 `await aiops.serve.run_serve(settings, interactive=stdin_is_tty and stdout_is_tty)`。
+服务先运行 `Store.migrate()` 和 `setup_checkpoints(store)`，再使用
+`aiops.investigation.factory.open_conversation(settings=settings, store=store)` 提供的
+`ConversationDriver`。生产装配须把 `settings.web_url` 传给发布卡片的
+`ActionExecutor`。未配置时，事件的 `url` 为 `null`。
+
+| 配置 | 作用 |
+|---|---|
+| `VIGIL_WEB_PORT=8090` | 网页监听端口，主机固定为 `127.0.0.1`。 |
+| `VIGIL_WEB_URL=http://127.0.0.1:8090` | 可选。事件将链接到 `/sessions/{session_id}#card-{card_id}`。必须与实际网页源一致。 |
+| `VIGIL_WEBHOOK_HOST=172.20.0.1` | 实验网关在宿主机上的具体 IP。 |
+| `VIGIL_WEBHOOK_PORT=8091` | 告警端口。须同步修改 AlertManager 接收地址。 |
+| `VIGIL_WEBHOOK_TOKEN` | 与 AlertManager 令牌文件内容一致。 |
+
+`VIGIL_WEBHOOK_HOST` 与 `VIGIL_WEBHOOK_TOKEN` 均省略时只启动网页。
+同时部署网页与告警时两项均需提供，监听地址不可使用通配地址。迁移新增的
+`session_inputs.alert_names` 对历史输入默认空数组，只在告警首轮持久化结构化名称，
+供 Agent 匹配 Skill。
+
+### 网页 HTTP
+
+`aiops.web_api.build_web_app(settings, sessions=..., safety=..., auth=..., monitoring=...)`
+返回 Starlette。前端从同一地址提供 `/`、`/sessions/{session_id}` 和静态资源；
+卡片 DOM 锚点为 `card-{card_id}`。监控任务传入无参异步可调用对象
+`monitoring.snapshot`。缺少采集装配时，`/api/monitoring` 返回六个 `missing` 块。
+
+| 方法与路径 | 请求与成功响应 |
+|---|---|
+| `GET /api/sessions` | `limit` 默认 50，范围 1–200。200 `{sessions: Session[], approval_enabled, approval_disabled_reason}`，按更新倒序。 |
+| `POST /api/sessions` | 无请求体。201 `{session: Session}`，新建一条可输入的用户会话。 |
+| `GET /api/sessions/{session_id}` | 200 `{session: Session, approval_enabled: boolean, approval_disabled_reason: string\|null}`。 |
+| `GET /api/sessions/{session_id}/events` | `after_seq` 默认 0，`limit` 默认 100（1–200）。200 `{events: SessionEvent[], next_after_seq: number, has_more: boolean}`。 |
+| `POST /api/sessions/{session_id}/messages` | JSON `{text: string, input_id?: string}`，202 `{input_id, queued_seq}`。同一会话以同一 ID、同一文本重试会返回原序号。 |
+| `POST /api/sessions/{session_id}/resume` | 202 `{session: Session}`。驱动扫描已经持久化的工作，无请求体即可。 |
+| `POST /api/sessions/{session_id}/close` | 200 `{session: Session}`。仅告警会话，无请求体即可，重复关闭只返回当前状态。 |
+| `POST /api/sessions/{session_id}/cards/{card_id}/decision` | JSON `{decision: "approved"\|"rejected", fingerprint: string, reason?: string}`，200 `{decision_id, status}`。 |
+| `GET /api/monitoring` | 200 监控快照。告警组按原始 `group_key` 关联未关闭会话，`groups[].session` 为 `{session_id, pending_approval}` 或 `null`。 |
+
+`Session` 示例：
+
+```json
+{
+  "id": "3697b83f8aaf45f79436e704e7ac74f7",
+  "source": "alert",
+  "title": "FrontendProbeFailed",
+  "state": "awaiting_approval",
+  "last_seq": 12,
+  "created_at": "2026-11-21T01:30:00+00:00",
+  "updated_at": "2026-11-21T01:30:30+00:00",
+  "closed_at": null,
+  "pending_approval": true
+}
+```
+
+`SessionEvent` 按 `SessionEvent.as_dict()` 展平，公共字段为
+`type, session_id, seq, ts, turn_id`，其余按事件类型。客户端按 `seq` 去重，用
+`next_after_seq` 续读，有 `has_more` 时可立即读下一页。消息、卡片、动作回执以提交后的
+事件为准。网页允许读取已关闭会话与后到的处置回执。
+
+终端提供的登录链接使用浏览器片段，登录页清除片段后再用同源 POST 兑换 Cookie，
+成功以 303 跳转到 `/`。Cookie 仅用于 `/api`，设置 `HttpOnly` 和
+`SameSite=Strict`，当前服务进程有效。全部网页写请求同时核对 `Host`、
+`Origin` 与 Cookie。非交互启动时，网页仅开放读取。错误响应为 `{error, message}`，
+常用状态为 400（字段错误）、403（凭证或来源无效）、404（记录不存在）、
+409（例如 `session_closed`、`not_pending`、`hash_mismatch`）。
+
+### AlertManager 接收端
+
+把下面的配置接到实验清单现有告警路由，并在停止旧服务及完成数据库切换后启用。
+接收路径精确为 `POST http://172.20.0.1:8091/webhook/alertmanager`，请求类型
+`application/json`，认证头为 `Authorization: Bearer <令牌>`。使用集群中挂载的令牌文件，
+令牌只由本地和集群的配置注入。若实验网关 IP 或端口不同，需同步两侧。
+
+```yaml
+webhook_configs:
+  - url: http://172.20.0.1:8091/webhook/alertmanager
+    send_resolved: true
+    http_config:
+      authorization:
+        type: Bearer
+        credentials_file: /etc/alertmanager/secrets/token
+```
+
+下列 JSON 给出按 `alertname` 分组的三次推送。先发首次 firing，重复同一条时追加提示并
+返回同一会话 ID。随后发部分恢复及整组恢复。AlertManager 发送的额外字段可以保留。
+
+首次 firing：
+
+```json
+{
+  "groupKey": "{}/{alertname=\"FrontendProbeFailed\"}:{alertname=\"FrontendProbeFailed\"}",
+  "status": "firing",
+  "alerts": [
+    {"status": "firing", "labels": {"alertname": "FrontendProbeFailed", "instance": "shop-a"}, "annotations": {"summary": "首页探测失败"}},
+    {"status": "firing", "labels": {"alertname": "FrontendProbeFailed", "instance": "shop-b"}, "annotations": {"summary": "首页探测失败"}}
+  ]
+}
+```
+
+部分恢复，组状态仍为 firing：
+
+```json
+{
+  "groupKey": "{}/{alertname=\"FrontendProbeFailed\"}:{alertname=\"FrontendProbeFailed\"}",
+  "status": "firing",
+  "alerts": [
+    {"status": "resolved", "labels": {"alertname": "FrontendProbeFailed", "instance": "shop-a"}, "annotations": {}},
+    {"status": "firing", "labels": {"alertname": "FrontendProbeFailed", "instance": "shop-b"}, "annotations": {}}
+  ]
+}
+```
+
+整组恢复：
+
+```json
+{
+  "groupKey": "{}/{alertname=\"FrontendProbeFailed\"}:{alertname=\"FrontendProbeFailed\"}",
+  "status": "resolved",
+  "alerts": [
+    {"status": "resolved", "labels": {"alertname": "FrontendProbeFailed", "instance": "shop-a"}, "annotations": {}},
+    {"status": "resolved", "labels": {"alertname": "FrontendProbeFailed", "instance": "shop-b"}, "annotations": {}}
+  ]
+}
+```
+
+成功响应 200 `{session_id: string|null, outcome: string}`，其中 `outcome` 为
+`created`、`repeated`、`partially_resolved`、`closed` 或 `ignored`。
+`ignored` 时 `session_id` 为 `null`。整组恢复后再次 firing 会得到新的会话 ID。

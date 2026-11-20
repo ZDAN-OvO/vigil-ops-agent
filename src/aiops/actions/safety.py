@@ -288,6 +288,21 @@ class ActionSafety:
             )
             return [row["id"] for row in await rows.fetchall()]
 
+    async def pending_card_sessions(self, session_ids: list[str]) -> set[str]:
+        if not session_ids:
+            return set()
+        async with self.store.transaction() as conn:
+            rows = await conn.execute(
+                """
+                SELECT DISTINCT p.session_id FROM action_proposals p
+                JOIN sessions s ON s.id = p.session_id
+                WHERE p.session_id = ANY(%s) AND s.closed_at IS NULL
+                  AND p.published_seq IS NOT NULL AND p.status = 'pending_approval'
+                """,
+                (session_ids,),
+            )
+            return {row["session_id"] for row in await rows.fetchall()}
+
     async def list_verified_rollbacks(
         self,
         *,
@@ -760,6 +775,24 @@ class ActionSafety:
             )
             if not live or session_matches is None:
                 await self._void(conn, row, attempt, actor="recovery", reason="lease_lost")
+
+    async def recover_expired_targets(self, *, limit: int = 50) -> None:
+        """包括已关闭会话，按已有发送权记录收敛，绝不重发请求。"""
+        async with self.store.transaction() as conn:
+            rows = await conn.execute(
+                """
+                SELECT l.target_key FROM action_locks l
+                JOIN action_proposals p ON p.id = l.proposal_id
+                LEFT JOIN action_attempts a ON a.proposal_id = p.id
+                WHERE p.session_id IS NOT NULL AND l.expires_at <= clock_timestamp()
+                  AND a.status IS DISTINCT FROM 'unknown'
+                ORDER BY l.expires_at, l.target_key LIMIT %s
+                """,
+                (limit,),
+            )
+            keys = [row["target_key"] for row in await rows.fetchall()]
+        for key in keys:
+            await self.recover_target(key)
 
     async def target_is_locked(self, key: str) -> bool:
         await self.recover_target(key)
