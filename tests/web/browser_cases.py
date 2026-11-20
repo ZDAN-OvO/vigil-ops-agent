@@ -451,6 +451,7 @@ class BrowserCases(unittest.TestCase):
         expect(page.locator("#session-list .session-row")).to_have_count(5)
         page.get_by_role("link", name="处理会话 alert-demo · 待审批").click()
         expect(page).to_have_url(self.fixture.url + PATH)
+        expect(page.locator(".message").first.locator(".stamp").first).to_have_text("ALERT")
         expect(page.locator("#question")).to_have_value("")
         page.get_by_role("button", name="关闭告警会话").click()
         expect(page.locator("#session-meta")).to_have_attribute("data-state", "closed")
@@ -459,6 +460,17 @@ class BrowserCases(unittest.TestCase):
         page.get_by_role("button", name="接手恢复").click()
         expect(page).to_have_url(self.fixture.url + "/sessions/interrupted-demo")
         expect(page.locator("#session-meta")).to_have_attribute("data-state", "working")
+        self.assert_no_errors()
+
+    def test_round_failure_and_budget_status_are_visible(self):
+        self.fixture.push("result", status="failed", summary="模型调用失败")
+        self.fixture.push("message", role="assistant", text="已取得初步观测")
+        self.fixture.push("result", status="budget_exhausted", summary="已取得初步观测")
+        self.open_card()
+        expect(self.page.get_by_text("运行失败", exact=True)).to_be_visible()
+        expect(self.page.get_by_text("模型调用失败", exact=True)).to_be_visible()
+        expect(self.page.get_by_text("预算已用完", exact=True)).to_be_visible()
+        expect(self.page.get_by_text("已取得初步观测", exact=True)).to_have_count(1)
         self.assert_no_errors()
 
     def test_pod_card_uses_target_fields(self):

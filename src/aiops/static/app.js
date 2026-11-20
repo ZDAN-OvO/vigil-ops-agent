@@ -265,6 +265,17 @@ function renderMessage(event) {
   return message;
 }
 
+function renderResult(event) {
+  const label = { failed: "运行失败", budget_exhausted: "预算已用完" }[event.status];
+  if (!label) return null;
+  const result = element("div", "message");
+  result.append(stamp(label, event.status === "failed" ? "danger" : "warn"));
+  const alreadyShown = events.some((item) => item.type === "message" && item.role === "assistant" &&
+    item.turn_id === event.turn_id && item.seq < event.seq && item.text === event.summary);
+  if (event.summary && !alreadyShown) result.append(element("p", "", event.summary));
+  return result;
+}
+
 function renderObservation(event) {
   const observation = element("section", "observation");
   const head = element("header", "observation-head");
@@ -347,6 +358,8 @@ function renderEvent(event) {
       return null;
     case "session_closed":
       return element("p", "stamp", "会话已关闭");
+    case "result":
+      return renderResult(event);
     default:
       return null;
   }

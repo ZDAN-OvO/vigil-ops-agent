@@ -181,6 +181,10 @@ def test_alertmanager_group_over_tcp_survives_listener_restart(
             assert aborted.state == "aborted" and queued.state == "queued"
             first = await sessions.get_input(queued.first_input_id)
             assert first.alert_names == ["PodOOMKilled", "ContainerOOMKilled"]
+            (message,) = [
+                event for event in await sessions.list_events(new_id) if event.type == "message"
+            ]
+            assert message.payload["source"] == "alert"
 
         model = ScriptedChatModel(
             responses=[report_call(confirmed=False, conclusion="已收到告警。")]
