@@ -329,7 +329,8 @@ def test_side_json_waits_for_its_own_input_and_keeps_main_card(child_env):
             await sessions.release_lease(lease)
 
     asyncio.run(seed_interrupted_side())
-    proc = _run(child_env, "-p", "本次提问", "--resume", session_id, "--output", "json")
+    env = child_env | {"CLI_TEST_MODE": "card"}
+    proc = _run(env, "-p", "本次提问", "--resume", session_id, "--output", "json")
     assert proc.returncode == 3, proc.stderr
     result = json.loads(proc.stdout)
     assert result["side_question"] == "本次提问"
