@@ -1,6 +1,6 @@
 # Vigil 全局架构
 
-Vigil 在同一进程内组织接入、调查与受控处置。
+交互终端、一次性 CLI 与本地 `serve` 共用 PostgreSQL 中的会话账本。持有会话租约的进程驱动主线，待审问题由独立只读旁路处理。
 
 ## 架构约束
 
@@ -14,8 +14,9 @@ Vigil 在同一进程内组织接入、调查与受控处置。
 
 ```mermaid
 flowchart TD
-    A[接入：AlertManager webhook] --> B[任务入口：Incident 与去重]
-    B --> C[主 Agent 调查循环]
+    A[AlertManager 分组通知] --> B[会话与持久化输入]
+    H[终端与本地网页] --> B
+    B -->|领取租约| C[主 Agent 对话与调查]
     S[排查方法 Skill] --> C
     K[Runbook 查询] --> C
     C <-->|只读委派与结果| Q[委派调查]
@@ -24,22 +25,23 @@ flowchart TD
     D -->|规则允许或审批通过| E[受控执行与业务验证]
     D -->|拒绝或未获批准| R
     E --> R
-    H[人工：Context / 审批 / 取消] -.-> B
-    H -.-> D
+    H -.->|结构化批准或拒绝| D
 ```
 
-设计的核心分工：**调查交给 Agent，处置交给程序。** Agent 决定查什么、怎样解释、提出什么动作；动作能否执行、怎样执行、算不算恢复，由确定性的代码判断。Agent 调查中的写操作只经过 `request_action` 一个入口，Skill 和委派调查都不能绕开它。所有模块在同一进程内，不拆分服务。
+Agent 选择查询、整理证据并提出动作。执行器根据固化卡片、授权、会话租约和目标锁确定是否取得发送权。发送后的验证由原尝试独立收尾。CLI 与网页从相同序号读取脱敏事件，接手时继续保存的轮次。
 
 ## 模块边界与依赖
 
 | 模块 | 源码入口 | 依赖与职责边界 |
 |---|---|---|
-| 接入 | [webhook.py](src/aiops/webhook.py) | 告警接入：校验输入、鉴权与去重；通过 factory 装配调查 |
+| 接入 | [cli.py](src/aiops/cli.py)、[serve.py](src/aiops/serve.py)、[webhook.py](src/aiops/webhook.py) | 终端、同源网页 API 和独立告警监听；通过 factory 装配会话 |
+| 会话账本 | [sessions/](src/aiops/sessions) | 会话、输入、序号、主旁路租约、原子 checkpoint 投递及共享出站投影 |
 | 调查 | [agent/](src/aiops/agent)、[factory.py](src/aiops/investigation/factory.py) | 编排模型、预算、假设、证据与终态；依赖工具、Store 和动作执行器 |
 | 排查能力 | [skills.py](src/aiops/skills.py)、[registry.py](src/aiops/tools/registry.py)、[toolbox.py](src/aiops/investigation/toolbox.py) | 装配 Skill 与工具；委派共享预算和观测，只有只读能力 |
 | 受控处置 | [actions/](src/aiops/actions) | 风险规则、授权、资源快照、锁、外部写入与业务验证；不以模型结论代替授权 |
 | 持久化与审计 | [db.py](src/aiops/db.py)、[contracts.py](src/aiops/contracts.py)、[migrations/](src/aiops/migrations) | 业务状态与约束；checkpoint 由官方 saver 管理，追踪平台不参与业务正确性 |
 | 运行手册知识 | [knowledge.py](src/aiops/knowledge.py) | 结构化 runbook 导入与查询，通过 Store 与工具供调查参考 |
+| 值班面板 | [monitoring/](src/aiops/monitoring) | 读取 Prometheus、Kubernetes 和已核实动作，生成本地快照和发布指标 |
 
 运行状态与诊断结果独立记录：任务结束不等于查明根因，动作执行不等于业务恢复。业务数据结构和枚举定义在 `contracts.py`，数据库约束定义在 `migrations/`。
 
@@ -53,4 +55,3 @@ flowchart TD
 | 知识检索 | 输入查询、服务、文档范围和条数，输出条目类型、内容、来源、页码、版本和检索分数 |
 | 历史事故 | 保存症状、根因、解决方法、证据和确认状态；未经验证的结论不能自动变成可信知识 |
 | 文本 PDF | 保存文档 ID、哈希、版本、页码和 chunk；导入可重复，更新替换旧版本，删除后不再召回；扫描件和复杂版式明确拒绝。embedding 模型、维度和距离属于索引约定，换模型要重建 |
-| 执行中断协调 | 重启后根据持久化的执行意图核实真实资源状态，能核实的收敛，不能核实的保持未知并升级 |

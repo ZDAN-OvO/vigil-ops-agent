@@ -343,6 +343,7 @@ def test_human_verification_fences_late_rollback_and_keeps_lock_on_failure(tmp_p
         fence = None
         fail_isolation = True
         sends = 0
+        observing = False
 
         def apply(self, plan, *, dry_run, proposal_id):
             if dry_run:
@@ -360,13 +361,27 @@ def test_human_verification_fences_late_rollback_and_keeps_lock_on_failure(tmp_p
                 raise ActionError("isolation_failed", "模拟隔离失败")
             self.version = "12"
             self.fence = token
+            self.observing = True
             return self.version
 
         def state(self, namespace, name):
+            if self.observing:
+                self.observing = False
+                return {
+                    "uid": self._plan.deployment_uid,
+                    "resource_version": self.version,
+                    "reconciliation_marker": self.fence,
+                    "generation": 2,
+                    "observed_generation": 1,
+                }
+            if self.fence is not None:
+                self.version = "13"
             return {
                 "uid": self._plan.deployment_uid,
                 "resource_version": self.version,
                 "reconciliation_marker": self.fence,
+                "generation": 2,
+                "observed_generation": 2,
                 "token": "fake-token",
             }
 
@@ -387,6 +402,7 @@ def test_human_verification_fences_late_rollback_and_keeps_lock_on_failure(tmp_p
             adapter.fail_isolation = False
             prepared = await reconciler.prepare_reconciliation(proposal.id, actor="tester")
             assert "fake-token" not in json.dumps(prepared)
+            assert prepared["evidence"]["state"]["resource_version"] == "13"
             with pytest.raises(ActionError, match="原 resourceVersion"):
                 adapter.late_write()
             with pytest.raises(ActionError, match="结果不明"):

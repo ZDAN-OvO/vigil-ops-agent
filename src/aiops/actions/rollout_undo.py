@@ -407,6 +407,8 @@ class RolloutUndoAdapter:
         return {
             "uid": deployment.metadata.uid,
             "resource_version": deployment.metadata.resource_version,
+            "generation": deployment.metadata.generation,
+            "observed_generation": deployment.status.observed_generation,
             "revision": int(annotations.get(REVISION_ANNOTATION, "1")),
             "reconciliation_marker": annotations.get(FENCE_ANNOTATION),
             "change_cause": annotations.get(CHANGE_CAUSE),

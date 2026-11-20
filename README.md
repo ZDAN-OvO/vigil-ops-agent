@@ -1,25 +1,26 @@
 # Vigil AIOps
 
-面向中小企业和个人开发者的 Kubernetes 故障调查与受控处置。告警或手动请求触发调查，Agent 按排查方法（Skill）在有界预算内取证并维护假设，程序按规则或人工审批执行限定动作，再用真实业务请求验证恢复。
+Vigil 在终端和本机网页里调查 Kubernetes 故障。它用集群和监控数据回答问题，按需查看内置排查 Skill，并把会话、证据、卡片和执行结果保存在 PostgreSQL。
 
-- **调查**：按症状选择排查方法，取证并维护假设，可以委派只读子调查。
-- **处置**：只有 `rollout_undo` 与 `restart_pod` 两种动作；先做前置检查、风险分级与审批，执行后按业务请求验证。异常结果会停止后续动作，并生成人工待办。
-- **记录**：事件、调查、观测、假设与证据、提案、审批和执行都存进 PostgreSQL；审批可以跨进程恢复，重放不会重复写集群。
+- 在调查中补充线索。停在审批卡片时，仍可另问只读问题。
+- AlertManager 告警按组进入会话。可以在网页查看进展，也可以在终端继续排查。
+- 核对卡片后，再批准回滚 Deployment 或重建 Pod。Vigil 会记录发送和验证结果，供接手或人工核实。
 
 ## 快速开始
 
-运行要求：Linux、uv、Python 3.12–3.13。
+使用 Linux、uv 和 Python 3.12–3.13。准备好 Kubernetes、Prometheus、PostgreSQL 和本机模型网关后，在源码目录执行：
 
 ```sh
-make init                                   # 安装锁定依赖与开发工具
-cp .env.example .env                        # 按需填写 VIGIL_ 配置
-make check-all                              # 格式、lint 与测试；无数据库时相关用例跳过
+uv sync --frozen --group dev
+cp -n .env.example .env
+# 填好本机配置后运行
+uv run --frozen vigil admin migrate
+uv run --frozen vigil admin doctor
+uv run --frozen vigil "checkoutservice 现在健康吗？"
 ```
 
-命令行入口正在重做，见设计文档；本文不提供启动命令。
+在交互终端启动 `uv run --frozen vigil serve`，打开它打印的一次性链接即可在网页提问和审批。命令行参数、安装版配置和旧库切换见操作手册。
 
-调查需要实验集群、Prometheus、PostgreSQL 和模型网关。
-
-- [操作手册](docs/USAGE.md)：配置、调查、审批与排障。
-- [实验环境](env/README.md)：搭建集群与观测组件。
-- [故障演练](faults/README.md)：注入、验收与复位。
+- [操作手册](docs/USAGE.md)
+- [实验环境](env/README.md)
+- [故障演练](faults/README.md)
