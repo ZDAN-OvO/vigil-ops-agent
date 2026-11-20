@@ -33,6 +33,8 @@ class Settings(BaseSettings):
 
     # 只读工具边界。数值是先跑通链路的临时默认值，尚未按实验冻结。
     prometheus_url: str = "http://127.0.0.1:9090"
+    alertmanager_url: str = "http://127.0.0.1:9093"
+    grafana_url: str | None = None
     kubeconfig: Path | None = None
     kube_context: str | None = None
     tool_timeout_seconds: float = 10.0

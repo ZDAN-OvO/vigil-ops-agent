@@ -1,0 +1,927 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vigil-grafana-provisioning
+  namespace: vigil-monitoring
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Vigil Prometheus
+        uid: vigil-prometheus
+        type: prometheus
+        access: proxy
+        url: http://127.0.0.1:8081/prometheus
+        isDefault: true
+        editable: false
+        jsonData:
+          httpMethod: GET
+          prometheusType: Prometheus
+          timeInterval: 15s
+      - name: Vigil AlertManager
+        uid: vigil-alertmanager
+        type: alertmanager
+        access: proxy
+        url: http://127.0.0.1:8081/alertmanager
+        editable: false
+        jsonData:
+          implementation: prometheus
+          handleGrafanaManagedAlerts: false
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: Vigil
+        folder: Vigil
+        type: file
+        disableDeletion: true
+        allowUiUpdates: false
+        options:
+          path: /var/lib/grafana/dashboards
+  query-proxy.conf: |
+    server {
+      listen 127.0.0.1:8081;
+      location ~ ^/prometheus/api/v1/(query(_range)?|series|labels|label/[a-zA-Z0-9_]+/values|metadata|status/buildinfo)$ {
+        limit_except GET { deny all; }
+        rewrite ^/prometheus(/.*)$ $1 break;
+        proxy_pass http://prometheus:9090;
+      }
+      location ~ ^/alertmanager/api/v2/(alerts(/groups)?|silences(/[0-9a-f-]+)?)$ {
+        limit_except GET { deny all; }
+        rewrite ^/alertmanager(/.*)$ $1 break;
+        proxy_pass http://alertmanager:9093;
+      }
+      location / { return 404; }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vigil-grafana-dashboards
+  namespace: vigil-monitoring
+data:
+  vigil-alerts.json: |
+    {
+      "uid": "vigil-alerts",
+      "title": "告警",
+      "tags": [
+        "Vigil"
+      ],
+      "schemaVersion": 39,
+      "editable": false,
+      "timezone": "browser",
+      "refresh": "30s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "正在触发的规则告警",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "sum by (alertname, severity) (ALERTS{alertstate=\"firing\"})",
+              "legendFormat": "{{alertname}} · {{severity}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "AlertManager 告警状态",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 8,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "sum by (state) (alertmanager_alerts{job=\"alertmanager\"})",
+              "legendFormat": "{{state}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "AlertManager 抓取状态",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 16,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "up{job=\"alertmanager\"}",
+              "legendFormat": "{{instance}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        }
+      ]
+    }
+  vigil-entry-probes.json: |
+    {
+      "uid": "vigil-entry-probes",
+      "title": "入口探测",
+      "tags": [
+        "Vigil"
+      ],
+      "schemaVersion": 39,
+      "editable": false,
+      "timezone": "browser",
+      "refresh": "30s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "近一小时采样可用率",
+          "description": "按成功取到的探测样本计算。",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "avg_over_time(probe_success{job=\"vigil-entry-probe\"}[1h]) and on (job, instance) (up{job=\"vigil-entry-probe\"} == 1)",
+              "legendFormat": "{{application}} · {{address}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "探测结果",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 8,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "last_over_time(probe_success{job=\"vigil-entry-probe\"}[15s]) and on (job, instance) (up{job=\"vigil-entry-probe\"} == 1)",
+              "legendFormat": "{{address}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "响应时间",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 16,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "last_over_time(probe_duration_seconds{job=\"vigil-entry-probe\"}[15s]) and on (job, instance) (up{job=\"vigil-entry-probe\"} == 1)",
+              "legendFormat": "{{address}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        }
+      ]
+    }
+  vigil-releases.json: |
+    {
+      "uid": "vigil-releases",
+      "title": "发布",
+      "tags": [
+        "Vigil"
+      ],
+      "schemaVersion": 39,
+      "editable": false,
+      "timezone": "browser",
+      "refresh": "30s",
+      "time": {
+        "from": "now-24h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "table",
+          "title": "保留的发布与 Vigil 回滚 · 24 小时",
+          "description": "取当前仍保留的 ReplicaSet 和已核实执行记录，版本为 Deployment revision。",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "noValue": "缺数"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "变更时间"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "dateTimeAsIso"
+                  }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "1000 * ((vigil_release_timestamp_seconds > time() - 86400) and on (job, instance) (up{job=\"vigil-releases\"} == 1))",
+              "legendFormat": "",
+              "format": "table",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "change_at": true,
+                  "instance": true,
+                  "job": true
+                },
+                "indexByName": {
+                  "Value": 0,
+                  "namespace": 1,
+                  "service": 2,
+                  "version": 3,
+                  "change_type": 4
+                },
+                "renameByName": {
+                  "Value": "变更时间",
+                  "namespace": "命名空间",
+                  "service": "服务",
+                  "version": "版本",
+                  "change_type": "类型"
+                }
+              }
+            }
+          ],
+          "options": {
+            "sortBy": [
+              {
+                "displayName": "变更时间",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "发布数据源可用性",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 8,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "vigil_release_source_available or label_replace(up{job=\"vigil-releases\"},\"source\",\"exporter\",\"job\",\".+\")",
+              "legendFormat": "{{source}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        }
+      ]
+    }
+  vigil-services.json: |
+    {
+      "uid": "vigil-services",
+      "title": "服务",
+      "tags": [
+        "Vigil"
+      ],
+      "schemaVersion": 39,
+      "editable": false,
+      "timezone": "browser",
+      "refresh": "30s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Deployment 就绪 / 期望副本",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "label_replace(kube_deployment_status_replicas_ready{job=\"kube-state-metrics\",namespace=\"vigil-shop\"},\"replicas\",\"就绪\",\"job\",\".+\") or label_replace(kube_deployment_spec_replicas{job=\"kube-state-metrics\",namespace=\"vigil-shop\"},\"replicas\",\"期望\",\"job\",\".+\")",
+              "legendFormat": "{{deployment}} · {{replicas}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "容器近一小时重启次数",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 8,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "increase(kube_pod_container_status_restarts_total{job=\"kube-state-metrics\",namespace=\"vigil-shop\"}[1h])",
+              "legendFormat": "{{pod}} · {{container}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Deployment 容器 CPU",
+          "description": "同一 Deployment 的容器 CPU 按归属汇总。",
+          "gridPos": {
+            "x": 0,
+            "y": 16,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cores",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "sum by (namespace, deployment) (sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{job=\"kubelet-cadvisor\",container!=\"\",container!=\"POD\",namespace=\"vigil-shop\"}[2m]) and on (job, instance) (up{job=\"kubelet-cadvisor\"} == 1)) * on (namespace, pod) group_left (deployment) (max by (namespace, pod, replicaset) (label_replace(kube_pod_owner{job=\"kube-state-metrics\",namespace=\"vigil-shop\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"},\"replicaset\",\"$1\",\"owner_name\",\"(.+)\")) * on (namespace, replicaset) group_left (deployment) max by (namespace, replicaset, deployment) (label_replace(kube_replicaset_owner{job=\"kube-state-metrics\",namespace=\"vigil-shop\",owner_kind=\"Deployment\",owner_is_controller=\"true\"},\"deployment\",\"$1\",\"owner_name\",\"(.+)\"))))",
+              "legendFormat": "{{deployment}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Deployment 容器工作集内存",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 24,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "sum by (namespace, deployment) (sum by (namespace, pod) (container_memory_working_set_bytes{job=\"kubelet-cadvisor\",container!=\"\",container!=\"POD\",namespace=\"vigil-shop\"} and on (job, instance) (up{job=\"kubelet-cadvisor\"} == 1)) * on (namespace, pod) group_left (deployment) (max by (namespace, pod, replicaset) (label_replace(kube_pod_owner{job=\"kube-state-metrics\",namespace=\"vigil-shop\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"},\"replicaset\",\"$1\",\"owner_name\",\"(.+)\")) * on (namespace, replicaset) group_left (deployment) max by (namespace, replicaset, deployment) (label_replace(kube_replicaset_owner{job=\"kube-state-metrics\",namespace=\"vigil-shop\",owner_kind=\"Deployment\",owner_is_controller=\"true\"},\"deployment\",\"$1\",\"owner_name\",\"(.+)\"))))",
+              "legendFormat": "{{deployment}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        }
+      ]
+    }
+  vigil-nodes.json: |
+    {
+      "uid": "vigil-nodes",
+      "title": "节点",
+      "tags": [
+        "Vigil"
+      ],
+      "schemaVersion": 39,
+      "editable": false,
+      "timezone": "browser",
+      "refresh": "30s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "节点就绪与压力",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "kube_node_status_condition{job=\"kube-state-metrics\",condition=~\"Ready|MemoryPressure|DiskPressure|PIDPressure\",status=\"true\"}",
+              "legendFormat": "{{node}} · {{condition}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "节点上的工作负载容器 CPU",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 8,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cores",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "sum by (node) (rate(container_cpu_usage_seconds_total{job=\"kubelet-cadvisor\",container!=\"\",container!=\"POD\"}[2m]) and on (job, instance) (up{job=\"kubelet-cadvisor\"} == 1))",
+              "legendFormat": "{{node}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "节点上的工作负载容器工作集内存",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 16,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "sum by (node) (container_memory_working_set_bytes{job=\"kubelet-cadvisor\",container!=\"\",container!=\"POD\"} and on (job, instance) (up{job=\"kubelet-cadvisor\"} == 1))",
+              "legendFormat": "{{node}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "kubelet 容器指标抓取状态",
+          "description": "",
+          "gridPos": {
+            "x": 0,
+            "y": 24,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "vigil-prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "缺数",
+              "custom": {
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vigil-prometheus"
+              },
+              "refId": "A",
+              "expr": "up{job=\"kubelet-cadvisor\"}",
+              "legendFormat": "{{node}}",
+              "format": "time_series",
+              "instant": false,
+              "range": true
+            }
+          ]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vigil-grafana
+  namespace: vigil-monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vigil-grafana
+  template:
+    metadata:
+      labels:
+        app: vigil-grafana
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 472
+      containers:
+        - name: grafana
+          image: grafana/grafana@sha256:2175aaa91c96733d86d31cf270d5310b278654b03f5718c59de12a865380a31f
+          env:
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: Viewer
+            - name: GF_AUTH_BASIC_ENABLED
+              value: "false"
+            - name: GF_AUTH_DISABLE_LOGIN_FORM
+              value: "true"
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            - name: GF_ANALYTICS_REPORTING_ENABLED
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+              value: "false"
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+          volumeMounts:
+            - name: provisioning
+              mountPath: /etc/grafana/provisioning/datasources/vigil.yaml
+              subPath: datasources.yaml
+              readOnly: true
+            - name: provisioning
+              mountPath: /etc/grafana/provisioning/dashboards/vigil.yaml
+              subPath: dashboards.yaml
+              readOnly: true
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+              readOnly: true
+        - name: query-proxy
+          image: nginx@sha256:4870c12cd2ca986de501a804b4f506ad3875a0b1874940ba0a2c7f763f1855b2
+          volumeMounts:
+            - name: provisioning
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+              subPath: nginx
+      volumes:
+        - name: provisioning
+          configMap:
+            name: vigil-grafana-provisioning
+            items:
+              - key: datasources.yaml
+                path: datasources.yaml
+              - key: dashboards.yaml
+                path: dashboards.yaml
+              - key: query-proxy.conf
+                path: nginx/vigil.conf
+        - name: dashboards
+          configMap:
+            name: vigil-grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vigil-grafana
+  namespace: vigil-monitoring
+spec:
+  selector:
+    app: vigil-grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

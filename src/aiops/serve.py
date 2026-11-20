@@ -14,6 +14,7 @@ from aiops.actions.safety import ActionSafety
 from aiops.agent.conversation import AwaitingActionReceipt, ConversationDriver
 from aiops.config import WEB_HOST, Settings
 from aiops.db import Store
+from aiops.monitoring.snapshot import Monitoring
 from aiops.sessions.checkpoint import setup_checkpoints
 from aiops.sessions.models import LeaseLost, SessionClosed, TurnLane
 from aiops.web_api import BrowserAuth, build_web_app
@@ -123,7 +124,10 @@ async def _listen(
 ) -> None:
     stop = asyncio.Event()
     auth = BrowserAuth(interactive=interactive)
-    web = build_web_app(settings, sessions=driver.sessions, safety=safety, auth=auth)
+    monitoring = Monitoring.from_settings(settings)
+    web = build_web_app(
+        settings, sessions=driver.sessions, safety=safety, auth=auth, monitoring=monitoring.snapshot
+    )
     listeners = [(web, WEB_HOST, settings.web_port)]
     if settings.webhook_host is not None:
         webhook = build_app(settings, sessions=driver.sessions, safety=safety)

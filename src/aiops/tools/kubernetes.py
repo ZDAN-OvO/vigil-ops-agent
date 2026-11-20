@@ -8,7 +8,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from time import monotonic
+from typing import Any, Literal
 
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
@@ -16,6 +17,8 @@ from kubernetes.client.exceptions import ApiException
 
 from aiops.contracts import TimeRange, ToolError, ToolResult
 from aiops.tools.base import ToolContext
+
+MonitoringResource = Literal["deployments", "replicasets", "pods", "services", "events", "metrics"]
 
 
 def trim_pod(pod: dict[str, Any]) -> dict[str, Any]:
@@ -239,6 +242,41 @@ class KubernetesRead:
 
     def _limit(self, items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
         return items[: self._max_items], len(items) > self._max_items
+
+    def monitoring_items(
+        self, namespace: str, resource: MonitoringResource, *, timeout: float
+    ) -> list[dict[str, Any]]:
+        """按固定资源读取面板数据，保留归属身份和完整分页，不进入调查证据账本。"""
+        deadline = monotonic() + timeout
+        core, apps = self._clients()
+        if resource == "metrics":
+            # 聚合 metrics API 不支持通用 List 分页。
+            custom = k8s_client.CustomObjectsApi(core.api_client)
+            return custom.list_namespaced_custom_object(
+                "metrics.k8s.io", "v1beta1", namespace, "pods", _request_timeout=timeout
+            )["items"]
+
+        readers = {
+            "deployments": apps.list_namespaced_deployment,
+            "replicasets": apps.list_namespaced_replica_set,
+            "pods": core.list_namespaced_pod,
+            "services": core.list_namespaced_service,
+            "events": core.list_namespaced_event,
+        }
+        filters = {"field_selector": "type=Warning"} if resource == "events" else {}
+        items = []
+        token = None
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError("面板查询超过截止时间")
+            page = readers[resource](
+                namespace, limit=250, _continue=token, _request_timeout=remaining, **filters
+            )
+            items.extend(item.to_dict() for item in page.items)
+            token = page.metadata._continue
+            if not token:
+                return items
 
     async def _call(
         self,
