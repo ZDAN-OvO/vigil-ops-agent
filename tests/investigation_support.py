@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -18,6 +19,8 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from aiops.actions.executor import ActionExecutor
 from aiops.actions.restart_pod import PodPlan
 from aiops.actions.rollout_undo import ActionError, RolloutPlan
+from aiops.actions.safety import ActionSafety
+from aiops.agent.conversation import ConversationDriver
 from aiops.agent.engine import LangChainInvestigation
 from aiops.config import Settings
 from aiops.contracts import (
@@ -43,6 +46,8 @@ from aiops.contracts import (
     ToolResult,
 )
 from aiops.db import Store
+from aiops.sessions.checkpoint import setup_checkpoints
+from aiops.sessions.models import SessionEvent
 
 START = datetime.now(UTC)
 WINDOW = TimeRange(start=START - timedelta(minutes=15), end=START)
@@ -336,6 +341,8 @@ class FakeRestartAdapter:
         ready: bool = True,
         discardable: bool = True,
         service_selects_ok: bool = True,
+        baseline_status: int = 200,
+        rebuilt_status: int = 200,
     ) -> None:
         self.last_terminated_reason = last_terminated_reason
         self.restart_count = restart_count
@@ -343,6 +350,9 @@ class FakeRestartAdapter:
         self.ready = ready
         self.discardable = discardable
         self.service_selects_ok = service_selects_ok
+        self.baseline_status = baseline_status
+        self.rebuilt_status = rebuilt_status
+        self.dry_runs: list[str] = []
         self.deleted: list[str] = []
         self.tag = uuid4().hex[:6]
 
@@ -384,6 +394,7 @@ class FakeRestartAdapter:
         return {"ok": self.service_selects_ok, "pod_ip": pod_ip, "addresses": [pod_ip]}
 
     def dry_run(self, plan):  # noqa: ANN001
+        self.dry_runs.append(plan.uid)
         return {"dry_run": True, "uid": plan.uid, "allowed": True}
 
     def execute(self, plan):  # noqa: ANN001
@@ -404,7 +415,8 @@ class FakeRestartAdapter:
         }
 
     def pod_get(self, namespace, name, path):  # noqa: ANN001
-        return {"ok": True, "status": 200, "body": "ok"}
+        status = self.rebuilt_status if name.endswith("-new") else self.baseline_status
+        return {"ok": status == 200, "status": status, "body": "模拟业务响应"}
 
 
 class FakePrometheus:
@@ -432,28 +444,88 @@ class FakePrometheus:
         )
 
 
-def make_proposal_executor(
-    store: Store,
+@dataclass
+class ActionCase:
+    store: Store
+    driver: ConversationDriver
+    session_id: str
+    safety: ActionSafety
+    model: ScriptedChatModel
+    toolbox: FakeToolbox
+    restart: FakeRestartAdapter
+
+    async def events(self, event_type: str) -> list[SessionEvent]:
+        return [
+            event
+            for event in await self.driver.sessions.list_events(self.session_id)
+            if event.type == event_type
+        ]
+
+
+@asynccontextmanager
+async def action_case(
+    tmp_path: Path,
+    session_ids: list[str],
     *,
+    responses: list[Any],
+    namespace: str = "vigil-experiment",
     rollout: FakeRolloutAdapter | None = None,
     restart: FakeRestartAdapter | None = None,
-    prometheus: FakePrometheus | None = None,
-) -> ActionExecutor:
-    return ActionExecutor(
-        store=store,
-        adapter=rollout or FakeRolloutAdapter(),  # type: ignore[arg-type]
-        restart_adapter=restart or FakeRestartAdapter(),  # type: ignore[arg-type]
-        prometheus=prometheus or FakePrometheus(),  # type: ignore[arg-type]
-        runtime_path=Settings(_env_file=None).runtime_path,
-        cluster="vigil-lab",
-        namespace="vigil-experiment",
-        rollout_timeout_seconds=5,
-        verify_seconds=6,
-        sample_seconds=1,
-        verify_delay_seconds=0,
-        verify_grace_seconds=0,
-        io_timeout_seconds=1,
-    )
+    **config,
+) -> AsyncIterator[ActionCase]:
+    """模型与集群 I/O 用替身，会话、审批和执行账本使用真实实现。"""
+    if not DSN:
+        raise RuntimeError("未配置 VIGIL_DATABASE_URL")
+    runtime = settings(runtime_dir=tmp_path, namespace=namespace, **config)
+    rollout = rollout or FakeRolloutAdapter()
+    restart = restart or FakeRestartAdapter(baseline_status=500)
+    prometheus = FakePrometheus()
+    model = ScriptedChatModel(responses=responses)
+    toolbox = FakeToolbox()
+    async with Store.open(DSN) as store:
+        await store.migrate()
+        await setup_checkpoints(store)
+
+        @asynccontextmanager
+        async def executor_factory(*, lease, turn_id):
+            yield ActionExecutor(
+                store=store,
+                adapter=rollout,  # type: ignore[arg-type]
+                restart_adapter=restart,  # type: ignore[arg-type]
+                prometheus=prometheus,  # type: ignore[arg-type]
+                runtime_path=runtime.runtime_path,
+                cluster=runtime.cluster,
+                namespace=runtime.namespace,
+                rollout_timeout_seconds=5,
+                verify_seconds=3,
+                sample_seconds=1,
+                verify_delay_seconds=0,
+                verify_grace_seconds=0,
+                io_timeout_seconds=1,
+                session_lease=lease,
+                session_turn_id=turn_id,
+            )
+
+        driver = ConversationDriver(
+            settings=runtime,
+            store=store,
+            toolbox=toolbox,
+            executor_factory=executor_factory,
+            model=model,
+        )
+        session = await driver.sessions.create_session(title="会话动作测试")
+        session_ids.append(session.id)
+        question = "排查 Pod 业务异常"
+        await driver.sessions.enqueue_input(session.id, question, display_text=question)
+        yield ActionCase(
+            store=store,
+            driver=driver,
+            session_id=session.id,
+            safety=ActionSafety(store),
+            model=model,
+            toolbox=toolbox,
+            restart=restart,
+        )
 
 
 @dataclass
@@ -627,13 +699,13 @@ __all__ = [
     "FakeToolbox",
     "ScriptedChatModel",
     "TEST_REASON",
+    "action_case",
     "agent_case",
     "build",
     "call",
     "create_hypothesis",
     "default_data",
     "hypothesis_id",
-    "make_proposal_executor",
     "observation_ids",
     "report_call",
     "settings",

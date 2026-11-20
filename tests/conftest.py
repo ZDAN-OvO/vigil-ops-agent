@@ -39,22 +39,26 @@ def cleanup():
             conn.execute("DELETE FROM action_proposals WHERE id = %s", (proposal_id,))
 
         for session_id in ids.sessions:
-            for table in ("checkpoints", "checkpoint_writes", "checkpoint_blobs"):
-                conn.execute(f"DELETE FROM {table} WHERE thread_id = %s", (session_id,))
-            conn.execute(
-                "DELETE FROM session_events WHERE session_id = %s AND turn_id IS NOT NULL",
-                (session_id,),
-            )
-            conn.execute(
-                "UPDATE session_inputs SET turn_id = NULL, checkpoint_id = NULL, "
-                "delivered_step = NULL "
-                "WHERE session_id = %s",
-                (session_id,),
-            )
-            conn.execute("DELETE FROM session_turns WHERE session_id = %s", (session_id,))
-            conn.execute("DELETE FROM session_inputs WHERE session_id = %s", (session_id,))
-            conn.execute("DELETE FROM session_events WHERE session_id = %s", (session_id,))
-            conn.execute("DELETE FROM sessions WHERE id = %s", (session_id,))
+            _delete_session(conn, session_id)
+
+
+def _delete_session(conn, session_id):
+    for table in ("checkpoints", "checkpoint_writes", "checkpoint_blobs"):
+        conn.execute(f"DELETE FROM {table} WHERE thread_id = %s", (session_id,))
+    conn.execute(
+        "DELETE FROM session_events WHERE session_id = %s AND turn_id IS NOT NULL",
+        (session_id,),
+    )
+    conn.execute(
+        "UPDATE session_inputs SET turn_id = NULL, checkpoint_id = NULL, "
+        "delivered_step = NULL "
+        "WHERE session_id = %s",
+        (session_id,),
+    )
+    conn.execute("DELETE FROM session_turns WHERE session_id = %s", (session_id,))
+    conn.execute("DELETE FROM session_inputs WHERE session_id = %s", (session_id,))
+    conn.execute("DELETE FROM session_events WHERE session_id = %s", (session_id,))
+    conn.execute("DELETE FROM sessions WHERE id = %s", (session_id,))
 
 
 @pytest.fixture
@@ -67,50 +71,76 @@ def ids():
     }
     yield values
     with psycopg.connect(DSN) as conn:
-        # 新运行时的表要先删：它们对 hypotheses / investigations / proposals 有外键。
-        conn.execute(
-            "DELETE FROM tool_requests WHERE investigation_id = %s", (values["investigation"],)
-        )
-        conn.execute(
-            "DELETE FROM hypothesis_evidence WHERE investigation_id = %s",
+        _delete_investigation(conn, values)
+
+
+def _delete_investigation(conn, values):
+    # 新运行时的表要先删：它们对 hypotheses / investigations / proposals 有外键。
+    conn.execute(
+        "DELETE FROM tool_requests WHERE investigation_id = %s", (values["investigation"],)
+    )
+    conn.execute(
+        "DELETE FROM hypothesis_evidence WHERE investigation_id = %s",
+        (values["investigation"],),
+    )
+    conn.execute("DELETE FROM observations WHERE investigation_id = %s", (values["investigation"],))
+    conn.execute("DELETE FROM delegations WHERE investigation_id = %s", (values["investigation"],))
+    for proposal_id in [
+        row[0]
+        for row in conn.execute(
+            "SELECT id FROM action_proposals WHERE investigation_id = %s",
             (values["investigation"],),
-        )
-        conn.execute(
-            "DELETE FROM observations WHERE investigation_id = %s", (values["investigation"],)
-        )
-        conn.execute(
-            "DELETE FROM delegations WHERE investigation_id = %s", (values["investigation"],)
-        )
-        for proposal_id in [
-            row[0]
-            for row in conn.execute(
-                "SELECT id FROM action_proposals WHERE investigation_id = %s",
-                (values["investigation"],),
+        ).fetchall()
+    ]:
+        conn.execute("DELETE FROM action_followups WHERE proposal_id = %s", (proposal_id,))
+        conn.execute("DELETE FROM tool_requests WHERE proposal_id = %s", (proposal_id,))
+        conn.execute("DELETE FROM investigation_tasks WHERE proposal_id = %s", (proposal_id,))
+        conn.execute("DELETE FROM action_attempts WHERE proposal_id = %s", (proposal_id,))
+        conn.execute("DELETE FROM approvals WHERE proposal_id = %s", (proposal_id,))
+        conn.execute("DELETE FROM action_locks WHERE proposal_id = %s", (proposal_id,))
+        conn.execute("DELETE FROM audit_events WHERE correlation_id = %s", (proposal_id,))
+        conn.execute("DELETE FROM action_proposals WHERE id = %s", (proposal_id,))
+    conn.execute(
+        "DELETE FROM investigation_tasks WHERE investigation_id = %s",
+        (values["investigation"],),
+    )
+    conn.execute(
+        "DELETE FROM audit_events WHERE correlation_id = ANY(%s)",
+        ([values["correlation"], values["investigation"]],),
+    )
+    conn.execute("DELETE FROM hypotheses WHERE investigation_id = %s", (values["investigation"],))
+    conn.execute("DELETE FROM investigations WHERE id = %s", (values["investigation"],))
+    conn.execute("DELETE FROM incidents WHERE id = %s", (values["incident"],))
+    for table in ("checkpoints", "checkpoint_writes", "checkpoint_blobs"):
+        # 取消或租约冲突可能发生在初始化 checkpoint 之前。
+        if conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()[0] is not None:
+            conn.execute(f"DELETE FROM {table} WHERE thread_id = %s", (values["investigation"],))
+
+
+@pytest.fixture
+def action_session_ids():
+    """只清理由动作会话用例登记的会话及其调查。"""
+    session_ids: list[str] = []
+    yield session_ids
+    if not session_ids:
+        return
+    with psycopg.connect(DSN) as conn:
+        for session_id in session_ids:
+            investigations = conn.execute(
+                """
+                SELECT i.id, i.incident_id FROM investigations i
+                JOIN session_turns t ON t.id = i.session_turn_id
+                WHERE t.session_id = %s
+                """,
+                (session_id,),
             ).fetchall()
-        ]:
-            conn.execute("DELETE FROM action_followups WHERE proposal_id = %s", (proposal_id,))
-            conn.execute("DELETE FROM tool_requests WHERE proposal_id = %s", (proposal_id,))
-            conn.execute("DELETE FROM investigation_tasks WHERE proposal_id = %s", (proposal_id,))
-            conn.execute("DELETE FROM action_attempts WHERE proposal_id = %s", (proposal_id,))
-            conn.execute("DELETE FROM approvals WHERE proposal_id = %s", (proposal_id,))
-            conn.execute("DELETE FROM action_locks WHERE proposal_id = %s", (proposal_id,))
-            conn.execute("DELETE FROM action_proposals WHERE id = %s", (proposal_id,))
-        conn.execute(
-            "DELETE FROM investigation_tasks WHERE investigation_id = %s",
-            (values["investigation"],),
-        )
-        conn.execute("DELETE FROM audit_events WHERE correlation_id = %s", (values["correlation"],))
-        conn.execute(
-            "DELETE FROM audit_events WHERE correlation_id = %s", (values["investigation"],)
-        )
-        conn.execute(
-            "DELETE FROM hypotheses WHERE investigation_id = %s", (values["investigation"],)
-        )
-        conn.execute("DELETE FROM investigations WHERE id = %s", (values["investigation"],))
-        conn.execute("DELETE FROM incidents WHERE id = %s", (values["incident"],))
-        for table in ("checkpoints", "checkpoint_writes", "checkpoint_blobs"):
-            # 取消或租约冲突可能发生在初始化 checkpoint 之前。
-            if conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()[0] is not None:
-                conn.execute(
-                    f"DELETE FROM {table} WHERE thread_id = %s", (values["investigation"],)
+            for investigation_id, incident_id in investigations:
+                _delete_investigation(
+                    conn,
+                    {
+                        "investigation": investigation_id,
+                        "incident": incident_id,
+                        "correlation": investigation_id,
+                    },
                 )
+            _delete_session(conn, session_id)
