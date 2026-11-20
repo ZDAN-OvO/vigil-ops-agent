@@ -56,7 +56,7 @@ from aiops.contracts import (
 )
 from aiops.investigation.toolbox import QueryRequest, observation
 from aiops.sessions.models import LeaseLost
-from aiops.sessions.projection import project_payload
+from aiops.sessions.projection import project_action_result, project_payload
 from aiops.tools.base import ToolContext
 
 READ_TOOLS = (
@@ -1652,15 +1652,7 @@ async def _consume_card(
 
 
 def _written(attempt: ActionAttempt) -> bool | None:
-    evidence = attempt.result or {}
-    value = evidence.get("written", evidence.get("write_sent"))
-    if isinstance(value, bool):
-        return value
-    if attempt.status is AttemptStatus.VERIFIED:
-        return True
-    if attempt.status.value in {"intent", "voided"}:
-        return False
-    return None
+    return project_action_result(attempt)["written"]
 
 
 __all__ = [

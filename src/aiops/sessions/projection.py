@@ -22,7 +22,10 @@ _CREDENTIAL_HEADER = re.compile(r"(?im)(\b(?:authorization|(?:set-)?cookie)\s*:)
 _PRIVATE_KEY = re.compile(
     r"-----BEGIN [^-]*PRIVATE KEY-----.*?(?:-----END [^-]*PRIVATE KEY-----|$)", re.S
 )
-_TOKEN = re.compile(r"\b(?:sk-[\w-]{8,}|gh[pousr]_[\w]{8,}|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b")
+_TOKEN = re.compile(
+    r"\b(?:sk-[\w-]{8,}|gh[pousr]_[\w]{8,}|github_pat_[\w]{8,}"
+    r"|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b"
+)
 _LOCAL_PATH = re.compile(
     r"(?<![\w/])(?:file://)?(?:~|/+(?:home|root|tmp|var|run|etc|opt|mnt|Users|private"
     r"|workspace|workspaces|proc|srv|usr|dev|sys))(/[^\s'\"<>,;\])}]*)"
@@ -126,7 +129,7 @@ def project_payload(value: Any) -> Any:
 
 _TEMPLATE_PRIVATE = re.compile(
     r"(^|/)(?:env|envFrom|args|command|annotations|hostPath|imagePullSecrets"
-    r"|secret|secretKeyRef|projected)(?:/|$)",
+    r"|secret|secretKeyRef|projected|httpHeaders)(?:/|$)",
     re.I,
 )
 
@@ -206,7 +209,8 @@ def project_action_result(
             "written": False,
             "verification": None,
         }
-    stage = (attempt.result or {}).get("stage")
+    result = attempt.result or {}
+    stage = result.get("stage")
     reason = (attempt.verification or {}).get("outcome_reason") or (attempt.result or {}).get(
         "code"
     )
@@ -220,12 +224,20 @@ def project_action_result(
     if sent:
         phase = "send_granted"
         written = None
-        if stage in {"applied", "rebuilt", "deleted", "verify_after_apply", "verify_after_delete"}:
+        if attempt.status is AttemptStatus.VERIFIED or stage in {
+            "applied",
+            "rebuilt",
+            "deleted",
+            "verify_after_apply",
+            "verify_after_delete",
+        }:
             phase = "verification"
             written = True
     if stage == "manual_verification":
         phase = "verification"
-        written = (attempt.result or {}).get("written")
+    explicit = result.get("written", result.get("write_sent"))
+    if isinstance(explicit, bool):
+        written = explicit
     return {
         "card_id": attempt.proposal_id,
         "attempt_id": attempt.id,

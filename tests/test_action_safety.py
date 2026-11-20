@@ -29,7 +29,7 @@ from aiops.actions.safety import ActionSafety
 from aiops.contracts import ActionAttempt, ApprovalDecision, AttemptStatus, ProposalStatus
 from aiops.db import Store
 from aiops.sessions.models import LeaseLost
-from aiops.sessions.projection import project_action_result, project_payload
+from aiops.sessions.projection import project_action_result, project_payload, project_template_diff
 from aiops.sessions.store import SessionStore
 
 pytestmark = pytest.mark.skipif(not DSN, reason="未配置 VIGIL_DATABASE_URL")
@@ -485,6 +485,7 @@ def test_legacy_cutover_is_explicit_idempotent_and_restores_unknown_lock(tmp_pat
 
 def test_shared_projection_redacts_nested_text_urls_and_templates():
     canary = uuid4().hex
+    personal_access_token = "github_pat_" + "A" * 82
     payload = {
         "error": (
             "异常: details: token=opaque-value 读取 /home/test/private.txt 失败，"
@@ -495,6 +496,9 @@ def test_shared_projection_redacts_nested_text_urls_and_templates():
         "url": f"https://fake-user:{canary}@example.test/%2Ftmp%2Fprivate?ticket=opaque-ticket",
         "card": "http://[::1]:8090/sessions/id#card-act-id",
         "login": "http://127.0.0.1:8090/%6cogin/opaque-login",
+        "log": f"上游响应包含 {personal_access_token}",
+        "detail": {"error": f"请求 {personal_access_token} 失败"},
+        "query": f"https://example.test/probe?trace={personal_access_token}",
     }
     projected = project_payload(payload)
     serialized = json.dumps(projected, ensure_ascii=False)
@@ -508,10 +512,36 @@ def test_shared_projection_redacts_nested_text_urls_and_templates():
         "opaque-ticket",
         "opaque-login",
         "tmp%2Fprivate",
+        personal_access_token,
     ):
         assert secret not in serialized
     assert projected["card"] == payload["card"]
     assert project_payload(projected) == projected
+
+
+def test_probe_header_values_are_hidden_in_leaf_and_added_subtree():
+    current = {"name": "X-API-Key", "value": "fixture-old-probe-key"}
+    target = {"name": "X-API-Key", "value": "fixture-new-probe-key"}
+    changes = [
+        {
+            "op": "replace",
+            "path": "/spec/containers/0/readinessProbe/httpGet/httpHeaders/0/value",
+            "current": current["value"],
+            "value": target["value"],
+        },
+        {
+            "op": "add",
+            "path": "/spec/containers/0/livenessProbe",
+            "value": {"httpGet": {"path": "/ready", "httpHeaders": [target]}},
+        },
+    ]
+    projected = project_template_diff(changes)
+    assert [(item["op"], item["path"]) for item in projected] == [
+        (item["op"], item["path"]) for item in changes
+    ]
+    assert projected[1]["value"]["httpGet"]["path"] == "/ready"
+    assert "fixture-old-probe-key" not in str(projected)
+    assert "fixture-new-probe-key" not in str(projected)
 
 
 def test_pending_legacy_lease_blocks_cutover_then_voids(cleanup, ids):
