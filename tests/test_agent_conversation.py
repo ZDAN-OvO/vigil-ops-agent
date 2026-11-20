@@ -6,7 +6,14 @@ from contextlib import asynccontextmanager
 
 import pytest
 from db_env import DSN
-from investigation_support import FakeAgentExecutor, FakeToolbox, ScriptedChatModel, settings
+from investigation_support import (
+    FakeAgentExecutor,
+    FakeToolbox,
+    ScriptedChatModel,
+    call,
+    report_call,
+    settings,
+)
 from langchain_core.messages import AIMessage, HumanMessage
 from test_agent_actions import _approved
 from test_agent_recovery import _preamble, _valid_report
@@ -96,6 +103,45 @@ def test_queries_again_next_turn_and_projects_only_public_fields(tmp_path):
                     if evt["type"] == "input_delivered" and evt["input_id"] == incoming.id
                 ]
                 assert len(delivered) == 1
+
+    asyncio.run(run())
+
+
+def test_partial_hypothesis_batch_keeps_applied_change_in_event_log(tmp_path):
+    async def run():
+        batch = call(
+            "manage_hypotheses",
+            {
+                "operations": [
+                    {"op": "create", "statement": "首条假设"},
+                    {
+                        "op": "update_status",
+                        "hypothesis_id": "missing-hypothesis",
+                        "status": "supported",
+                        "reason": "测试批次后续操作失败",
+                    },
+                ]
+            },
+            "hypothesis-partial",
+        )
+        async with case(
+            tmp_path, responses=[batch, report_call(confirmed=False, conclusion="证据不足")]
+        ) as (driver, session_id):
+            await enqueue(driver, session_id, "记录假设")
+            async with driver.claim(session_id) as main:
+                turn = await main.drive()
+            investigation_id = turn.result.payload["investigation_id"]
+            (hypothesis,) = await driver.store.list_hypotheses(investigation_id)
+            request = await driver.store.get_tool_request(investigation_id, "hypothesis-partial")
+            assert request.state is ToolRequestState.FAILED
+            assert request.error_code == "unknown_hypothesis"
+            (event,) = [
+                event
+                for event in await driver.sessions.list_events(session_id)
+                if event.type == "hypothesis"
+            ]
+            assert event.payload["id"] == hypothesis.id
+            assert event.payload["statement"] == hypothesis.statement == "首条假设"
 
     asyncio.run(run())
 

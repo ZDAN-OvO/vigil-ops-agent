@@ -594,6 +594,20 @@ def _hypothesis_payload(hypothesis: Hypothesis, *, temp_id: str = "") -> dict[st
     }
 
 
+async def _record_hypothesis(ctx: AgentContext, item: dict[str, Any]) -> None:
+    if ctx.active_transaction is not None:
+        await ctx.active_transaction.append_event(
+            "hypothesis",
+            {
+                "id": item["id"],
+                "statement": ctx.scope.project_text(item["statement"]),
+                "status": item["status"],
+                "parent_id": item["parent_id"],
+            },
+        )
+    ctx.progress.record("hypothesis")
+
+
 async def _validate_parent(
     ctx: AgentContext,
     hypotheses: dict[str, Hypothesis],
@@ -702,7 +716,9 @@ async def _manage_hypotheses(
             hypotheses[hypothesis.id] = hypothesis
             if operation.temp_id:
                 temp_map[operation.temp_id.strip()] = hypothesis.id
-            results.append(_hypothesis_payload(hypothesis, temp_id=operation.temp_id))
+            item = _hypothesis_payload(hypothesis, temp_id=operation.temp_id)
+            results.append(item)
+            await _record_hypothesis(ctx, item)
             continue
 
         target_id = operation.hypothesis_id.strip() or temp_map.get(operation.temp_id.strip(), "")
@@ -762,8 +778,9 @@ async def _manage_hypotheses(
             update_parent=bool(parent_id),
         )
         hypotheses[updated.id] = updated
-        results.append(_hypothesis_payload(updated))
-        ctx.progress.record("hypothesis")
+        item = _hypothesis_payload(updated)
+        results.append(item)
+        await _record_hypothesis(ctx, item)
 
     message = _dump(
         {
@@ -774,18 +791,6 @@ async def _manage_hypotheses(
         }
     )
     await _finish_request(ctx, call_id, state=ToolRequestState.OBSERVED, message=message)
-    if ctx.active_transaction is not None:
-        for item in results:
-            await ctx.active_transaction.append_event(
-                "hypothesis",
-                {
-                    "id": item["id"],
-                    "statement": ctx.scope.project_text(item["statement"]),
-                    "status": item["status"],
-                    "parent_id": item["parent_id"],
-                },
-            )
-    ctx.progress.record("hypothesis")
     return message
 
 
@@ -939,7 +944,6 @@ async def _assess_evidence(
         )
         hypotheses[updated.id] = updated
         updated_hypotheses.append(_hypothesis_payload(updated))
-        ctx.progress.record("hypothesis")
 
     message = _dump(
         {
@@ -952,16 +956,8 @@ async def _assess_evidence(
     if ctx.active_transaction is not None:
         for link in applied:
             await ctx.active_transaction.append_event("evidence", link)
-        for item in updated_hypotheses:
-            await ctx.active_transaction.append_event(
-                "hypothesis",
-                {
-                    "id": item["id"],
-                    "statement": ctx.scope.project_text(item["statement"]),
-                    "status": item["status"],
-                    "parent_id": item["parent_id"],
-                },
-            )
+    for item in updated_hypotheses:
+        await _record_hypothesis(ctx, item)
     return message
 
 
