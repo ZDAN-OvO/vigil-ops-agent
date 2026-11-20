@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from db_env import DSN, TEST_REASON
+from langgraph.checkpoint.base import empty_checkpoint
 
 from aiops.actions.executor import (
     ActionExecutor,
@@ -17,10 +18,13 @@ from aiops.contracts import (
     ActionOrigin,
     ActionProposal,
     ActionTarget,
+    ApprovalDecision,
     TimeRange,
     ToolResult,
 )
 from aiops.db import Store
+from aiops.sessions.checkpoint import SessionCheckpointer, setup_checkpoints
+from aiops.sessions.store import SessionStore
 
 START = datetime.now(UTC)
 WINDOW = TimeRange(start=START, end=START + timedelta(minutes=1))
@@ -122,19 +126,117 @@ def rollout_plan(*, current_memory_limit=None, target_memory_limit=None):
     )
 
 
-def build_executor(
+class ScopedActionExecutor(ActionExecutor):
+    """旧动作回归沿用原测试编排，决定统一走真实的卡片事务。"""
+
+    async def publish_test_card(self, proposal_id):
+        lease = self._session_lease
+        sessions = SessionStore(self._store)
+        turn = await sessions.get_turn(self._session_turn_id)
+        saver = SessionCheckpointer(self._store, lease, turn)
+        cfg = {"configurable": {"thread_id": turn.checkpoint_thread_id, "checkpoint_ns": ""}}
+        cfg = await saver.aput(cfg, empty_checkpoint(), {"source": "loop", "step": 1}, {})
+        await saver.aput_writes(cfg, [("__interrupt__", [{"proposal_id": proposal_id}])], "card")
+        async with sessions.run(lease, turn.id) as tx:
+            await tx.set_turn_state("awaiting_approval")
+        return await self.publish_card(proposal_id, lease=lease, turn_id=turn.id)
+
+    async def _test_decision(self, proposal_id, *, actor, reason, decision):
+        proposal = await self._store.get_proposal(proposal_id)
+        card = await self._safety.get_card(proposal_id, session_id=proposal.session_id)
+        if card is None:
+            event = await self.publish_test_card(proposal_id)
+            card = event.payload
+        await self._safety.record_card_decision(
+            proposal_id,
+            session_id=proposal.session_id,
+            fingerprint=card["fingerprint"],
+            decision=decision,
+            actor=actor,
+            reason=reason,
+        )
+
+    async def approve(self, proposal_id, *, actor, reason="", defer=False):
+        await self._test_decision(
+            proposal_id,
+            actor=actor,
+            reason=reason,
+            decision=ApprovalDecision.APPROVED,
+        )
+        if defer:
+            if (
+                self._session_lease.session_id
+                == (await self._store.get_proposal(proposal_id)).session_id
+            ):
+                await SessionStore(self._store).release_lease(self._session_lease)
+            return None
+        return await self.execute_authorized(proposal_id, actor=actor)
+
+    async def reject(self, proposal_id, *, actor, reason=""):
+        await self._test_decision(
+            proposal_id,
+            actor=actor,
+            reason=reason,
+            decision=ApprovalDecision.REJECTED,
+        )
+        return await self._store.get_proposal(proposal_id)
+
+    async def resume(self, proposal_id, *, actor="tester"):
+        proposal = await self._store.get_proposal(proposal_id)
+        sessions = SessionStore(self._store)
+        # 同一测试进程也通过重新领取来覆盖切换前后的数据库边界。
+        lease = await sessions.acquire_main_lease(proposal.session_id, f"test-{uuid4().hex}")
+        if lease is not None:
+            self._session_lease = lease
+            self._session_turn_id = proposal.session_turn_id
+        return await self.execute_authorized(proposal_id, actor=actor)
+
+    async def propose_rollback(self, **kwargs):
+        proposal, risk = await super().propose_rollback(**kwargs)
+        if risk.disposition.value == "approval":
+            await self.publish_test_card(proposal.id)
+        return proposal, risk
+
+
+async def build_executor(
     store,
     adapter,
     prometheus,
     tmp_path,
     *,
+    cleanup,
+    group_key=None,
+    web_url=None,
     approval_ttl_seconds=900,
     restart_adapter=None,
     verify_seconds=60,
     sample_seconds=15,
     cluster="vigil-lab",
 ):
-    return ActionExecutor(
+    await setup_checkpoints(store)
+    sessions = SessionStore(store)
+    if group_key:
+        async with sessions.alert_transaction(group_key) as conn:
+            receipt = await sessions.record_alert(
+                conn,
+                group_key,
+                title="动作回归",
+                text="检查",
+                display_text="检查",
+                repeat_display_text="再次告警",
+            )
+        session_id = receipt.session_id
+    else:
+        session = await sessions.create_session(title="动作回归")
+        session_id = session.id
+        await sessions.enqueue_input(session_id, "检查", display_text="检查")
+    cleanup.sessions.append(session_id)
+    lease = await sessions.acquire_main_lease(session_id, f"test-{uuid4().hex}")
+    turn = await sessions.start_main_turn(lease)
+    return ScopedActionExecutor(
+        session_lease=lease,
+        session_turn_id=turn.id,
+        web_url=web_url,
         store=store,
         adapter=adapter,
         restart_adapter=restart_adapter,
@@ -153,7 +255,7 @@ def build_executor(
 async def propose_and_approve(adapter, prometheus, tmp_path, cleanup):
     async with Store.open(DSN) as store:
         await store.migrate()
-        executor = build_executor(store, adapter, prometheus, tmp_path)
+        executor = await build_executor(store, adapter, prometheus, tmp_path, cleanup=cleanup)
         proposal, decision = await executor.propose_rollback(
             deployment="productcatalogservice", reason="确认坏发布", actor="tester"
         )
@@ -358,11 +460,12 @@ async def run_restart(
 ):
     async with Store.open(DSN) as store:
         await store.migrate()
-        executor = build_executor(
+        executor = await build_executor(
             store,
             FakeAdapter(rollout_plan()),
             FakePrometheus([200.0]),
             tmp_path,
+            cleanup=cleanup,
             restart_adapter=adapter,
             verify_seconds=verify_seconds,
             sample_seconds=sample_seconds,

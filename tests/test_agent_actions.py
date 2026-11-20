@@ -1,41 +1,38 @@
-"""单 Agent 动作闭环：主动诊断准入、审批中断、执行反馈与恢复后停止。
-
-这些用例使用真实的 ActionExecutor（假适配器），覆盖预算预留、适用性复查、
-人工审批恢复和重复执行防护。
-"""
+"""用真实主线与动作事务验证诊断准入、审批、发送、反馈和预算。"""
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from db_env import DSN
 from investigation_support import (
-    FakeAgentExecutor,
     FakeRestartAdapter,
     FakeRolloutAdapter,
-    ScriptedChatModel,
-    agent_case,
+    action_case,
     call,
     create_hypothesis,
     hypothesis_id,
-    make_proposal_executor,
     observation_ids,
     report_call,
     tool_payloads,
 )
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
-from aiops.actions.outcome import AttemptOutcome
-from aiops.agent.engine import LangChainInvestigation, LeaseConflict, TaskNotResumable
+from aiops.actions.rollout_undo import ActionError
+from aiops.actions.safety import ActionSafety
 from aiops.contracts import (
     Approval,
     ApprovalDecision,
-    Budget,
+    AttemptStatus,
+    InvestigationStatus,
     ProposalStatus,
-    RiskDisposition,
     TaskOutcome,
+    TaskPhase,
     TerminationCode,
+    ToolRequestState,
 )
+from aiops.db import Store
 
 pytestmark = pytest.mark.skipif(not DSN, reason="未配置 VIGIL_DATABASE_URL，跳过真实库测试")
 
@@ -82,6 +79,7 @@ def _request(
     absence_meaning: str = "若仍失败则模板或依赖有问题",
     evidence_count: int = 2,
     purpose: str = "diagnostic",
+    call_id: str = "call-action",
 ):
     return call(
         "request_action",
@@ -99,7 +97,7 @@ def _request(
             "business_target": "target-service:/work",
             "observation_window_seconds": 90,
         },
-        "call-action",
+        call_id,
     )
 
 
@@ -119,7 +117,140 @@ def _approved(proposal, *, expires_in: int = 900) -> Approval:
     )
 
 
-def test_diagnostic_without_prediction_is_rejected(ids):
+def _preamble():
+    return [create_hypothesis(), PODS, LOGS, _assess, _request]
+
+
+def _valid_report(messages):
+    return report_call(
+        confirmed=True,
+        conclusion="Pod 级状态损坏",
+        supporting=observation_ids(messages),
+    )
+
+
+async def _drive(case):
+    async with case.driver.claim(case.session_id) as main:
+        assert main is not None
+        return await main.drive()
+
+
+def _investigation_id(result):
+    return result.result.payload["investigation_id"]
+
+
+def _action_message(messages, code):
+    for payload in tool_payloads(messages):
+        feedback = payload.get("error") or payload
+        if feedback.get("code") == code:
+            return feedback
+    pytest.fail(f"未收到动作反馈：{code}")
+
+
+async def _assert_blocked(case, code, *, call_id="call-action"):
+    done = await _drive(case)
+    investigation_id = _investigation_id(done)
+    task = await case.store.get_task(investigation_id)
+    request = await case.store.get_tool_request(investigation_id, call_id)
+    assert done.card is None
+    assert request.state is ToolRequestState.REJECTED
+    assert request.error_code == code
+    _action_message(case.model.seen[-1], code)
+    assert await case.store.list_proposals_for_investigation(investigation_id) == []
+    assert await case.events("approval_required") == []
+    assert await case.events("action_result") == []
+    assert case.restart.deleted == []
+    return done, task
+
+
+async def _paused(case):
+    pause = await _drive(case)
+    assert pause.exit_code == 3
+    assert pause.result.payload["status"] == "awaiting_approval"
+    card = pause.card
+    assert card.type == "approval_required"
+    assert card.turn_id == pause.result.turn_id
+    assert card.session_id == case.session_id
+    assert card.payload["risk"]["disposition"] == "approval"
+    assert card.payload["status"] == ProposalStatus.PENDING_APPROVAL
+    assert card.payload["action"] == "restart_pod"
+    assert card.payload["target"]["name"] == "target-pod"
+    proposal_id = card.payload["card_id"]
+    assert pause.result.payload["card_id"] == proposal_id
+    investigation_id = _investigation_id(pause)
+    task = await case.store.get_task(investigation_id)
+    assert task.phase is TaskPhase.WAITING_APPROVAL
+    assert task.outcome is None
+    request = await case.store.get_tool_request(investigation_id, "call-action")
+    assert request.state is ToolRequestState.ACTION_PENDING
+    assert request.proposal_id == proposal_id
+    proposal = await case.store.get_proposal(proposal_id)
+    assert proposal.session_id == case.session_id
+    assert proposal.session_turn_id == card.turn_id
+    assert proposal.investigation_id == investigation_id
+    assert proposal.status is ProposalStatus.PENDING_APPROVAL
+    assert await case.safety.get_card(proposal_id, session_id=case.session_id) == card.payload
+    assert await case.events("approval_required") == [card]
+    assert await case.events("card_decision") == []
+    assert await case.events("action_result") == []
+    assert await case.store.get_attempt(proposal_id) is None
+    assert case.restart.dry_runs == []
+    assert case.restart.deleted == []
+    return pause, proposal
+
+
+async def _decide(safety, card, *, decision=ApprovalDecision.APPROVED, actor="operator"):
+    return await safety.record_card_decision(
+        card.payload["card_id"],
+        session_id=card.session_id,
+        fingerprint=card.payload["fingerprint"],
+        decision=decision,
+        actor=actor,
+        reason="已核对平台和业务观测",
+    )
+
+
+async def _assert_sent(case, done, *, attempt_status=AttemptStatus.VERIFIED):
+    investigation_id = _investigation_id(done)
+    (proposal,) = await case.store.list_proposals_for_investigation(investigation_id)
+    attempt = await case.store.get_attempt(proposal.id)
+    assert attempt.status is attempt_status
+    assert attempt.send_granted_at is not None
+    assert attempt.snapshot["uid"] == proposal.target.uid
+    assert case.restart.dry_runs == [proposal.target.uid]
+    assert case.restart.deleted == [proposal.target.uid]
+    assert await case.store.count_attempts_for_investigation(investigation_id) == 1
+    request = await case.store.get_tool_request(investigation_id, "call-action")
+    assert request.state is ToolRequestState.ACTION_EXECUTED
+    assert request.proposal_id == proposal.id
+    assert request.action_attempt_id == attempt.id
+    feedback = json.loads(request.result["tool_message"])
+    assert feedback["proposal_id"] == proposal.id
+    assert feedback["attempt_id"] == attempt.id
+    events = await case.events("action_result")
+    assert [event.payload["status"] for event in events] == [
+        AttemptStatus.INTENT,
+        AttemptStatus.EXECUTING,
+        attempt_status,
+    ]
+    assert [event.payload["written"] for event in events] == [False, None, True]
+    for event in events:
+        assert event.turn_id == done.result.turn_id
+        assert event.payload["card_id"] == proposal.id
+        assert event.payload["attempt_id"] == attempt.id
+    assert events[-1].payload["verification"]["outcome"] == attempt.verification["outcome"]
+    assert events[-1].seq < done.result.seq
+    grants = [
+        event
+        for event in await case.store.list_audit(proposal.id)
+        if event.event == "action.send_granted"
+    ]
+    assert [event.payload["attempt_id"] for event in grants] == [attempt.id]
+    assert feedback["write_sent"] is events[-1].payload["written"]
+    return proposal, attempt
+
+
+def test_diagnostic_without_prediction_is_rejected(tmp_path, action_session_ids):
     responses = [
         create_hypothesis(),
         PODS,
@@ -130,21 +261,15 @@ def test_diagnostic_without_prediction_is_rejected(ids):
     ]
 
     async def run():
-        async with agent_case(
-            ids, responses=responses, executor=None, namespace="vigil-experiment"
-        ) as case:
-            case.runtime._executor = make_proposal_executor(case.store)
-            report = await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            return report, proposals, tool_payloads(case.model.seen[-1])
+        async with action_case(tmp_path, action_session_ids, responses=responses) as case:
+            done, task = await _assert_blocked(case, "diagnostic_incomplete")
+            assert task.outcome is TaskOutcome.INCONCLUSIVE
+            assert done.result.payload["termination_code"] == TerminationCode.INSUFFICIENT_EVIDENCE
 
-    report, proposals, payloads = asyncio.run(run())
-    assert proposals == []
-    assert any(payload.get("code") == "diagnostic_incomplete" for payload in payloads)
-    assert report.task["outcome"] == TaskOutcome.INCONCLUSIVE.value
+    asyncio.run(run())
 
 
-def test_sustained_oom_makes_pod_rebuild_inapplicable(ids):
+def test_sustained_oom_makes_pod_rebuild_inapplicable(tmp_path, action_session_ids):
     responses = [
         create_hypothesis(),
         PODS,
@@ -159,25 +284,22 @@ def test_sustained_oom_makes_pod_rebuild_inapplicable(ids):
     ]
 
     async def run():
-        async with agent_case(ids, responses=responses, namespace="vigil-experiment") as case:
-            case.runtime._executor = make_proposal_executor(
-                case.store,
-                restart=FakeRestartAdapter(
-                    last_terminated_reason="OOMKilled", restart_count=2, memory_limit="128Mi"
-                ),
-                rollout=FakeRolloutAdapter(previous_memory_limit="512Mi"),
-            )
-            report = await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            return report, proposals, tool_payloads(case.model.seen[-1])
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=responses,
+            restart=FakeRestartAdapter(
+                last_terminated_reason="OOMKilled", restart_count=2, memory_limit="128Mi"
+            ),
+            rollout=FakeRolloutAdapter(previous_memory_limit="512Mi"),
+        ) as case:
+            _, task = await _assert_blocked(case, "oom_template_inapplicable")
+            assert task.outcome is TaskOutcome.DIAGNOSIS_ONLY
 
-    report, proposals, payloads = asyncio.run(run())
-    assert proposals == []
-    assert any(payload.get("code") == "oom_template_inapplicable" for payload in payloads)
-    assert report.task["outcome"] == TaskOutcome.DIAGNOSIS_ONLY.value
+    asyncio.run(run())
 
 
-def test_action_requires_supporting_evidence_link(ids):
+def test_action_requires_supporting_evidence_link(tmp_path, action_session_ids):
     responses = [
         create_hypothesis(),
         PODS,
@@ -187,19 +309,16 @@ def test_action_requires_supporting_evidence_link(ids):
     ]
 
     async def run():
-        async with agent_case(ids, responses=responses, namespace="vigil-experiment") as case:
-            case.runtime._executor = make_proposal_executor(case.store)
-            report = await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            return report, proposals, tool_payloads(case.model.seen[-1])
+        async with action_case(tmp_path, action_session_ids, responses=responses) as case:
+            await _assert_blocked(case, "invalid_action_request")
+            message = _action_message(case.model.seen[-1], "invalid_action_request")
+            assert "还没有被判定为支持假设" in message["message"]
+            assert "当前支持该假设的观测：无" in message["message"]
 
-    report, proposals, payloads = asyncio.run(run())
-    assert proposals == []
-    assert any("还没有被判定为支持假设" in json_message(payload) for payload in payloads)
-    assert any("当前支持该假设的观测：无" in json_message(payload) for payload in payloads)
+    asyncio.run(run())
 
 
-def test_ungrounded_action_lists_usable_supporting_observations(ids):
+def test_ungrounded_action_lists_usable_supporting_observations(tmp_path, action_session_ids):
     def assess_one(messages):
         hyp = hypothesis_id(messages)
         first = observation_ids(messages)[0]
@@ -253,30 +372,20 @@ def test_ungrounded_action_lists_usable_supporting_observations(ids):
     ]
 
     async def run():
-        async with agent_case(ids, responses=responses, namespace="vigil-experiment") as case:
-            case.runtime._executor = make_proposal_executor(case.store)
-            await case.runtime.run()
-            observations = await case.store.list_observations(ids["investigation"])
-            return observations, tool_payloads(case.model.seen[-1])
+        async with action_case(tmp_path, action_session_ids, responses=responses) as case:
+            done, _ = await _assert_blocked(
+                case, "invalid_action_request", call_id="call-action-other"
+            )
+            observations = await case.store.list_observations(_investigation_id(done))
+            message = _action_message(case.model.seen[-1], "invalid_action_request")["message"]
+            assert "还没有被判定为支持假设" in message
+            assert "当前支持该假设的观测" in message
+            assert observations[0].id in message
 
-    observations, payloads = asyncio.run(run())
-    supporting_id = observations[0].id
-    message = next(
-        json_message(payload)
-        for payload in payloads
-        if "还没有被判定为支持假设" in json_message(payload)
-    )
-    assert supporting_id in message
-    assert "当前支持该假设的观测" in message
+    asyncio.run(run())
 
 
-def json_message(payload: dict) -> str:
-    import json
-
-    return json.dumps(payload, ensure_ascii=False)
-
-
-def test_restart_requires_target_scoped_platform_evidence(ids):
+def test_restart_requires_target_scoped_platform_evidence(tmp_path, action_session_ids):
     deployments = call("kubernetes_list_deployments", {"selector": "app=target"}, "call-deploy")
     probe = call(
         "prometheus_query_range",
@@ -317,206 +426,156 @@ def test_restart_requires_target_scoped_platform_evidence(ids):
     ]
 
     async def run():
-        async with agent_case(ids, responses=responses, namespace="vigil-experiment") as case:
-            case.runtime._executor = make_proposal_executor(case.store)
-            report = await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            return report, proposals, tool_payloads(case.model.seen[-1])
+        async with action_case(tmp_path, action_session_ids, responses=responses) as case:
+            await _assert_blocked(case, "invalid_action_request")
+            message = _action_message(case.model.seen[-1], "invalid_action_request")
+            assert "缺少指向目标 Pod 的平台观测" in message["message"]
 
-    report, proposals, payloads = asyncio.run(run())
-    assert proposals == []
-    assert any("缺少指向目标 Pod 的平台观测" in json_message(item) for item in payloads)
+    asyncio.run(run())
 
 
-def test_auto_action_executes_once_and_recovers(ids):
-    responses = [
-        create_hypothesis(),
-        PODS,
-        LOGS,
-        _assess,
-        _request,
-        lambda messages: report_call(
-            confirmed=True,
-            conclusion="Pod 级状态损坏",
-            supporting=observation_ids(messages),
-        ),
-    ]
-
+def test_auto_action_executes_once_and_recovers(tmp_path, action_session_ids):
     async def run():
-        async with agent_case(ids, responses=responses, namespace="vigil-experiment") as case:
-            executor = make_proposal_executor(
-                case.store, restart=FakeRestartAdapter(), rollout=FakeRolloutAdapter()
-            )
-            case.runtime._executor = executor
-            report = await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            attempts = await case.store.count_attempts_for_investigation(ids["investigation"])
-            task = await case.store.get_task(ids["investigation"])
-            return report, proposals, attempts, task, executor, case
+        async with action_case(
+            tmp_path, action_session_ids, responses=[*_preamble(), _valid_report]
+        ) as case:
+            done = await _drive(case)
+            proposal, attempt = await _assert_sent(case, done)
+            task = await case.store.get_task(_investigation_id(done))
+            assert proposal.status is ProposalStatus.SUCCEEDED
+            assert proposal.purpose.value == "diagnostic"
+            assert proposal.prediction == "重建后新 Pod 的 /work 返回 200"
+            assert attempt.verification["outcome"] == "improved"
+            assert task.outcome is TaskOutcome.RECOVERED
+            assert done.result.payload["termination_code"] == TerminationCode.BUSINESS_RECOVERED
+            assert done.exit_code == 0
+            assert done.card is None
+            assert await case.events("approval_required") == []
+            assert await case.events("card_decision") == []
+            approval = await case.store.get_approval(proposal.id)
+            assert approval.actor.startswith("policy:")
+            assert approval.proposal_hash == attempt.snapshot["approval_hash"]
 
-    report, proposals, attempts, task, executor, case = asyncio.run(run())
-    assert [item.status for item in proposals] == [ProposalStatus.SUCCEEDED]
-    assert proposals[0].purpose.value == "diagnostic"
-    assert proposals[0].prediction == "重建后新 Pod 的 /work 返回 200"
-    assert attempts == 1
-    assert task.outcome is TaskOutcome.RECOVERED
-    assert report.task["termination_code"] == TerminationCode.BUSINESS_RECOVERED.value
-    assert report.prediction["outcome"] == "improved"
-    assert report.exit_code() == 0
-    assert len(executor._restart_adapter.deleted) == 1
+    asyncio.run(run())
 
 
-def test_approval_pauses_without_write_then_resume_executes_once(ids):
-    responses = [
-        create_hypothesis(),
-        PODS,
-        LOGS,
-        _assess,
-        _request,
-        lambda messages: report_call(
-            confirmed=True,
-            conclusion="Pod 级状态损坏",
-            supporting=observation_ids(messages),
-        ),
-    ]
-
+def test_approval_pauses_without_write_then_resume_executes_once(tmp_path, action_session_ids):
     async def run():
-        async with agent_case(ids, responses=responses, namespace="vigil-shop") as case:
-            executor = make_proposal_executor(
-                case.store, restart=FakeRestartAdapter(), rollout=FakeRolloutAdapter()
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=[*_preamble(), _valid_report],
+            namespace="vigil-shop",
+        ) as case:
+            pause, proposal = await _paused(case)
+            assert (await _drive(case)).card == pause.card
+            async with Store.open(DSN) as operator:
+                approval = await _decide(ActionSafety(operator), pause.card)
+                assert await operator.get_approval(proposal.id) == approval
+                assert (await operator.get_proposal(proposal.id)).status is ProposalStatus.APPROVED
+            (decision,) = await case.events("card_decision")
+            assert pause.card.seq < decision.seq
+            assert decision.turn_id == pause.card.turn_id
+            assert decision.payload["card_id"] == proposal.id
+            assert decision.payload["status"] == "approved"
+            assert decision.payload["decision_id"] == approval.id
+            assert approval.proposal_hash == pause.card.payload["fingerprint"]
+            done = await _drive(case)
+            assert done.result.turn_id == pause.result.turn_id
+            assert (await case.store.get_task(_investigation_id(done))).outcome is (
+                TaskOutcome.RECOVERED
             )
-            case.runtime._executor = executor
-            first = await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            attempts_before = await case.store.count_attempts_for_investigation(
-                ids["investigation"]
-            )
-            assert [item.status for item in proposals] == [ProposalStatus.PENDING_APPROVAL]
-            await case.store.save_approval(_approved(proposals[0]))
-            await case.store.transition_proposal(
-                proposals[0].id,
-                expected=ProposalStatus.PENDING_APPROVAL,
-                target=ProposalStatus.APPROVED,
-            )
-            case.model.responses = [
-                lambda messages: report_call(
-                    confirmed=True,
-                    conclusion="Pod 级状态损坏",
-                    supporting=observation_ids(messages),
-                )
-            ]
-            second = await case.runtime.resume(
-                proposal_id=proposals[0].id, decision="approved", actor="operator"
-            )
-            attempts_after = await case.store.count_attempts_for_investigation(ids["investigation"])
-            with_error = None
-            try:
-                await case.runtime.resume(
-                    proposal_id=proposals[0].id, decision="approved", actor="operator"
-                )
-            except TaskNotResumable as exc:
-                with_error = str(exc)
-            return first, second, attempts_before, attempts_after, executor, with_error
+            assert await _drive(case) is None
+            with pytest.raises(ActionError) as caught:
+                await _decide(case.safety, pause.card)
+            assert caught.value.code == "not_pending"
+            assert await case.events("approval_required") == [pause.card]
+            assert await case.events("card_decision") == [decision]
+            _, attempt = await _assert_sent(case, done)
+            assert attempt.snapshot["approval_hash"] == approval.proposal_hash
+            assert decision.seq < (await case.events("action_result"))[0].seq
 
-    first, second, attempts_before, attempts_after, executor, with_error = asyncio.run(run())
-    assert first.task["phase"] == "waiting_approval"
-    assert first.task["outcome"] is None
-    assert first.exit_code() == 3
-    assert attempts_before == 0
-    assert second.task["outcome"] == TaskOutcome.RECOVERED.value
-    assert attempts_after == 1
-    assert len(executor._restart_adapter.deleted) == 1
-    assert with_error is not None
+    asyncio.run(run())
 
 
-def test_rejection_returns_to_agent_without_write(ids):
-    responses = [
-        create_hypothesis(),
-        PODS,
-        LOGS,
-        _assess,
-        _request,
-        report_call(confirmed=True, conclusion="Pod 级状态损坏，等待人工"),
-    ]
-
+def test_rejection_returns_to_agent_without_write(tmp_path, action_session_ids):
     async def run():
-        async with agent_case(ids, responses=responses, namespace="vigil-shop") as case:
-            executor = make_proposal_executor(
-                case.store, restart=FakeRestartAdapter(), rollout=FakeRolloutAdapter()
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=[*_preamble(), _valid_report],
+            namespace="vigil-shop",
+        ) as case:
+            pause, proposal = await _paused(case)
+            rejected = await _decide(case.safety, pause.card, decision=ApprovalDecision.REJECTED)
+            assert rejected.expires_at is None
+            done = await _drive(case)
+            assert done.exit_code == 0
+            assert done.result.turn_id == pause.card.turn_id
+            assert (await case.store.get_task(_investigation_id(done))).outcome is (
+                TaskOutcome.DIAGNOSIS_ONLY
             )
-            case.runtime._executor = executor
-            await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            await executor.reject(proposals[0].id, actor="operator", reason="先观察")
-            case.model.responses = [
-                lambda messages: report_call(
-                    confirmed=True,
-                    conclusion="Pod 级状态损坏，人工拒绝重建",
-                    supporting=observation_ids(messages),
-                )
-            ]
-            report = await case.runtime.resume(
-                proposal_id=proposals[0].id, decision="rejected", actor="operator"
-            )
-            attempts = await case.store.count_attempts_for_investigation(ids["investigation"])
-            return report, attempts, executor
+            assert (await case.store.get_proposal(proposal.id)).status is ProposalStatus.REJECTED
+            assert await case.store.get_attempt(proposal.id) is None
+            assert case.restart.deleted == []
+            assert await case.events("action_result") == []
+            (decision,) = await case.events("card_decision")
+            assert pause.card.seq < decision.seq < done.result.seq
+            assert decision.turn_id == pause.card.turn_id
+            assert decision.payload["card_id"] == proposal.id
+            assert decision.payload["status"] == "rejected"
+            assert decision.payload["decision_id"] == rejected.id
+            request = await case.store.get_tool_request(_investigation_id(done), "call-action")
+            assert request.state is ToolRequestState.REJECTED
+            feedback = json.loads(request.result["tool_message"])
+            assert feedback["status"] == "rejected"
+            assert feedback["write_sent"] is False
+            assert feedback["reason"] == rejected.reason
 
-    report, attempts, executor = asyncio.run(run())
-    assert attempts == 0
-    assert executor._restart_adapter.deleted == []
-    assert report.task["outcome"] == TaskOutcome.DIAGNOSIS_ONLY.value
+    asyncio.run(run())
 
 
-def test_expired_approval_does_not_write(ids):
-    responses = [
-        create_hypothesis(),
-        PODS,
-        LOGS,
-        _assess,
-        _request,
-        lambda messages: report_call(
-            confirmed=True,
-            conclusion="Pod 级状态损坏",
-            supporting=observation_ids(messages),
-        ),
-    ]
-
+def test_expired_approval_does_not_write(tmp_path, action_session_ids):
     async def run():
-        async with agent_case(ids, responses=responses, namespace="vigil-shop") as case:
-            executor = make_proposal_executor(
-                case.store, restart=FakeRestartAdapter(), rollout=FakeRolloutAdapter()
-            )
-            case.runtime._executor = executor
-            await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            await case.store.save_approval(_approved(proposals[0], expires_in=-5))
-            await case.store.transition_proposal(
-                proposals[0].id,
-                expected=ProposalStatus.PENDING_APPROVAL,
-                target=ProposalStatus.APPROVED,
-            )
-            case.model.responses = [
-                lambda messages: report_call(
-                    confirmed=True,
-                    conclusion="审批过期，重建未执行",
-                    supporting=observation_ids(messages),
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=[*_preamble(), _valid_report],
+            namespace="vigil-shop",
+        ) as case:
+            pause, proposal = await _paused(case)
+            approval = await _decide(case.safety, pause.card)
+            # 缩短持久化授权的时限，按数据库时间过期，避免等待实际时钟。
+            async with case.store.transaction() as conn:
+                await conn.execute(
+                    "UPDATE approvals SET expires_at = decided_at WHERE id = %s",
+                    (approval.id,),
                 )
-            ]
-            report = await case.runtime.resume(
-                proposal_id=proposals[0].id, decision="approved", actor="operator"
+            done = await _drive(case)
+            assert done.exit_code == 0
+            assert (await case.store.get_proposal(proposal.id)).status is ProposalStatus.EXPIRED
+            assert (await case.store.get_approval(proposal.id)).revoked_at is not None
+            assert await case.store.get_attempt(proposal.id) is None
+            assert case.restart.deleted == []
+            assert (await case.store.get_task(_investigation_id(done))).outcome is (
+                TaskOutcome.DIAGNOSIS_ONLY
             )
-            attempts = await case.store.count_attempts_for_investigation(ids["investigation"])
-            refreshed = await case.store.get_proposal(proposals[0].id)
-            return report, attempts, refreshed, executor
+            (decision,) = await case.events("card_decision")
+            (event,) = await case.events("action_result")
+            assert decision.payload["decision_id"] == approval.id
+            assert decision.seq < event.seq < done.result.seq
+            assert event.turn_id == pause.card.turn_id
+            assert event.payload["card_id"] == proposal.id
+            assert event.payload["proposal_status"] == "expired"
+            assert event.payload["attempt_id"] is None
+            assert event.payload["written"] is False
+            feedback = _action_message(case.model.seen[-1], "expired")
+            assert feedback["write_sent"] is False
 
-    report, attempts, refreshed, executor = asyncio.run(run())
-    assert attempts == 0
-    assert executor._restart_adapter.deleted == []
-    assert refreshed.status is ProposalStatus.EXPIRED
-    assert report.task["outcome"] == TaskOutcome.DIAGNOSIS_ONLY.value
+    asyncio.run(run())
 
 
-def test_mixed_batch_is_not_executed(ids):
+def test_mixed_batch_is_not_executed(tmp_path, action_session_ids):
     mixed = AIMessage(
         content="",
         tool_calls=[
@@ -550,262 +609,191 @@ def test_mixed_batch_is_not_executed(ids):
     responses = [mixed, report_call(confirmed=False, conclusion="混批被拒绝")]
 
     async def run():
-        async with agent_case(ids, responses=responses, namespace="vigil-experiment") as case:
-            case.runtime._executor = make_proposal_executor(case.store)
-            report = await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            observations = await case.store.list_observations(ids["investigation"])
-            requests = await case.store.list_tool_requests(ids["investigation"])
-            return report, proposals, observations, requests, case
-
-    report, proposals, observations, requests, case = asyncio.run(run())
-    assert proposals == []
-    assert observations == []
-    assert requests == []
-    messages = tool_payloads(case.model.seen[-1])
-    assert any("动作请求必须单独" in json_message(item) for item in messages)
-    assert report.task["outcome"] == TaskOutcome.INCONCLUSIVE.value
-
-
-def test_recovered_task_blocks_further_actions(ids):
-    responses = [
-        create_hypothesis(),
-        PODS,
-        LOGS,
-        _assess,
-        _request,
-        _request,
-        lambda messages: report_call(
-            confirmed=True,
-            conclusion="Pod 级状态损坏",
-            supporting=observation_ids(messages),
-        ),
-    ]
-
-    async def run():
-        async with agent_case(ids, responses=responses, namespace="vigil-experiment") as case:
-            executor = make_proposal_executor(
-                case.store, restart=FakeRestartAdapter(), rollout=FakeRolloutAdapter()
+        async with action_case(tmp_path, action_session_ids, responses=responses) as case:
+            done = await _drive(case)
+            investigation_id = _investigation_id(done)
+            assert await case.store.list_proposals_for_investigation(investigation_id) == []
+            assert await case.store.list_observations(investigation_id) == []
+            assert await case.store.list_tool_requests(investigation_id) == []
+            assert case.toolbox.requests == []
+            assert case.restart.deleted == []
+            assert await case.events("action_result") == []
+            assert any(
+                "动作请求必须单独" in str(payload) for payload in tool_payloads(case.model.seen[-1])
             )
-            case.runtime._executor = executor
-            report = await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            attempts = await case.store.count_attempts_for_investigation(ids["investigation"])
-            return report, proposals, attempts, executor, case
+            assert (await case.store.get_task(investigation_id)).outcome is TaskOutcome.INCONCLUSIVE
 
-    report, proposals, attempts, executor, case = asyncio.run(run())
-    assert len(proposals) == 1
-    assert attempts == 1
-    assert len(executor._restart_adapter.deleted) == 1
-    assert any("业务已恢复" in str(message.content) for message in case.model.seen[-1])
-    assert report.task["outcome"] == TaskOutcome.RECOVERED.value
+    asyncio.run(run())
 
 
-def test_write_reserve_blocks_action_without_write(ids):
-    budget = Budget(
-        max_tool_calls=10,
-        max_model_calls=8,
-        max_wall_clock_seconds=120,
-        max_action_seconds=10,
-    )
-    responses = [
-        create_hypothesis(),
-        PODS,
-        LOGS,
-        _assess,
-        _request,
-        report_call(confirmed=False, conclusion="动作预算不足，未写"),
-    ]
-
+def test_recovered_task_blocks_further_actions(tmp_path, action_session_ids):
     async def run():
-        async with agent_case(
-            ids, responses=responses, namespace="vigil-experiment", budget=budget
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=[
+                *_preamble(),
+                lambda messages: _request(messages, call_id="call-second-action"),
+                _valid_report,
+            ],
         ) as case:
-            executor = make_proposal_executor(
-                case.store, restart=FakeRestartAdapter(), rollout=FakeRolloutAdapter()
-            )
-            case.runtime._executor = executor
-            report = await case.runtime.run()
-            attempts = await case.store.count_attempts_for_investigation(ids["investigation"])
-            payloads = tool_payloads(case.model.seen[-1])
-            return report, attempts, executor, payloads
+            done = await _drive(case)
+            await _assert_sent(case, done)
+            investigation_id = _investigation_id(done)
+            assert await case.store.get_tool_request(investigation_id, "call-second-action") is None
+            (feedback,) = [
+                message
+                for message in case.model.seen[-1]
+                if isinstance(message, ToolMessage) and message.tool_call_id == "call-second-action"
+            ]
+            assert feedback.status == "error"
+            assert "业务已恢复" in feedback.content
+            assert (await case.store.get_task(investigation_id)).outcome is TaskOutcome.RECOVERED
 
-    report, attempts, executor, payloads = asyncio.run(run())
-    assert attempts == 0
-    assert executor._restart_adapter.deleted == []
-    assert any(item.get("code") == "budget_reserve" for item in payloads)
-    assert report.task["outcome"] == TaskOutcome.INCONCLUSIVE.value
+    asyncio.run(run())
 
 
-def test_budget_exhaustion_after_recovery_keeps_recovered_outcome(ids):
-    responses = [
-        create_hypothesis(),
-        PODS,
-        LOGS,
-        _assess,
-        _request,
-        PODS,
-    ]
+async def _assert_budget_voided(case, done):
+    investigation_id = _investigation_id(done)
+    (proposal,) = await case.store.list_proposals_for_investigation(investigation_id)
+    assert proposal.status is ProposalStatus.VOIDED
+    assert done.card is None
+    assert await case.events("approval_required") == []
+    assert await case.events("card_decision") == []
+    assert await case.store.get_attempt(proposal.id) is None
+    assert case.restart.deleted == []
+    request = await case.store.get_tool_request(investigation_id, "call-action")
+    assert request.state is ToolRequestState.REJECTED
+    assert request.error_code == "budget_reserve"
+    assert request.proposal_id == proposal.id
+    assert json.loads(request.result["tool_message"])["write_sent"] is False
+    (event,) = await case.events("action_result")
+    assert event.turn_id == done.result.turn_id
+    assert event.payload["card_id"] == proposal.id
+    assert event.payload["proposal_status"] == "voided"
+    assert event.payload["attempt_id"] is None
+    assert event.payload["written"] is False
+    return proposal
 
+
+def test_write_reserve_blocks_action_without_write(tmp_path, action_session_ids):
     async def run():
-        async with agent_case(
-            ids,
-            responses=responses,
-            namespace="vigil-experiment",
-            budget=Budget(
-                max_tool_calls=20,
-                max_model_calls=6,
-                max_wall_clock_seconds=600,
-                max_action_seconds=450,
-            ),
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=[*_preamble(), report_call(confirmed=False, conclusion="动作预算不足，未写")],
+            investigation_budget_action_seconds=10,
         ) as case:
-            executor = make_proposal_executor(
-                case.store, restart=FakeRestartAdapter(), rollout=FakeRolloutAdapter()
+            done = await _drive(case)
+            proposal = await _assert_budget_voided(case, done)
+            approval = await case.store.get_approval(proposal.id)
+            assert approval.actor.startswith("policy:")
+            assert approval.revoked_at is not None
+            assert _action_message(case.model.seen[-1], "budget_reserve")["write_sent"] is False
+            assert (await case.store.get_task(_investigation_id(done))).outcome is (
+                TaskOutcome.INCONCLUSIVE
             )
-            case.runtime._executor = executor
-            report = await case.runtime.run()
-            task = await case.store.get_task(ids["investigation"])
-            return report, task, executor
 
-    report, task, executor = asyncio.run(run())
-    assert task.outcome is TaskOutcome.RECOVERED
-    assert task.termination_code == TerminationCode.BUSINESS_RECOVERED.value
-    assert report.status.value == "inconclusive"
-    assert report.task["termination_code"] == "business_recovered"
-    assert report.model_summary_completed is False
-    assert report.exit_code() == 0
-    assert len(executor._restart_adapter.deleted) == 1
+    asyncio.run(run())
 
 
-def test_approval_is_not_created_without_feedback_model_budget(ids):
-    responses = [create_hypothesis(), PODS, LOGS, _assess, _request]
-
+def test_budget_exhaustion_after_recovery_keeps_recovered_outcome(tmp_path, action_session_ids):
     async def run():
-        async with agent_case(
-            ids,
-            responses=responses,
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=[*_preamble(), PODS],
+            investigation_budget_model_calls=6,
+        ) as case:
+            done = await _drive(case)
+            _, attempt = await _assert_sent(case, done)
+            investigation_id = _investigation_id(done)
+            task = await case.store.get_task(investigation_id)
+            investigation = await case.store.get_investigation(investigation_id)
+            assert task.outcome is TaskOutcome.RECOVERED
+            assert task.recovered_at is not None
+            assert attempt.verification["outcome"] == "improved"
+            assert task.used_model_calls == 6
+            assert investigation.status is InvestigationStatus.INCONCLUSIVE
+            assert investigation.conclusion is None
+            assert task.termination_code == TerminationCode.BUDGET_EXHAUSTED
+            assert done.result.payload["termination_code"] == task.termination_code
+            assert done.exit_code == 4
+
+    asyncio.run(run())
+
+
+def test_approval_is_not_created_without_feedback_model_budget(tmp_path, action_session_ids):
+    async def run():
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=_preamble(),
             namespace="vigil-shop",
-            budget=Budget(
-                max_tool_calls=10,
-                max_model_calls=5,
-                max_wall_clock_seconds=120,
-                max_action_seconds=450,
-            ),
+            investigation_budget_model_calls=5,
         ) as case:
-            executor = make_proposal_executor(
-                case.store, restart=FakeRestartAdapter(), rollout=FakeRolloutAdapter()
-            )
-            case.runtime._executor = executor
-            report = await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            attempts = await case.store.count_attempts_for_investigation(ids["investigation"])
-            request = await case.store.get_tool_request(ids["investigation"], "call-action")
-            task = await case.store.get_task(ids["investigation"])
-            return report, proposals, attempts, request, task
+            done = await _drive(case)
+            proposal = await _assert_budget_voided(case, done)
+            assert await case.store.get_approval(proposal.id) is None
+            assert await case.safety.get_card(proposal.id, session_id=case.session_id) is None
+            task = await case.store.get_task(_investigation_id(done))
+            assert task.phase is TaskPhase.TERMINAL
+            assert task.termination_code == TerminationCode.BUDGET_EXHAUSTED
+            assert done.result.payload["termination_code"] == task.termination_code
+            assert done.exit_code == 4
 
-    report, proposals, attempts, request, task = asyncio.run(run())
-    assert [item.status for item in proposals] == [ProposalStatus.REJECTED]
-    assert attempts == 0
-    assert request is not None and request.error_code == "budget_reserve"
-    assert task.phase.value == "terminal"
-    assert task.termination_code == "budget_exhausted"
-    assert report.proposal_id == proposals[0].id
+    asyncio.run(run())
 
 
-def test_agent_turns_failed_action_into_needs_human(ids):
-    responses = [
-        create_hypothesis(),
-        PODS,
-        LOGS,
-        _assess,
-        _request,
-        lambda messages: report_call(
-            confirmed=True,
-            conclusion="Pod 级状态损坏，但重建未改善业务",
-            supporting=observation_ids(messages),
-        ),
-    ]
-
+def test_agent_turns_failed_action_into_needs_human(tmp_path, action_session_ids):
     async def run():
-        async with agent_case(ids, responses=responses, namespace="vigil-experiment") as case:
-            executor = FakeAgentExecutor(
-                case.store,
-                disposition=RiskDisposition.AUTO,
-                outcome=AttemptOutcome.NO_IMPROVEMENT,
-            )
-            case.runtime._executor = executor
-            report = await case.runtime.run()
-            task = await case.store.get_task(ids["investigation"])
-            return report, task, executor
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=[*_preamble(), _valid_report],
+            namespace="vigil-shop",
+            restart=FakeRestartAdapter(baseline_status=500, rebuilt_status=500),
+        ) as case:
+            pause, _ = await _paused(case)
+            await _decide(case.safety, pause.card)
+            done = await _drive(case)
+            proposal, attempt = await _assert_sent(case, done, attempt_status=AttemptStatus.FAILED)
+            assert proposal.status is ProposalStatus.FAILED
+            assert attempt.verification["outcome"] == "no_improvement"
+            task = await case.store.get_task(_investigation_id(done))
+            assert task.outcome is TaskOutcome.NEEDS_HUMAN
+            assert task.termination_code == TerminationCode.ACTION_NO_IMPROVEMENT
+            assert done.result.payload["termination_code"] == task.termination_code
+            assert done.exit_code == 0
+            (followup,) = await case.store.list_followups(proposal_id=proposal.id)
+            assert followup.attempt_id == attempt.id
 
-    report, task, executor = asyncio.run(run())
-    assert report.task["outcome"] == TaskOutcome.NEEDS_HUMAN.value
-    assert report.task["termination_code"] == TerminationCode.ACTION_NO_IMPROVEMENT.value
-    assert report.exit_code() == 3
-    assert task.outcome is TaskOutcome.NEEDS_HUMAN
-    assert len(executor.executed) == 1
+    asyncio.run(run())
 
 
-def test_two_concurrent_resumes_write_once(ids):
-    responses = [
-        create_hypothesis(),
-        PODS,
-        LOGS,
-        _assess,
-        _request,
-        lambda messages: report_call(
-            confirmed=True,
-            conclusion="Pod 级状态损坏",
-            supporting=observation_ids(messages),
-        ),
-    ]
-
+def test_two_concurrent_resumes_write_once(tmp_path, action_session_ids):
     async def run():
-        async with agent_case(ids, responses=responses, namespace="vigil-shop") as case:
-            executor = make_proposal_executor(
-                case.store, restart=FakeRestartAdapter(), rollout=FakeRolloutAdapter()
-            )
-            case.runtime._executor = executor
-            first = await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            await case.store.save_approval(_approved(proposals[0]))
-            await case.store.transition_proposal(
-                proposals[0].id,
-                expected=ProposalStatus.PENDING_APPROVAL,
-                target=ProposalStatus.APPROVED,
-            )
-            report_response = lambda messages: report_call(  # noqa: E731
-                confirmed=True,
-                conclusion="Pod 级状态损坏",
-                supporting=observation_ids(messages),
-            )
-            case.model.responses = [report_response]
-            second_runtime = LangChainInvestigation(
-                settings=case.runtime._settings,
-                store=case.store,
-                dsn=case.runtime._dsn,
-                incident=case.incident,
-                investigation=case.investigation,
-                toolbox=case.toolbox,
-                executor=executor,
-                model=ScriptedChatModel(responses=[report_response]),  # type: ignore[arg-type]
-            )
-            results = await asyncio.gather(
-                case.runtime.resume(
-                    proposal_id=proposals[0].id, decision="approved", actor="operator-a"
-                ),
-                second_runtime.resume(
-                    proposal_id=proposals[0].id, decision="approved", actor="operator-b"
-                ),
-                return_exceptions=True,
-            )
-            attempts = await case.store.count_attempts_for_investigation(ids["investigation"])
-            return first, results, attempts, executor
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=[*_preamble(), _valid_report],
+            namespace="vigil-shop",
+        ) as case:
+            pause, proposal = await _paused(case)
+            approved = await _decide(case.safety, pause.card)
+            async with case.driver.claim(case.session_id) as winner:
+                assert winner is not None
+                drive = asyncio.create_task(winner.drive())
+                try:
+                    async with case.driver.claim(case.session_id) as contender:
+                        assert contender is None
+                finally:
+                    done = await drive
+            assert done.exit_code == 0
+            assert await _drive(case) is None
+            _, attempt = await _assert_sent(case, done)
+            assert attempt.proposal_id == proposal.id
+            assert attempt.snapshot["approval_hash"] == approved.proposal_hash
+            assert len(await case.events("card_decision")) == 1
 
-    first, results, attempts, executor = asyncio.run(run())
-    assert first.task["phase"] == "waiting_approval"
-    assert attempts == 1
-    assert len(executor._restart_adapter.deleted) == 1
-    failures = [item for item in results if isinstance(item, BaseException)]
-    assert len(failures) == 1
-    assert isinstance(failures[0], (LeaseConflict, TaskNotResumable))
+    asyncio.run(run())

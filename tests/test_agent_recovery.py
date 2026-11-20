@@ -1,40 +1,39 @@
-"""恢复与故障边界：租约、取消、写意图未知、审批过期与重复执行。"""
+"""恢复与故障边界：关闭、未发送意图、查询重放和动作回执。"""
 
 import asyncio
-import uuid
+import json
 from datetime import UTC, datetime
 
 import pytest
 from db_env import DSN
-from investigation_support import (
-    FakeRestartAdapter,
-    FakeRolloutAdapter,
-    agent_case,
-    create_hypothesis,
-    make_proposal_executor,
-    observation_ids,
-    report_call,
+from investigation_support import action_case, agent_case, report_call
+from test_agent_actions import (
+    _assert_sent,
+    _decide,
+    _drive,
+    _investigation_id,
+    _paused,
+    _preamble,
+    _valid_report,
 )
-from langchain.tools import ToolRuntime
-from test_agent_actions import LOGS, PODS, _assess, _request
 
-from aiops.agent.engine import LeaseConflict, WriteIntentUnknown
-from aiops.agent.tools import request_action
-from aiops.contracts import ActionAttempt, AttemptStatus, InvestigationTask, TaskPhase
+from aiops.actions.policy import target_key
+from aiops.actions.rollout_undo import ActionError
+from aiops.actions.safety import ActionSafety
+from aiops.agent import tools as agent_tools
+from aiops.agent.conversation import AwaitingActionReceipt
+from aiops.agent.engine import LeaseConflict, TaskNotResumable
+from aiops.contracts import (
+    AttemptStatus,
+    InvestigationTask,
+    ProposalStatus,
+    TaskPhase,
+    ToolRequestState,
+)
+from aiops.db import Store
+from aiops.sessions.models import LeaseLost, SessionClosed
 
 pytestmark = pytest.mark.skipif(not DSN, reason="未配置 VIGIL_DATABASE_URL，跳过真实库测试")
-
-
-def _preamble():
-    return [create_hypothesis(), PODS, LOGS, _assess, _request]
-
-
-def _valid_report(messages):
-    return report_call(
-        confirmed=True,
-        conclusion="Pod 级状态损坏",
-        supporting=observation_ids(messages),
-    )
 
 
 def test_cancel_before_start_aborts_without_model_calls(ids):
@@ -82,139 +81,260 @@ def test_lease_conflict_blocks_concurrent_driver(ids):
     assert message is not None and "驱动者" in message
 
 
-def test_cancel_while_waiting_marks_aborted_on_resume(ids):
-    async def run():
-        async with agent_case(
-            ids, responses=[*_preamble(), _valid_report], namespace="vigil-shop"
-        ) as case:
-            case.runtime._executor = make_proposal_executor(
-                case.store, restart=FakeRestartAdapter(), rollout=FakeRolloutAdapter()
-            )
-            first = await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            await case.store.request_cancel(ids["investigation"], at=datetime.now(UTC))
-            second = await case.runtime.resume(
-                proposal_id=proposals[0].id, decision="approved", actor="operator"
-            )
-            attempts = await case.store.count_attempts_for_investigation(ids["investigation"])
-            return first, second, attempts, case
-
-    first, second, attempts, case = asyncio.run(run())
-    assert first.task["phase"] == "waiting_approval"
-    assert second.task["outcome"] == "aborted"
-    assert second.task["termination_code"] == "cancelled"
-    assert attempts == 0
-
-
-def test_write_intent_blocks_takeover_without_replay(ids):
-    async def run():
-        async with agent_case(
-            ids, responses=[*_preamble(), _valid_report], namespace="vigil-shop"
-        ) as case:
-            executor = make_proposal_executor(
-                case.store, restart=FakeRestartAdapter(), rollout=FakeRolloutAdapter()
-            )
-            case.runtime._executor = executor
-            await case.runtime.run()
-            proposals = await case.store.list_proposals_for_investigation(ids["investigation"])
-            proposal = proposals[0]
-            now = datetime.now(UTC)
-            await case.store.save_attempt(
-                ActionAttempt(
-                    id=f"att-{uuid.uuid4().hex[:8]}",
-                    proposal_id=proposal.id,
-                    status=AttemptStatus.INTENT,
-                    idempotency_key="intent",
-                    snapshot={},
-                    request={},
-                    started_at=now,
-                )
-            )
-            # 模拟驱动进程崩溃：任务回到 running，租约过期。
-            async with case.store._pool.connection() as conn:
-                await conn.execute(
-                    """
-                    UPDATE investigation_tasks
-                       SET phase = 'running', lease_owner = NULL, lease_expires_at = NULL
-                     WHERE investigation_id = %s
-                    """,
-                    (ids["investigation"],),
-                )
-            try:
-                await case.runtime.resume(
-                    proposal_id=proposal.id, decision="approved", actor="operator"
-                )
-                return None
-            except WriteIntentUnknown as exc:
-                return str(exc)
-
-    message = asyncio.run(run())
-    assert message is not None and "写意图" in message
-
-
 def test_resume_after_terminal_task_is_refused(ids):
     async def run():
         async with agent_case(
             ids, responses=[report_call(confirmed=False, conclusion="只读结束")]
         ) as case:
             await case.runtime.run()
-            try:
+            with pytest.raises(TaskNotResumable):
                 await case.runtime.resume(
                     proposal_id="act-does-not-exist", decision="approved", actor="operator"
                 )
-                return None
-            except Exception as exc:  # noqa: BLE001 - 只关心拒绝类型
-                return exc.__class__.__name__, str(exc)
 
-    result = asyncio.run(run())
-    assert result is not None
-    assert result[0] == "TaskNotResumable"
+    asyncio.run(run())
 
 
-def test_replayed_action_request_returns_saved_feedback(ids):
-    """账本已记录执行结果时，再次进入工具只读回结果，不重复写。"""
+@pytest.mark.parametrize("approved", [False, True])
+def test_close_while_waiting_ends_turn_without_write(tmp_path, action_session_ids, approved):
+    async def run():
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=_preamble(),
+            namespace="vigil-shop",
+        ) as case:
+            pause, proposal = await _paused(case)
+            if approved:
+                await _decide(case.safety, pause.card)
+            calls_before_close = len(case.model.seen)
+            async with Store.open(DSN) as service, service.transaction() as conn:
+                closed = await ActionSafety(service).close_session(
+                    conn, case.session_id, reason="用户取消"
+                )
+            assert closed.type == "session_closed"
+            turn = await case.driver.sessions.get_turn(pause.card.turn_id)
+            assert turn.state == "aborted"
+            assert turn.finished_at is not None
+            assert (await case.driver.sessions.get_session(case.session_id)).state == "closed"
+            with pytest.raises(SessionClosed):
+                await _drive(case)
+            with pytest.raises(ActionError) as caught:
+                await _decide(case.safety, pause.card)
+            assert caught.value.code == "session_closed"
+            assert len(case.model.seen) == calls_before_close
+            assert await case.store.get_attempt(proposal.id) is None
+            assert (await case.store.get_proposal(proposal.id)).status is ProposalStatus.VOIDED
+            authorization = await case.store.get_approval(proposal.id)
+            if approved:
+                assert authorization.revoked_at is not None
+            else:
+                assert authorization is None
+            (event,) = await case.events("action_result")
+            assert pause.card.seq < closed.seq < event.seq
+            assert event.turn_id == pause.card.turn_id
+            assert event.payload["card_id"] == proposal.id
+            assert event.payload["proposal_status"] == "voided"
+            assert event.payload["written"] is False
+            assert case.restart.deleted == []
+
+    asyncio.run(run())
+
+
+class SimulatedDriverExit(BaseException):
+    """模拟进程在事务提交后退出，让后续驱动接手。"""
+
+
+@pytest.mark.parametrize("may_have_sent", [False, True], ids=["intent", "send-granted"])
+def test_takeover_converges_attempt_without_replay(
+    tmp_path, action_session_ids, monkeypatch, may_have_sent
+):
+    boundary = "grant_send" if may_have_sent else "save_intent"
+    original = getattr(ActionSafety, boundary)
+
+    async def exit_after_commit(self, *args):
+        await original(self, *args)
+        raise SimulatedDriverExit
+
+    monkeypatch.setattr(ActionSafety, boundary, exit_after_commit)
 
     async def run():
-        async with agent_case(ids, responses=[*_preamble(), _valid_report]) as case:
-            executor = make_proposal_executor(
-                case.store, restart=FakeRestartAdapter(), rollout=FakeRolloutAdapter()
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=[*_preamble(), _valid_report],
+            namespace="vigil-shop",
+        ) as case:
+            pause, proposal = await _paused(case)
+            await _decide(case.safety, pause.card)
+            with pytest.raises(SimulatedDriverExit):
+                await _drive(case)
+            initial = await case.store.get_attempt(proposal.id)
+            assert initial.status is (
+                AttemptStatus.EXECUTING if may_have_sent else AttemptStatus.INTENT
             )
-            case.runtime._executor = executor
-            await case.runtime.run()
-            _, context = await case.runtime._open_context()
-            hypotheses = await case.store.list_hypotheses(ids["investigation"])
-            observations = await case.store.list_observations(ids["investigation"])
-            fake_runtime = ToolRuntime(
-                state={},
-                context=context,
-                config={},
-                stream_writer=None,
-                tool_call_id="call-action",
-                store=None,
-            )
-            replay = await request_action.coroutine(
-                fake_runtime,
-                action="restart_pod",
-                reason="重复请求",
-                hypothesis_id=hypotheses[0].id,
-                evidence_ids=[item.id for item in observations],
-                purpose="diagnostic",
-                target_pod="target-pod",
-                service="target-service",
-                path="/work",
-                prediction="重建后返回 200",
-                absence_meaning="仍失败说明模板有问题",
-                business_target="target-service:/work",
-                observation_window_seconds=90,
-            )
-            attempts = await case.store.count_attempts_for_investigation(ids["investigation"])
-            deleted = len(executor._restart_adapter.deleted)
-            ledger = await case.store.get_tool_request(ids["investigation"], "call-action")
-            return replay, attempts, deleted, ledger
+            assert (initial.send_granted_at is not None) is may_have_sent
+            assert case.restart.dry_runs == [proposal.target.uid]
+            assert case.restart.deleted == []
 
-    replay, attempts, deleted, ledger = asyncio.run(run())
-    assert attempts == 1
-    assert deleted == 1
-    assert ledger.state.value == "action_executed"
-    assert ledger.action_attempt_id is not None
-    assert "proposal_id" in replay
+            if may_have_sent:
+                model_calls = len(case.model.seen)
+                with pytest.raises(AwaitingActionReceipt, match=initial.id):
+                    await _drive(case)
+                assert len(case.model.seen) == model_calls
+                assert case.restart.deleted == []
+                # 模拟原发送者停止续锁，接手后应记录未知回执。
+                async with case.store.transaction() as conn:
+                    await conn.execute(
+                        "UPDATE action_locks SET expires_at = clock_timestamp() "
+                        "WHERE proposal_id = %s",
+                        (proposal.id,),
+                    )
+
+            done = await _drive(case)
+            assert done.exit_code == 0
+            assert done.result.turn_id == pause.card.turn_id
+            assert case.restart.dry_runs == [proposal.target.uid]
+            assert case.restart.deleted == []
+            target = proposal.target
+            key = target_key(target.cluster, target.namespace, target.kind, target.name)
+            recovered_status = AttemptStatus.UNKNOWN if may_have_sent else AttemptStatus.VOIDED
+            recovered_proposal = ProposalStatus.UNKNOWN if may_have_sent else ProposalStatus.VOIDED
+            assert (await case.store.get_proposal(proposal.id)).status is recovered_proposal
+            assert await case.safety.target_is_locked(key) is may_have_sent
+            receipt = await case.store.get_attempt(proposal.id)
+            assert receipt.id == initial.id
+            assert receipt.send_granted_at == initial.send_granted_at
+            assert receipt.status is recovered_status
+            if not may_have_sent:
+                assert (await case.store.get_approval(proposal.id)).revoked_at is not None
+
+            investigation_id = _investigation_id(done)
+            assert await case.store.count_attempts_for_investigation(investigation_id) == 1
+            request = await case.store.get_tool_request(investigation_id, "call-action")
+            assert request.state is ToolRequestState.ACTION_EXECUTED
+            assert request.action_attempt_id == receipt.id
+            feedback = json.loads(request.result["tool_message"])
+            assert feedback["status"] == "replayed"
+            assert feedback["attempt_id"] == receipt.id
+            written = None if may_have_sent else False
+            assert feedback["write_sent"] is written
+            events = await case.events("action_result")
+            assert [event.payload["status"] for event in events] == (
+                ["intent", "executing", "unknown"] if may_have_sent else ["intent", "voided"]
+            )
+            assert all(event.payload["attempt_id"] == receipt.id for event in events)
+            assert all(event.turn_id == pause.card.turn_id for event in events)
+            terminal = events[-1]
+            assert terminal.payload["written"] is written
+            assert terminal.payload["proposal_status"] == recovered_proposal
+            assert terminal.seq < done.result.seq
+
+    asyncio.run(run())
+
+
+def test_query_replays_saved_observation_before_action(tmp_path, action_session_ids, monkeypatch):
+    original = agent_tools._finish_request
+    interrupted_observation = None
+
+    async def exit_after_observation(context, call_id, **fields):
+        nonlocal interrupted_observation
+        await original(context, call_id, **fields)
+        if call_id == "call-pods" and interrupted_observation is None:
+            interrupted_observation = fields["observation_record"].id
+            raise LeaseLost("模拟观测提交后、图保存工具回复前失租")
+
+    monkeypatch.setattr(agent_tools, "_finish_request", exit_after_observation)
+
+    async def run():
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=_preamble(),
+            namespace="vigil-shop",
+        ) as case:
+            with pytest.raises(LeaseLost, match="图保存工具回复前"):
+                await _drive(case)
+            assert interrupted_observation is not None
+            assert [request.tool for request in case.toolbox.requests] == ["kubernetes.list_pods"]
+            pause, proposal = await _paused(case)
+            investigation_id = _investigation_id(pause)
+            observations = await case.store.list_observations(investigation_id)
+            assert len(observations) == 2
+            assert interrupted_observation in {item.id for item in observations}
+            assert interrupted_observation in proposal.evidence_ids
+            request = await case.store.get_tool_request(investigation_id, "call-pods")
+            assert request.state is ToolRequestState.OBSERVED
+            assert json.loads(request.result["tool_message"])["observation_id"] == (
+                interrupted_observation
+            )
+            assert [request.tool for request in case.toolbox.requests] == [
+                "kubernetes.list_pods",
+                "kubernetes.list_logs",
+            ]
+            query_events = [
+                event
+                for event in await case.events("tool_call")
+                if event.payload["tool"] == "kubernetes.list_pods"
+            ]
+            assert [event.payload["status"] for event in query_events] == ["running", "ok"]
+            assert query_events[-1].payload["observation_id"] == interrupted_observation
+            assert query_events[-1].turn_id == pause.card.turn_id
+            assert query_events[-1].seq < pause.card.seq
+            task = await case.store.get_task(investigation_id)
+            assert task.used_tool_calls == 5
+
+    asyncio.run(run())
+
+
+def test_replayed_action_request_returns_saved_feedback(tmp_path, action_session_ids, monkeypatch):
+    """真实执行已落回执、工具尚未落反馈，恢复使用原尝试。"""
+    original = agent_tools._finish_request
+    interrupted_attempt = None
+
+    async def exit_before_feedback(context, call_id, **fields):
+        nonlocal interrupted_attempt
+        if call_id == "call-action" and fields.get("action_attempt_id") and not interrupted_attempt:
+            interrupted_attempt = fields["action_attempt_id"]
+            raise LeaseLost("模拟已发送并记录回执后失租")
+        return await original(context, call_id, **fields)
+
+    monkeypatch.setattr(agent_tools, "_finish_request", exit_before_feedback)
+
+    async def run():
+        def report_on_receipt(messages):
+            message = json.loads(messages[-1].content)
+            assert message["status"] == "replayed"
+            assert message["attempt_id"] == interrupted_attempt
+            assert message["write_sent"] is True
+            return _valid_report(messages)
+
+        async with action_case(
+            tmp_path,
+            action_session_ids,
+            responses=[*_preamble(), report_on_receipt],
+        ) as case:
+            with pytest.raises(LeaseLost, match="回执后失租"):
+                await _drive(case)
+            assert interrupted_attempt is not None
+            before_events = await case.events("action_result")
+            terminal = before_events[-1]
+            assert terminal.payload["attempt_id"] == interrupted_attempt
+            assert terminal.payload["written"] is True
+            investigation_id = await case.store.get_investigation_id_for_turn(terminal.turn_id)
+            waiting = await case.store.get_tool_request(investigation_id, "call-action")
+            assert waiting.state is ToolRequestState.ACTION_PENDING
+            saved = await case.store.get_attempt(waiting.proposal_id)
+            assert saved.id == interrupted_attempt
+            assert saved.status is AttemptStatus.VERIFIED
+            assert saved.send_granted_at is not None
+
+            done = await _drive(case)
+            assert done.exit_code == 0
+            assert _investigation_id(done) == investigation_id
+            proposal, attempt = await _assert_sent(case, done)
+            assert proposal.id == waiting.proposal_id
+            assert attempt == saved
+            assert await case.events("action_result") == before_events
+
+    asyncio.run(run())

@@ -554,11 +554,11 @@ class LangChainInvestigation:
         if not isinstance(executor, CardActions):
             raise RuntimeError("恢复卡片需要支持会话租约的动作执行器")
         await context.ensure_active()
+        attempt = await executor.read_action_attempt(proposal_id)
         proposal = await self._store.get_proposal(proposal_id)
         if proposal is None or proposal.investigation_id != self._investigation_id:
             raise RuntimeError("卡片与当前调查的关联失效")
         approval = await executor.get_card_decision(proposal_id, session_id=scope.turn.session_id)
-        attempt = await self._store.get_attempt(proposal_id)
         token = resume_token(proposal, attempt, approval)
         if token is None:
             return None, await self._publish_pause(context, proposal_id)

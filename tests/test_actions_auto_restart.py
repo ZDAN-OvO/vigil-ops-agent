@@ -127,11 +127,12 @@ def test_auto_restart_stops_after_a_pre_delete_failure(tmp_path, cleanup):
     async def first_attempt():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(
+            executor = await build_executor(
                 store,
                 FakeAdapter(rollout_plan()),
                 FakePrometheus([200.0]),
                 tmp_path,
+                cleanup=cleanup,
                 restart_adapter=FakeRestartAdapter(
                     pod_plan(namespace="vigil-experiment"),
                     service_selects=True,
@@ -271,7 +272,8 @@ def test_pending_proposal_does_not_clear_the_stop_gate(tmp_path, cleanup):
     assert third.calls == []
 
 
-def test_rejected_proposal_does_not_clear_the_stop_gate(tmp_path, cleanup):
+@pytest.mark.parametrize("status", [ProposalStatus.REJECTED, ProposalStatus.VOIDED])
+def test_nonexecuted_proposal_does_not_clear_the_stop_gate(tmp_path, cleanup, status):
     first = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"), service_status=500)
     asyncio.run(run_restart(first, tmp_path, cleanup, namespace="vigil-experiment", approve=False))
 
@@ -287,7 +289,7 @@ def test_rejected_proposal_does_not_clear_the_stop_gate(tmp_path, cleanup):
             await store.transition_proposal(
                 proposal.id,
                 expected=ProposalStatus.PENDING_APPROVAL,
-                target=ProposalStatus.REJECTED,
+                target=status,
             )
 
     asyncio.run(reject())
@@ -421,11 +423,12 @@ def test_authorized_auto_proposal_is_stopped_when_the_workload_failed_meanwhile(
     async def authorize_and_resume():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(
+            executor = await build_executor(
                 store,
                 FakeAdapter(rollout_plan()),
                 FakePrometheus([200.0]),
                 tmp_path,
+                cleanup=cleanup,
                 restart_adapter=adapter,
                 verify_seconds=1,
                 sample_seconds=0.2,
@@ -447,6 +450,11 @@ def test_authorized_auto_proposal_is_stopped_when_the_workload_failed_meanwhile(
                 target=ProposalStatus.APPROVED,
             )
             await store.save_approval(approval)
+            async with store.transaction() as conn:
+                await conn.execute(
+                    "UPDATE sessions SET lease_owner = NULL, lease_expires_at = NULL WHERE id = %s",
+                    (proposal.session_id,),
+                )
             with pytest.raises(ActionError) as info:
                 await executor.resume(proposal.id)
             return info.value.code

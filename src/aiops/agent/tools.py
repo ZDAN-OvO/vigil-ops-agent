@@ -56,6 +56,7 @@ from aiops.contracts import (
 )
 from aiops.investigation.toolbox import QueryRequest, observation
 from aiops.sessions.models import LeaseLost
+from aiops.sessions.projection import project_action_result, project_payload
 from aiops.tools.base import ToolContext
 
 READ_TOOLS = (
@@ -306,6 +307,7 @@ async def _finish_request(
                     }[status],
                     "status": status,
                     "observation_id": observation_record.id if observation_record else None,
+                    "observation": query.get("public_observation"),
                     "collected_at": query.get("collected_at"),
                     "time_range": query.get("time_range"),
                 },
@@ -402,6 +404,16 @@ async def _run_read(
     if status is ObservationStatus.EMPTY:
         payload["note"] = "未取到数据；空结果不是反证，不能作为 refuting 依据。"
     message = _dump(payload)
+    public_query = payload
+    if ctx.scope is not None:
+        detail = (
+            ctx.scope.project_text(result.error.message)
+            if result.error is not None
+            else _dump(project_payload(result.data))
+        )
+        if len(detail) > ctx.max_observation_chars:
+            detail = detail[: ctx.max_observation_chars] + "…（已截断）"
+        public_query = {**payload, "public_observation": detail}
     if result.error is not None:
         await _finish_request(
             ctx,
@@ -410,7 +422,7 @@ async def _run_read(
             message=message,
             error_code=result.error.code,
             result_ref=result.raw_ref,
-            query=payload,
+            query=public_query,
         )
         return message
     await _finish_request(
@@ -420,7 +432,7 @@ async def _run_read(
         message=message,
         result_ref=result.raw_ref,
         observation_record=record,
-        query=payload,
+        query=public_query,
     )
     ctx.progress.record(tool_name)
     if tool_name.startswith("knowledge."):
@@ -914,7 +926,7 @@ async def _assess_evidence(
             )
             return message
     for link in args.links:
-        await ctx.store.upsert_hypothesis_evidence(
+        evidence_id = await ctx.store.upsert_hypothesis_evidence(
             HypothesisEvidence(
                 id=f"he-{uuid.uuid4().hex[:12]}",
                 investigation_id=ctx.investigation_id,
@@ -926,6 +938,7 @@ async def _assess_evidence(
         )
         applied.append(
             {
+                "evidence_id": evidence_id,
                 "observation_id": link.observation_id,
                 "hypothesis_id": link.hypothesis_id,
                 "relation": link.relation,
@@ -1560,10 +1573,10 @@ async def _consume_card(
     if not isinstance(executor, CardActions):
         raise RuntimeError("恢复卡片需要支持会话租约的动作执行器")
     await ctx.ensure_active()
+    attempt = await executor.read_action_attempt(proposal_id)
     proposal = await ctx.store.get_proposal(proposal_id)
     if proposal is None or proposal.investigation_id != ctx.investigation_id:
         raise RuntimeError("中断点与提案的调查关联不一致")
-    attempt = await _attempt_for(ctx, proposal_id)
     approval = (
         await ctx.store.get_approval(proposal_id)
         if automatic
@@ -1639,15 +1652,7 @@ async def _consume_card(
 
 
 def _written(attempt: ActionAttempt) -> bool | None:
-    evidence = attempt.result or {}
-    value = evidence.get("written", evidence.get("write_sent"))
-    if isinstance(value, bool):
-        return value
-    if attempt.status is AttemptStatus.VERIFIED:
-        return True
-    if attempt.status.value in {"intent", "voided"}:
-        return False
-    return None
+    return project_action_result(attempt)["written"]
 
 
 __all__ = [
