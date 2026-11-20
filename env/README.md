@@ -217,7 +217,16 @@ kubectl --kubeconfig "$VIGIL_KUBECONFIG" --context "$VIGIL_KUBE_CONTEXT" \
 uv run --frozen python -m aiops.monitoring.exporter --host "$VIGIL_LAB_GATEWAY" --port 8092
 ```
 
-Prometheus 从 `host.k3d.internal:8092/metrics` 抓取发布指标。确认本次集群的该主机名解析到进程绑定的地址；若使用其他实验网关映射，同步修改 `vigil-releases` 的抓取目标。监控命名空间和业务命名空间均以实验清单为准，服务大盘查询 `vigil-shop`。
+Prometheus 默认从 `host.k3d.internal:8092/metrics` 抓取发布指标。若集群内这个名称无法访问宿主进程，用本次 k3d 网络的网关地址渲染抓取目标。已运行的 Prometheus 要重新加载配置后才会使用新地址。
+
+```bash
+docker network inspect "k3d-$VIGIL_CLUSTER" --format '{{(index .IPAM.Config 0).Gateway}}'
+# 将上一步确认的网关地址赋给 VIGIL_LAB_GATEWAY。
+sed "s|host.k3d.internal:8092|${VIGIL_LAB_GATEWAY:?}:8092|" env/manifests/monitoring.yaml |
+  kubectl --kubeconfig "$VIGIL_KUBECONFIG" --context "$VIGIL_KUBE_CONTEXT" apply -f -
+```
+
+监控命名空间和业务命名空间均以实验清单为准，服务大盘查询 `vigil-shop`。
 
 在本次实验的 Prometheus 中逐项检查：
 
