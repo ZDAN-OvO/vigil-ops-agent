@@ -1,5 +1,7 @@
 """新项目配置，配置文件位置不依赖进程工作目录。"""
 
+import os
+from importlib.resources import files
 from pathlib import Path
 from typing import Literal
 
@@ -7,11 +9,16 @@ from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_SOURCE_CHECKOUT = (
+    Path(__file__).resolve().parents[1].name == "src"
+    and (PROJECT_ROOT / "pyproject.toml").is_file()
+)
+_CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "vigil"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=PROJECT_ROOT / ".env",
+        env_file=(PROJECT_ROOT if _SOURCE_CHECKOUT else _CONFIG_DIR) / ".env",
         env_prefix="VIGIL_",
         extra="ignore",
     )
@@ -50,7 +57,7 @@ class Settings(BaseSettings):
     investigation_action_model_reserve_seconds: float = 60.0
     investigation_max_observation_chars: int = 8000
     # 仓库内置 Skill；只允许本地目录，远程分发留到后续阶段。
-    skills_dir: Path = Path("skills")
+    skills_dir: Path | None = None
 
     # 告警入口。token 未配置时服务拒绝启动，避免裸奔的 webhook。
     cluster: str = "vigil-lab"
@@ -78,8 +85,18 @@ class Settings(BaseSettings):
 
     @property
     def runtime_path(self) -> Path:
-        return (PROJECT_ROOT / self.runtime_dir).resolve()
+        root = (
+            PROJECT_ROOT
+            if _SOURCE_CHECKOUT
+            else Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "vigil"
+        )
+        return (root / self.runtime_dir).resolve()
 
     @property
     def skills_path(self) -> Path:
-        return (PROJECT_ROOT / self.skills_dir).resolve()
+        if self.skills_dir is not None:
+            return ((PROJECT_ROOT if _SOURCE_CHECKOUT else Path.cwd()) / self.skills_dir).resolve()
+        if _SOURCE_CHECKOUT:
+            return PROJECT_ROOT / "skills"
+        # Python 安装 wheel 时会把包资源解包到文件系统，Skill 读取器可直接使用该目录。
+        return Path(str(files("aiops").joinpath("_builtin_skills")))

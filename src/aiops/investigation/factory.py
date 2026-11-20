@@ -1,4 +1,4 @@
-"""按配置装配一次单 Agent 调查；CLI 与 webhook 共用同一套装配。"""
+"""按配置装配调查与会话运行所需的工具和执行器。"""
 
 from __future__ import annotations
 
@@ -8,18 +8,27 @@ from contextlib import asynccontextmanager
 from aiops.actions.executor import ActionExecutor
 from aiops.actions.restart_pod import PodRestartAdapter
 from aiops.actions.rollout_undo import RolloutUndoAdapter
+from aiops.agent.conversation import ConversationDriver
 from aiops.agent.engine import LangChainInvestigation
 from aiops.config import Settings
 from aiops.contracts import Incident, Investigation
 from aiops.db import Store
 from aiops.investigation.toolbox import Toolbox
+from aiops.sessions.models import Lease
+from aiops.sessions.projection import project_text
 from aiops.tools.kubernetes import KubernetesRead
 from aiops.tools.prometheus import PrometheusClient
 
 
 def build_executor(
-    settings: Settings, store: Store, prometheus: PrometheusClient
+    settings: Settings,
+    store: Store,
+    prometheus: PrometheusClient,
+    *,
+    session_lease: Lease | None = None,
+    session_turn_id: str | None = None,
 ) -> ActionExecutor:
+    web_url = getattr(settings, "web_url", None)
     return ActionExecutor(
         store=store,
         adapter=RolloutUndoAdapter(
@@ -37,14 +46,16 @@ def build_executor(
         sample_seconds=settings.action_sample_seconds,
         approval_ttl_seconds=settings.action_approval_ttl_seconds,
         io_timeout_seconds=settings.tool_timeout_seconds,
+        session_lease=session_lease,
+        session_turn_id=session_turn_id,
+        web_url=str(web_url) if web_url is not None else None,
     )
 
 
 @asynccontextmanager
 async def _open_io(
     settings: Settings, *, store: Store
-) -> AsyncIterator[tuple[Toolbox, ActionExecutor]]:
-    """Agent 与规则基线共用同一只读工具和同一个动作执行器。"""
+) -> AsyncIterator[tuple[Toolbox, PrometheusClient]]:
     async with PrometheusClient.connect(
         settings.prometheus_url,
         timeout_seconds=settings.tool_timeout_seconds,
@@ -61,7 +72,29 @@ async def _open_io(
                 ),
                 store,
             ),
-            build_executor(settings, store, prometheus),
+            prometheus,
+        )
+
+
+@asynccontextmanager
+async def open_conversation(
+    *, settings: Settings, store: Store
+) -> AsyncIterator[ConversationDriver]:
+    """使用已初始化的数据库装配 CLI 与本地服务共用的会话驱动。"""
+    async with _open_io(settings, store=store) as (toolbox, prometheus):
+
+        @asynccontextmanager
+        async def executor_factory(*, lease: Lease, turn_id: str) -> AsyncIterator[ActionExecutor]:
+            yield build_executor(
+                settings, store, prometheus, session_lease=lease, session_turn_id=turn_id
+            )
+
+        yield ConversationDriver(
+            settings=settings,
+            store=store,
+            toolbox=toolbox,
+            executor_factory=executor_factory,
+            project_text=project_text,
         )
 
 
@@ -85,7 +118,7 @@ async def open_agent(
 ) -> AsyncIterator[LangChainInvestigation]:
     if settings.model_name is None:
         raise ValueError("未配置 VIGIL_MODEL_NAME")
-    async with _open_io(settings, store=store) as (toolbox, executor):
+    async with _open_io(settings, store=store) as (toolbox, prometheus):
         yield LangChainInvestigation(
             settings=settings,
             store=store,
@@ -93,7 +126,7 @@ async def open_agent(
             incident=incident,
             investigation=investigation,
             toolbox=toolbox,
-            executor=executor,
+            executor=build_executor(settings, store, prometheus),
             runtime_path=settings.runtime_path,
         )
 
@@ -101,5 +134,6 @@ async def open_agent(
 __all__ = [
     "build_executor",
     "open_agent",
+    "open_conversation",
     "open_executor",
 ]
