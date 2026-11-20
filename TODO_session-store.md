@@ -59,10 +59,98 @@ CLI 和 `serve` 能查询同一会话，按会话内递增的 `seq` 读事件。
 
 ## 进度
 
-- [ ] 文档门禁、迁移和事件契约
-- [ ] 入队、租约与 checkpoint 事务
-- [ ] 跨进程验证
+- [x] 文档门禁、迁移和事件契约
+- [x] 入队、租约与 checkpoint 事务
+- [x] 跨进程验证
 
 ## 范围外的问题
 
 旧调查的全文检索留在后续任务。
+
+## 下游接入契约
+
+以下签名位于 `aiops.sessions.store`、`aiops.sessions.models` 和
+`aiops.sessions.checkpoint`。事务组合接口在调用方成功退出上下文后提交。
+通过 `Store.migrate() -> list[str]` 升级业务表，再调用
+`setup_checkpoints(store: Store) -> None` 升级 LangGraph 官方存储。
+后者需要并发建索引，单独在启动时运行。
+
+### 读取和发消息
+
+- `SessionStore(store: Store)`
+- `create_session(*, title: str) -> Session`
+- `get_session(session_id: str) -> Session | None`
+- `list_sessions(*, limit: int = 50) -> list[Session]`
+- `get_turn(turn_id: str) -> Turn | None`
+- `list_turns(session_id: str) -> list[Turn]`
+- `list_runnable_main(*, limit: int = 50) -> list[str]`
+- `list_runnable_side(*, limit: int = 50) -> list[str]`
+- `enqueue_input(session_id: str, text: str, *, display_text: str, input_id: str | None = None) -> SessionInput`
+- `get_input(input_id: str) -> SessionInput | None`
+- `list_events(session_id: str, *, after_seq: int = 0, limit: int = 100) -> list[SessionEvent]`
+
+`text` 是队列原文。客户端只读取事件，调用方写入事件前要提供脱敏的标题、`display_text`
+和出站 payload。以 `SessionEvent.as_dict()` 得到 `type`、`session_id`、`seq`、`ts`、
+`turn_id` 和事件类型字段。`input_delivered` 带 `input_id`、`step`、`lane`。
+同一会话用同一输入 ID 重试相同文本时返回原记录。队列扫描只找无有效主租约且可运行或可接手的普通轮次。
+等待已决卡片的扫描由处置模块补上。
+
+### 驱动与调查账本
+
+- `acquire_main_lease(session_id: str, owner: str) -> Lease | None`
+- `acquire_side_lease(session_id: str, owner: str) -> Lease | None`
+- `renew_lease(lease: Lease) -> Lease`
+- `release_lease(lease: Lease) -> bool`
+- `start_main_turn(lease: Lease) -> Turn | None`
+- `pending_inputs(lease: Lease, turn_id: str, *, limit: int = 100) -> list[SessionInput]`
+- `async with sessions.run(lease: Lease, turn_id: str) as tx` 提供 `RunTransaction`
+- `tx.append_event(type: str, payload: Mapping[str, Any]) -> SessionEvent`
+- `tx.pending_inputs(*, limit: int = 100) -> list[SessionInput]`
+- `tx.set_turn_state(state: TurnState) -> Turn`
+- `store.for_turn(lease: Lease, turn_id: str) -> Store`
+- `store.get_investigation_id_for_turn(turn_id: str) -> str | None`
+- `SessionCheckpointer(store: Store, lease: Lease, turn: Turn)` 兼容异步 LangGraph saver
+- `aget_tuple(config: RunnableConfig) -> CheckpointTuple | None`
+- `alist(config: RunnableConfig | None, *, filter: dict[str, Any] | None = None, before: RunnableConfig | None = None, limit: int | None = None) -> AsyncIterator[CheckpointTuple]`
+- `aget_delta_channel_history(*, config: RunnableConfig, channels: Sequence[str]) -> Mapping[str, DeltaChannelHistory]`
+- `aput(config: RunnableConfig, checkpoint: Checkpoint, metadata: CheckpointMetadata, new_versions: ChannelVersions) -> RunnableConfig`
+- `aput_writes(config: RunnableConfig, writes: Sequence[tuple[str, Any]], task_id: str, task_path: str = "") -> None`
+- `get_next_version(current: str | None, channel: None) -> str`
+
+`owner` 为驱动实例的唯一标识。驱动每 30 秒续期，期限为数据库时间 120 秒。
+用 `Lease` 的持有者与代次比较权限，`expires_at` 供显示。存储拒绝失去有效租约的写入并抛出
+`LeaseLost`。关闭的会话拒绝入队和领取。主线接手返回原轮，暂停轮显式转回 `running` 后才能
+送达新输入。旁路领取为最早一个待投递输入创建单独的轮和租约，已启动的旁路可在主线继续后
+完成自己的轮。主线与旁路的账本写入均限定在其自身轮，旁路不能进入动作或审批阶段。
+
+使用 `store.for_turn` 提供给复用现有账本 API 的工具和运行时。新增调查由该 scoped store 创建，
+一轮最多一个调查。组合写入时串行使用 `tx.ledger`，在同一连接按顺序完成账本写入、事件、轮次状态
+切换，退出上下文提交。终态写入最后改变轮状态。现有历史查询接口继续可用。
+
+根 checkpoint 线程为 `turn.checkpoint_thread_id`，根的 `checkpoint_ns` 是空字符串。
+保存器将实际轮 ID 写入 checkpoint metadata 的 `vigil_turn_id`，字段名由
+`TURN_ID_METADATA` 导出。主线可按它区分本轮恢复点与上一轮上下文。
+接入 LangGraph 时用 `durability="sync"`。把排队输入加入图状态时，在同一根状态更新中写入普通
+`vigil_input_ids: list[str]` 状态通道，图的消息输入也使用普通非 Delta 通道。
+`INPUT_IDS_CHANNEL` 导出该字段名。保存器按当前轮可消费的 FIFO 前缀核对 ID，用 LangGraph
+metadata 的 `step` 记录送达位置。仅根 checkpoint 可提交送达。按原 checkpoint ID 重试不会
+重复写事件。普通 pending writes 走同一租约栅栏。
+
+### 告警与处置
+
+- `async with store.transaction() as conn` 提供 `AsyncConnection`
+- `async with sessions.alert_transaction(group_key: str) as conn` 在同一连接先持事务级组锁
+- `get_open_alert_session(conn: AsyncConnection, group_key: str) -> Session | None`
+- `record_alert(conn: AsyncConnection, group_key: str, *, title: str, text: str, display_text: str, repeat_display_text: str) -> AlertReceipt`
+- `append_alert_message(conn: AsyncConnection, session_id: str, *, display_text: str) -> SessionEvent`
+- `close_session(conn: AsyncConnection, session_id: str, *, reason: str) -> SessionEvent | None`
+- `lock_session(conn: AsyncConnection, session_id: str) -> Session`
+- `require_lease(conn: AsyncConnection, lease: Lease, *, main_only: bool = False) -> Session`
+- `require_turn(conn: AsyncConnection, lease: Lease, turn_id: str) -> Turn`
+- `append_event(conn: AsyncConnection, session_id: str, type: str, payload: Mapping[str, Any], *, turn_id: str | None = None, allow_closed: bool = False) -> SessionEvent`
+
+告警操作先拿组锁，再读或锁会话。持锁调用 `record_alert`，首次返回待跑轮 ID，重复推送只追加
+组消息。关闭返回关闭事件，重复调用返回 `None`。处置在同一个连接上先锁会话、再按稳定顺序
+锁动作记录，组合关闭、作废、解锁等操作。取得发送权使用 `require_lease(..., main_only=True)`，
+更新发送权之前再次检查期限。运行事件统一走 `run()`。结构化授权与尝试回执可以在各自受保护的
+业务事务直接追加事件，已取得发送权的尝试可用 `allow_closed=True` 记录回执。

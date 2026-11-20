@@ -140,7 +140,7 @@ def test_migrations_can_run_repeatedly():
 
 
 def test_migrations_apply_to_empty_schema():
-    """空库从 0001 跑到 0011；用独立 schema 模拟全新实例，结束后删除。"""
+    """用独立 schema 验证空库迁移，结束后删除。"""
     schema = f"mig_{uuid4().hex[:8]}"
     admin = psycopg.connect(DSN, autocommit=True)
     admin.execute(f"CREATE SCHEMA {schema}")
@@ -168,7 +168,9 @@ def test_migrations_apply_to_empty_schema():
         admin.execute(f"DROP SCHEMA {schema} CASCADE")
         admin.close()
     assert "0011_skills_and_delegations" in applied
+    assert "0012_sessions" in applied
     assert {"investigations", "delegations", "observations", "tool_requests"} <= tables
+    assert {"sessions", "session_turns", "session_inputs", "session_events"} <= tables
     assert "hypothesis_revisions" not in tables
     assert "evidence" not in tables
     assert "tool_calls" not in tables

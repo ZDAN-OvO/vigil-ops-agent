@@ -10,10 +10,12 @@ from aiops.config import PROJECT_ROOT
 LINK = re.compile(r"\]\(([^)\s]+)\)")
 REMOVED = re.compile(
     r"aiops eval|aiops explain|--mode rules|RulesBaseline|langchain_gate"
-    r"|DESIGN\.md|ROADMAP\.md|PLAN\.md|demos/|(decisions|milestone|mvp|iterations|eval|claims|migration"
+    r"|ROADMAP\.md|demos/|(decisions|milestone|mvp|iterations|eval|claims|migration"
     r"|architecture|contracts|usage|roadmap)\.md|docs/README\.md"
     r"|eval/scenarios\.json|docs/specs/|docs/agents/"
 )
+
+TEMPORARY = re.compile(r"(?<![\w-])(?:PLAN|TODO_[^\s/`<>()]+)\.md(?![\w.-])")
 
 
 def _current_docs() -> list[Path]:
@@ -88,9 +90,11 @@ def test_relative_links_resolve():
 def test_no_references_to_removed_material():
     hits = []
     for path in _current_docs():
-        if path.is_relative_to(PROJECT_ROOT / "docs" / "adr"):
-            continue
+        historical = path.is_relative_to(PROJECT_ROOT / "docs" / "adr")
+        temporary = path.parent == PROJECT_ROOT and TEMPORARY.fullmatch(path.name)
         for number, line in enumerate(path.read_text().splitlines(), 1):
-            if REMOVED.search(line):
+            if (not historical and REMOVED.search(line)) or (
+                not temporary and TEMPORARY.search(line)
+            ):
                 hits.append(f"{path.relative_to(PROJECT_ROOT)}:{number}: {line.strip()[:80]}")
     assert not hits, hits

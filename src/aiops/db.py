@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Self
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -45,6 +46,8 @@ from aiops.contracts import (
     ToolRequestState,
 )
 from aiops.knowledge import Runbook
+from aiops.sessions.models import Lease, LeaseLost
+from aiops.sessions.store import SessionStore
 
 MIGRATIONS_DIR = Path(__file__).with_name("migrations")
 SCHEMA_MIGRATIONS = (
@@ -73,6 +76,79 @@ def migration_files() -> list[Path]:
 class Store:
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self._pool = pool
+        self._turn_scope: tuple[Lease, str] | None = None
+        self._bound_conn: psycopg.AsyncConnection | None = None
+
+    @asynccontextmanager
+    async def _connection(self) -> AsyncIterator[psycopg.AsyncConnection]:
+        if self._bound_conn is not None:
+            yield self._bound_conn
+        else:
+            async with self._pool.connection() as conn:
+                yield conn
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[psycopg.AsyncConnection]:
+        """供会话、告警与处置组合短事务，成功退出后提交。"""
+        async with self._connection() as conn, conn.transaction():
+            yield conn
+
+    def for_turn(
+        self, lease: Lease, turn_id: str, *, _conn: psycopg.AsyncConnection | None = None
+    ) -> "Store":
+        """复用账本接口，每次写入核对会话租约及轮次。"""
+        scoped = Store(self._pool)
+        scoped._turn_scope = (lease, turn_id)
+        scoped._bound_conn = _conn
+        return scoped
+
+    @asynccontextmanager
+    async def _ledger_connection(
+        self,
+        investigation_id: str | None = None,
+        *,
+        reference: tuple[str, str] | None = None,
+    ) -> AsyncIterator[psycopg.AsyncConnection]:
+        async with self.transaction() as conn:
+            if self._turn_scope is not None:
+                await SessionStore.require_turn(conn, *self._turn_scope)
+            if reference is not None:
+                table, record_id = reference
+                row = await (
+                    await conn.execute(
+                        sql.SQL("SELECT investigation_id FROM {} WHERE id = %s").format(
+                            sql.Identifier(table)
+                        ),
+                        (record_id,),
+                    )
+                ).fetchone()
+                if row is None:
+                    raise LookupError(f"账本记录不存在：{record_id}")
+                investigation_id = row["investigation_id"]
+            if investigation_id is not None:
+                await self._require_investigation_scope(conn, investigation_id)
+            yield conn
+            if self._turn_scope is not None:
+                await SessionStore.require_turn(conn, *self._turn_scope)
+
+    async def _require_investigation_scope(
+        self, conn: psycopg.AsyncConnection, investigation_id: str
+    ) -> None:
+        row = await (
+            await conn.execute(
+                "SELECT session_turn_id FROM investigations WHERE id = %s",
+                (investigation_id,),
+            )
+        ).fetchone()
+        expected = self._turn_scope[1] if self._turn_scope else None
+        if (row is None and expected is not None) or (
+            row is not None and row["session_turn_id"] != expected
+        ):
+            raise LeaseLost(investigation_id)
+
+    def _require_main_ledger(self) -> None:
+        if self._turn_scope is not None and self._turn_scope[0].side_turn_id is not None:
+            raise LeaseLost("旁路不能更新动作或审批记录")
 
     @classmethod
     @asynccontextmanager
@@ -97,7 +173,10 @@ class Store:
     async def migrate(self) -> list[str]:
         """按文件名顺序应用未执行的迁移，返回本次应用的版本。"""
         applied: list[str] = []
-        async with self._pool.connection() as conn:
+        async with self.transaction() as conn:
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(current_schema(), 1))"
+            )
             await conn.execute(SCHEMA_MIGRATIONS)
             cursor = await conn.execute("SELECT version FROM schema_migrations")
             done = {row["version"] for row in await cursor.fetchall()}
@@ -118,7 +197,7 @@ class Store:
             return [row["version"] for row in await cursor.fetchall()]
 
     async def save_incident(self, incident: Incident) -> None:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection() as conn:
             await conn.execute(
                 """
                 INSERT INTO incidents (
@@ -143,7 +222,7 @@ class Store:
             )
 
     async def get_incident(self, incident_id: str) -> Incident | None:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute("SELECT * FROM incidents WHERE id = %s", (incident_id,))
             row = await cursor.fetchone()
         if row is None:
@@ -163,15 +242,17 @@ class Store:
         )
 
     async def create_investigation(self, investigation: Investigation) -> None:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection() as conn:
             await conn.execute(
                 """
                 INSERT INTO investigations (
                     id, incident_id, parent_run_id, status, model, policy_version,
                     budget_tool_calls, budget_model_calls, budget_wall_clock_seconds,
                     budget_action_seconds, used_tool_calls, used_model_calls, conclusion,
-                    termination_reason, started_at, finished_at, skills
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    termination_reason, started_at, finished_at, skills, session_turn_id
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
                 """,
                 (
                     investigation.id,
@@ -191,6 +272,7 @@ class Store:
                     investigation.started_at,
                     investigation.finished_at,
                     Jsonb([item.model_dump(mode="json") for item in investigation.skills]),
+                    self._turn_scope[1] if self._turn_scope else None,
                 ),
             )
 
@@ -303,7 +385,7 @@ class Store:
         ]
 
     async def mark_investigation_running(self, investigation_id: str, started_at) -> None:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(investigation_id) as conn:
             cursor = await conn.execute(
                 "UPDATE investigations SET status = 'running', started_at = %s WHERE id = %s",
                 (started_at, investigation_id),
@@ -311,8 +393,17 @@ class Store:
             if cursor.rowcount != 1:
                 raise LookupError(f"调查不存在：{investigation_id}")
 
+    async def get_investigation_id_for_turn(self, turn_id: str) -> str | None:
+        async with self._connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT id FROM investigations WHERE session_turn_id = %s", (turn_id,)
+                )
+            ).fetchone()
+            return row["id"] if row else None
+
     async def get_investigation(self, investigation_id: str) -> Investigation | None:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM investigations WHERE id = %s", (investigation_id,)
             )
@@ -357,7 +448,7 @@ class Store:
             raise ValueError("completed 必须给出根因候选")
         if status.terminal and finished_at is None:
             raise ValueError("终止状态必须记录结束时间")
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(investigation_id) as conn:
             cursor = await conn.execute(
                 """
                 UPDATE investigations
@@ -370,7 +461,7 @@ class Store:
                 raise LookupError(f"调查不存在：{investigation_id}")
 
     async def add_usage(self, investigation_id: str, *, tool_calls: int = 0, model_calls: int = 0):
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(investigation_id) as conn:
             cursor = await conn.execute(
                 """
                 UPDATE investigations
@@ -384,7 +475,7 @@ class Store:
                 raise LookupError(f"调查不存在：{investigation_id}")
 
     async def save_hypothesis(self, hypothesis: Hypothesis) -> None:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(hypothesis.investigation_id) as conn:
             await conn.execute(
                 """
                 INSERT INTO hypotheses (
@@ -404,7 +495,7 @@ class Store:
             )
 
     async def get_hypothesis(self, hypothesis_id: str) -> Hypothesis | None:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute("SELECT * FROM hypotheses WHERE id = %s", (hypothesis_id,))
             row = await cursor.fetchone()
         return _hypothesis_from_row(row) if row else None
@@ -420,7 +511,7 @@ class Store:
         update_parent: bool = False,
     ) -> Hypothesis:
         """改假设内容或状态；不保留修订历史，变更理由写在 update_reason。"""
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(reference=("hypotheses", hypothesis_id)) as conn:
             cursor = await conn.execute(
                 """
                 UPDATE hypotheses
@@ -446,7 +537,7 @@ class Store:
         return _hypothesis_from_row(row)
 
     async def list_hypotheses(self, investigation_id: str) -> list[Hypothesis]:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM hypotheses WHERE investigation_id = %s ORDER BY created_at, id",
                 (investigation_id,),
@@ -455,7 +546,7 @@ class Store:
         return [_hypothesis_from_row(row) for row in rows]
 
     async def set_hypothesis_status(self, hypothesis_id: str, status: str) -> None:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(reference=("hypotheses", hypothesis_id)) as conn:
             cursor = await conn.execute(
                 "UPDATE hypotheses SET status = %s WHERE id = %s", (status, hypothesis_id)
             )
@@ -531,8 +622,9 @@ class Store:
         )
 
     async def append_audit(self, events: Sequence[AuditEvent]) -> None:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection() as conn:
             for event in events:
+                await self._require_investigation_scope(conn, event.correlation_id)
                 await conn.execute(
                     """
                     INSERT INTO audit_events (
@@ -550,7 +642,7 @@ class Store:
                 )
 
     async def list_audit(self, correlation_id: str) -> list[AuditEvent]:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM audit_events WHERE correlation_id = %s ORDER BY occurred_at, id",
                 (correlation_id,),
@@ -1056,7 +1148,7 @@ class Store:
 
     async def create_task(self, task: InvestigationTask) -> bool:
         """新建任务记录；已存在时返回 False，不覆写历史用量。"""
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(task.investigation_id) as conn:
             cursor = await conn.execute(
                 """
                 INSERT INTO investigation_tasks (
@@ -1079,7 +1171,7 @@ class Store:
             return cursor.rowcount == 1
 
     async def get_task(self, investigation_id: str) -> InvestigationTask | None:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM investigation_tasks WHERE investigation_id = %s",
                 (investigation_id,),
@@ -1091,7 +1183,9 @@ class Store:
         self, investigation_id: str, owner: str, *, seconds: int = 120
     ) -> bool:
         """取得任务租约：同一调查同时只允许一个驱动者。"""
-        async with self._pool.connection() as conn:
+        if self._turn_scope is not None:
+            raise LeaseLost("会话轮次使用会话租约")
+        async with self._ledger_connection(investigation_id) as conn:
             cursor = await conn.execute(
                 """
                 UPDATE investigation_tasks
@@ -1111,7 +1205,9 @@ class Store:
             return cursor.rowcount == 1
 
     async def release_task_lease(self, investigation_id: str, owner: str) -> None:
-        async with self._pool.connection() as conn:
+        if self._turn_scope is not None:
+            raise LeaseLost("会话轮次使用会话租约")
+        async with self._ledger_connection(investigation_id) as conn:
             await conn.execute(
                 """
                 UPDATE investigation_tasks
@@ -1132,7 +1228,7 @@ class Store:
         no_progress_rounds: int | None = None,
     ) -> None:
         """写入绝对用量；分阶段秒数由运行时累计后整体落库。"""
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(investigation_id) as conn:
             cursor = await conn.execute(
                 """
                 UPDATE investigation_tasks
@@ -1157,7 +1253,8 @@ class Store:
                 raise LookupError(f"任务不存在：{investigation_id}")
 
     async def set_task_waiting(self, investigation_id: str, *, proposal_id: str) -> None:
-        async with self._pool.connection() as conn:
+        self._require_main_ledger()
+        async with self._ledger_connection(investigation_id) as conn:
             cursor = await conn.execute(
                 """
                 UPDATE investigation_tasks
@@ -1175,7 +1272,7 @@ class Store:
                 raise LookupError(f"任务不存在或已结束：{investigation_id}")
 
     async def resume_task(self, investigation_id: str) -> None:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(investigation_id) as conn:
             cursor = await conn.execute(
                 """
                 UPDATE investigation_tasks
@@ -1197,7 +1294,9 @@ class Store:
         recovered_at=None,
         proposal_id: str | None = None,
     ) -> None:
-        async with self._pool.connection() as conn:
+        if proposal_id is not None:
+            self._require_main_ledger()
+        async with self._ledger_connection(investigation_id) as conn:
             cursor = await conn.execute(
                 """
                 UPDATE investigation_tasks
@@ -1225,7 +1324,7 @@ class Store:
                 raise LookupError(f"任务不存在：{investigation_id}")
 
     async def record_recovery(self, investigation_id: str, *, at) -> None:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(investigation_id) as conn:
             await conn.execute(
                 """
                 UPDATE investigation_tasks
@@ -1236,7 +1335,7 @@ class Store:
             )
 
     async def request_cancel(self, investigation_id: str, *, at) -> bool:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(investigation_id) as conn:
             cursor = await conn.execute(
                 """
                 UPDATE investigation_tasks
@@ -1266,7 +1365,7 @@ class Store:
     # ---- 观测与假设—证据关系 ----
 
     async def save_observation(self, observation: Observation) -> None:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(observation.investigation_id) as conn:
             await conn.execute(
                 """
                 INSERT INTO observations (
@@ -1292,7 +1391,7 @@ class Store:
             )
 
     async def get_observation(self, observation_id: str) -> Observation | None:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM observations WHERE id = %s", (observation_id,)
             )
@@ -1302,7 +1401,7 @@ class Store:
     async def get_observation_by_tool_call(
         self, investigation_id: str, tool_call_id: str
     ) -> Observation | None:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute(
                 """
                 SELECT * FROM observations
@@ -1314,7 +1413,7 @@ class Store:
         return _observation_from_row(row) if row else None
 
     async def list_observations(self, investigation_id: str) -> list[Observation]:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute(
                 """
                 SELECT * FROM observations
@@ -1327,7 +1426,20 @@ class Store:
 
     async def upsert_hypothesis_evidence(self, link: HypothesisEvidence) -> None:
         """同一（假设，观测）只保留一条关系，重复标注按最新判断更新。"""
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(link.investigation_id) as conn:
+            if self._turn_scope is not None:
+                refs = await (
+                    await conn.execute(
+                        """
+                        SELECT 1 FROM hypotheses h JOIN observations o
+                          ON h.investigation_id = o.investigation_id
+                        WHERE h.id = %s AND o.id = %s AND h.investigation_id = %s
+                        """,
+                        (link.hypothesis_id, link.observation_id, link.investigation_id),
+                    )
+                ).fetchone()
+                if refs is None:
+                    raise LeaseLost("证据关系必须属于当前轮")
             await conn.execute(
                 """
                 INSERT INTO hypothesis_evidence (
@@ -1336,6 +1448,7 @@ class Store:
                 ON CONFLICT (hypothesis_id, observation_id) DO UPDATE SET
                     relation = EXCLUDED.relation,
                     rationale = EXCLUDED.rationale
+                WHERE hypothesis_evidence.investigation_id = EXCLUDED.investigation_id
                 """,
                 (
                     link.id,
@@ -1348,7 +1461,7 @@ class Store:
             )
 
     async def list_hypothesis_evidence(self, investigation_id: str) -> list[HypothesisEvidence]:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute(
                 """
                 SELECT * FROM hypothesis_evidence
@@ -1375,7 +1488,7 @@ class Store:
     async def set_investigation_skills(
         self, investigation_id: str, skills: Sequence[SkillUsage]
     ) -> None:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(investigation_id) as conn:
             cursor = await conn.execute(
                 "UPDATE investigations SET skills = %s WHERE id = %s",
                 (Jsonb([item.model_dump(mode="json") for item in skills]), investigation_id),
@@ -1384,7 +1497,7 @@ class Store:
                 raise LookupError(f"调查不存在：{investigation_id}")
 
     async def create_delegation(self, delegation: Delegation) -> None:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(delegation.investigation_id) as conn:
             await conn.execute(
                 """
                 INSERT INTO delegations (
@@ -1413,7 +1526,7 @@ class Store:
         skills: Sequence[str],
         finished_at: datetime,
     ) -> None:
-        async with self._pool.connection() as conn:
+        async with self._ledger_connection(reference=("delegations", delegation_id)) as conn:
             cursor = await conn.execute(
                 """
                 UPDATE delegations
@@ -1426,7 +1539,7 @@ class Store:
                 raise LookupError(f"委派调查不存在：{delegation_id}")
 
     async def list_delegations(self, investigation_id: str) -> list[Delegation]:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM delegations WHERE investigation_id = %s ORDER BY started_at, id",
                 (investigation_id,),
@@ -1435,7 +1548,7 @@ class Store:
         return [_delegation_from_row(row) for row in rows]
 
     async def count_failed_delegations(self, investigation_id: str) -> int:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute(
                 "SELECT count(*) AS failed_count FROM delegations "
                 "WHERE investigation_id = %s AND status = %s",
@@ -1448,7 +1561,9 @@ class Store:
 
     async def start_tool_request(self, request: ToolRequest) -> bool:
         """登记一次工具请求；同一 (investigation, tool_call_id) 只允许一个驱动者。"""
-        async with self._pool.connection() as conn:
+        if request.state in (ToolRequestState.ACTION_PENDING, ToolRequestState.ACTION_EXECUTED):
+            self._require_main_ledger()
+        async with self._ledger_connection(request.investigation_id) as conn:
             cursor = await conn.execute(
                 """
                 INSERT INTO tool_requests (
@@ -1471,7 +1586,7 @@ class Store:
     async def get_tool_request(
         self, investigation_id: str, tool_call_id: str
     ) -> ToolRequest | None:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute(
                 """
                 SELECT * FROM tool_requests
@@ -1494,7 +1609,13 @@ class Store:
         proposal_id: str | None = None,
         action_attempt_id: str | None = None,
     ) -> None:
-        async with self._pool.connection() as conn:
+        if (
+            state in (ToolRequestState.ACTION_PENDING, ToolRequestState.ACTION_EXECUTED)
+            or proposal_id is not None
+            or action_attempt_id is not None
+        ):
+            self._require_main_ledger()
+        async with self._ledger_connection(investigation_id) as conn:
             cursor = await conn.execute(
                 """
                 UPDATE tool_requests
@@ -1523,7 +1644,7 @@ class Store:
                 raise LookupError(f"工具请求不存在：{tool_call_id}")
 
     async def list_tool_requests(self, investigation_id: str) -> list[ToolRequest]:
-        async with self._pool.connection() as conn:
+        async with self._connection() as conn:
             cursor = await conn.execute(
                 """
                 SELECT * FROM tool_requests

@@ -84,7 +84,9 @@ def ids():
         )
         conn.execute("DELETE FROM investigations WHERE id = %s", (values["investigation"],))
         conn.execute("DELETE FROM incidents WHERE id = %s", (values["incident"],))
-        conn.execute("DELETE FROM checkpoints WHERE thread_id = %s", (values["investigation"],))
-        conn.execute(
-            "DELETE FROM checkpoint_writes WHERE thread_id = %s", (values["investigation"],)
-        )
+        for table in ("checkpoints", "checkpoint_writes", "checkpoint_blobs"):
+            # 取消或租约冲突可能发生在初始化 checkpoint 之前。
+            if conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()[0] is not None:
+                conn.execute(
+                    f"DELETE FROM {table} WHERE thread_id = %s", (values["investigation"],)
+                )
