@@ -45,6 +45,7 @@ from aiops.actions.executor import ActionExecutor
 from aiops.actions.policy import decide, target_key
 from aiops.actions.rollout_undo import ActionError
 from aiops.actions.safety import ActionSafety
+from aiops.agent.conversation import ConversationDriver
 from aiops.config import PROJECT_ROOT, Settings
 from aiops.contracts import ActionAttempt, ApprovalDecision, AttemptStatus, ProposalStatus
 from aiops.db import Store
@@ -339,6 +340,52 @@ def test_side_json_waits_for_its_own_input_and_keeps_main_card(child_env):
     assert _sql(child_env, "SELECT count(*) FROM session_inputs WHERE checkpoint_id IS NULL") == [
         (0,)
     ]
+
+
+def test_side_takeover_uses_bound_turn_before_delivery(child_env, tmp_path, monkeypatch):
+    card = _card_run(child_env)
+    session_id = card["session_id"]
+
+    async def run():
+        async with Store.open(child_env["VIGIL_DATABASE_URL"]) as store:
+            driver = ConversationDriver(
+                settings=Settings(
+                    _env_file=None,
+                    model_name="cli-test-model",
+                    runtime_dir=tmp_path,
+                    investigation_budget_seconds=5,
+                    investigation_budget_action_seconds=1,
+                ),
+                store=store,
+                toolbox=FakeToolbox(),
+                model=ScriptedChatModel(responses=[AIMessage(content=SIDE)]),
+            )
+            sessions = driver.sessions
+            enqueue = sessions.enqueue_input
+
+            async def bind_then_finish_main(*args, **kwargs):
+                incoming = await enqueue(*args, **kwargs)
+                side = await sessions.acquire_side_lease(session_id, "interrupted-side")
+                assert side is not None
+                await sessions.release_lease(side)
+                main = await sessions.acquire_main_lease(session_id, "finished-main")
+                assert main is not None
+                turn = await sessions.start_main_turn(main)
+                async with sessions.run(main, turn.id) as tx:
+                    await tx.set_turn_state("completed")
+                await sessions.release_lease(main)
+                assert (await sessions.get_session(session_id)).state == "idle"
+                assert (await sessions.get_input(incoming.id)).checkpoint_id is None
+                return incoming
+
+            monkeypatch.setattr(sessions, "enqueue_input", bind_then_finish_main)
+            outcome = await cli._drive_side_input(
+                driver, session_id, "主线完成后的旁路接手", cli.OnceOutput("json")
+            )
+            assert outcome.exit_code == 3
+            assert outcome.result.payload["side_question"] == "主线完成后的旁路接手"
+
+    asyncio.run(run())
 
 
 def test_closed_resume_reports_closure_after_historical_card(child_env):

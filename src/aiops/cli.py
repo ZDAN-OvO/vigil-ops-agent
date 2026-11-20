@@ -368,20 +368,24 @@ async def _drive_side_input(
     )
     cursor = incoming.queued_seq
     delivered_turn = None
-    delivered_lane = None
     while asyncio.get_running_loop().time() < deadline:
         async for event in _events(sessions, session_id, after=cursor):
             cursor = event.seq
             if event.type == "input_delivered" and event.payload.get("input_id") == incoming.id:
                 delivered_turn = event.turn_id
-                delivered_lane = event.payload["lane"]
             if event.type == "result" and delivered_turn and event.turn_id == delivered_turn:
                 return ConversationResult(event)
         session = await sessions.get_session(session_id)
         if session.state == "closed":
             return None
-        lane: TurnLane = delivered_lane or (
-            "side" if session.state == "awaiting_approval" else "main"
+        current_input = await sessions.get_input(incoming.id)
+        bound = (
+            await sessions.get_turn(current_input.turn_id)
+            if current_input is not None and current_input.turn_id
+            else None
+        )
+        lane: TurnLane = (
+            bound.lane if bound else "side" if session.state == "awaiting_approval" else "main"
         )
         with suppress(LeaseLost, SessionClosed, AwaitingActionReceipt):
             async with driver.claim(session_id, lane=lane) as run:
