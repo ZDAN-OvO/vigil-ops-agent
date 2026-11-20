@@ -23,6 +23,7 @@ from openai import (
 
 from aiops.agent.budget import BudgetExhausted
 from aiops.agent.context import AgentContext
+from aiops.sessions.models import LeaseLost
 
 RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 MAX_MODEL_ATTEMPTS = 5
@@ -109,11 +110,14 @@ class BudgetMiddleware(AgentMiddleware):
         while attempts <= self._max_retries:
             attempts += 1
             await ctx.budget.spend_model_call()
+            await ctx.ensure_active()
             timeout = ctx.budget.model_call_timeout(configured=self._timeout)
             try:
                 async with asyncio.timeout(timeout):
-                    return await handler(request)
-            except BudgetExhausted:
+                    response = await handler(request)
+                await ctx.ensure_active()
+                return response
+            except (BudgetExhausted, LeaseLost):
                 raise
             except Exception as exc:  # noqa: BLE001 - 只对可重试的瞬态错误重试
                 if not _retryable(exc):
@@ -175,7 +179,12 @@ class ActionBatchMiddleware(AgentMiddleware):
                     tool_call_id=str(tool_call.get("id")),
                     status="error",
                 )
-            if ctx.progress.recovered:
+            prior = None
+            if ctx.scope is not None and ctx.progress.recovered:
+                prior = await ctx.store.get_tool_request(
+                    ctx.investigation_id, str(tool_call.get("id") or "")
+                )
+            if ctx.progress.recovered and prior is None:
                 return ToolMessage(
                     content="业务已恢复，禁止新增动作；只能只读收尾并提交报告。",
                     name="request_action",
@@ -184,6 +193,7 @@ class ActionBatchMiddleware(AgentMiddleware):
                 )
         # 串行执行：同批工具按批内顺序进入，避免并行取证改变观测顺序。
         async with ctx.progress.tool_lock:
+            await ctx.ensure_active()
             return await handler(request)
 
 

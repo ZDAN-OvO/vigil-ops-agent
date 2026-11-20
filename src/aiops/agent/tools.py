@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any, Literal
 
 from langchain.tools import ToolRuntime
@@ -34,6 +36,7 @@ from aiops.agent.schemas import (
     ManageHypothesesArgs,
     RequestActionArgs,
 )
+from aiops.agent.session_runtime import CardActions, resume_token
 from aiops.contracts import (
     ActionAttempt,
     ActionOrigin,
@@ -52,6 +55,7 @@ from aiops.contracts import (
     ToolRequestState,
 )
 from aiops.investigation.toolbox import QueryRequest, observation
+from aiops.sessions.models import LeaseLost
 from aiops.tools.base import ToolContext
 
 READ_TOOLS = (
@@ -65,6 +69,8 @@ READ_TOOLS = (
     "knowledge_get_runbook",
 )
 
+READ_TOOL_KEYS = frozenset(name.replace("_", ".", 1) for name in READ_TOOLS)
+
 TERMINAL_LEDGER_STATES = frozenset(
     {
         ToolRequestState.OBSERVED,
@@ -73,6 +79,10 @@ TERMINAL_LEDGER_STATES = frozenset(
         ToolRequestState.REJECTED,
     }
 )
+
+
+def _public_call_id(call_id: str) -> str:
+    return sha256(call_id.encode()).hexdigest()[:24]
 
 
 def _dump(payload: Any) -> str:
@@ -116,6 +126,10 @@ async def _prepare_request(
         return ctx, "", _error("missing_tool_call_id", "工具调用缺少 ID，不能登记请求")
     existing = await ctx.store.get_tool_request(ctx.investigation_id, call_id)
     if existing is not None:
+        if ctx.scope is not None and (
+            existing.tool != tool_name or existing.arguments != arguments
+        ):
+            return ctx, call_id, _error("tool_call_mismatch", "请求 ID 已绑定其它工具参数")
         if existing.state is ToolRequestState.ACTION_PENDING:
             # 等待审批的请求在恢复时要走“读账本与提案”的分支，不能当作已完成重放。
             return ctx, call_id, None
@@ -123,8 +137,14 @@ async def _prepare_request(
         if isinstance(existing.result, dict):
             cached = existing.result.get("tool_message")
         if cached:
+            if ctx.scope is not None and existing.error_code == "budget_exhausted":
+                raise BudgetExhausted("tool_calls")
             return ctx, call_id, str(cached)
         if existing.state is ToolRequestState.RUNNING:
+            if ctx.scope is not None and tool_name != "request_action":
+                return ctx, call_id, None
+            if ctx.scope is not None:
+                return ctx, call_id, await _retire_unlinked_action(ctx, existing)
             attempt = (
                 await _attempt_for(ctx, existing.proposal_id) if existing.proposal_id else None
             )
@@ -154,36 +174,93 @@ async def _prepare_request(
                 ),
             )
         return ctx, call_id, cached
-    await ctx.store.start_tool_request(
-        ToolRequest(
-            investigation_id=ctx.investigation_id,
-            tool_call_id=call_id,
-            tool=tool_name,
-            arguments=arguments,
-            state=ToolRequestState.RUNNING,
-            started_at=datetime.now(UTC),
+    exhausted = None
+    async with ctx.ledger() as (ledger, tx):
+        await ledger.start_tool_request(
+            ToolRequest(
+                investigation_id=ctx.investigation_id,
+                tool_call_id=call_id,
+                tool=tool_name,
+                arguments=arguments,
+                state=ToolRequestState.RUNNING,
+                started_at=datetime.now(UTC),
+            )
         )
-    )
-    try:
-        await ctx.budget.spend_tool_call()
-    except BudgetExhausted as exc:
-        message = _dump(
-            {
-                "status": "not_started",
-                "code": "budget_exhausted",
-                "message": f"工具调用预算已耗尽：{exc.item}",
-                "note": "不能再取证；请立即用已有观测提交结构化报告。",
-            }
-        )
-        await _finish_request(
-            ctx,
-            call_id,
-            state=ToolRequestState.REJECTED,
-            message=message,
-            error_code="budget_exhausted",
-        )
+        if tx is not None and tool_name in READ_TOOL_KEYS:
+            await tx.append_event(
+                "tool_call",
+                {
+                    "id": _public_call_id(call_id),
+                    "tool": tool_name,
+                    "summary": "正在查询",
+                    "status": "running",
+                    "observation_id": None,
+                },
+            )
+        try:
+            await ctx.budget.spend_tool_call(ledger=ledger)
+        except BudgetExhausted as exc:
+            exhausted = exc
+            message = _dump(
+                {
+                    "status": "not_started",
+                    "code": "budget_exhausted",
+                    "message": f"工具调用预算已耗尽：{exc.item}",
+                    "note": "不能再取证；请立即用已有观测提交结构化报告。",
+                }
+            )
+            await _finish_request(
+                replace(ctx, store=ledger, active_transaction=tx),
+                call_id,
+                state=ToolRequestState.REJECTED,
+                message=message,
+                error_code="budget_exhausted",
+                query={"tool": tool_name, "status": "rejected"}
+                if tool_name in READ_TOOL_KEYS
+                else None,
+            )
+    if exhausted is not None:
+        if ctx.scope is not None:
+            raise exhausted
         return ctx, call_id, message
     return ctx, call_id, None
+
+
+async def _retire_unlinked_action(ctx: AgentContext, request: ToolRequest) -> str:
+    """准备提案返回以前中断时，收敛本次调用留下的未发布草稿。"""
+    executor = ctx.executor
+    if not isinstance(executor, CardActions):
+        raise RuntimeError("恢复准备动作需要支持会话租约的动作执行器")
+    await ctx.ensure_active()
+    linked = {item.proposal_id for item in await ctx.store.list_tool_requests(ctx.investigation_id)}
+    args = RequestActionArgs.model_validate(request.arguments)
+    target = args.target_pod if args.action == "restart_pod" else args.target_deployment
+    candidates = [
+        proposal
+        for proposal in await ctx.store.list_proposals_for_investigation(ctx.investigation_id)
+        if proposal.id not in linked
+        and proposal.origin is ActionOrigin.MODEL
+        and proposal.status in {ProposalStatus.PENDING_APPROVAL, ProposalStatus.APPROVED}
+        and proposal.kind.value == args.action
+        and proposal.target.name == target
+        and proposal.hypothesis_id == args.hypothesis_id
+        and proposal.evidence_ids == args.evidence_ids
+        and proposal.reason == args.reason
+        and await ctx.store.get_attempt(proposal.id) is None
+    ]
+    if len(candidates) > 1:
+        raise RuntimeError("发现多个未关联的动作草稿，需要核对提案账本")
+    if candidates:
+        await executor.abandon(candidates[0].id, actor="agent-runtime", reason="准备动作时驱动中断")
+    message = _error("prepare_interrupted", "动作准备中断，未取得发送权。可以继续只读调查。")
+    await _finish_request(
+        ctx,
+        request.tool_call_id,
+        state=ToolRequestState.REJECTED,
+        message=message,
+        error_code="prepare_interrupted",
+    )
+    return message
 
 
 async def _finish_request(
@@ -196,19 +273,43 @@ async def _finish_request(
     error_code: str | None = None,
     proposal_id: str | None = None,
     action_attempt_id: str | None = None,
+    observation_record: Observation | None = None,
+    query: dict[str, Any] | None = None,
 ) -> None:
     if not call_id:
         return
-    await ctx.store.finish_tool_request(
-        ctx.investigation_id,
-        call_id,
-        state=state,
-        result={"tool_message": message},
-        result_ref=result_ref,
-        error_code=error_code,
-        proposal_id=proposal_id,
-        action_attempt_id=action_attempt_id,
-    )
+    async with ctx.ledger() as (ledger, tx):
+        if observation_record is not None:
+            await ledger.save_observation(observation_record)
+        await ledger.finish_tool_request(
+            ctx.investigation_id,
+            call_id,
+            state=state,
+            result={"tool_message": message},
+            result_ref=result_ref,
+            error_code=error_code,
+            proposal_id=proposal_id,
+            action_attempt_id=action_attempt_id,
+        )
+        if tx is not None and query is not None:
+            status = query["status"]
+            await tx.append_event(
+                "tool_call",
+                {
+                    "id": _public_call_id(call_id),
+                    "tool": query["tool"],
+                    "summary": {
+                        "ok": "已取得观测",
+                        "empty": "未查询到数据",
+                        "error": "查询失败",
+                        "rejected": "预算不足，未发起查询",
+                    }[status],
+                    "status": status,
+                    "observation_id": observation_record.id if observation_record else None,
+                    "collected_at": query.get("collected_at"),
+                    "time_range": query.get("time_range"),
+                },
+            )
 
 
 def _tool_context(ctx: AgentContext) -> ToolContext:
@@ -240,8 +341,11 @@ async def _run_read(
     ctx, call_id, cached = await _prepare_request(runtime, tool_name, request.model_dump())
     if cached is not None:
         return cached
+    await ctx.ensure_active()
     try:
         result = await ctx.toolbox.run(_tool_context(ctx), ctx.window, request)
+    except LeaseLost:
+        raise
     except Exception as exc:  # noqa: BLE001 - 工具异常不能中断整轮，但要留失败记录
         logger.warning("只读工具异常：{} {}", tool_name, exc.__class__.__name__)
         message = _error("tool_exception", exc.__class__.__name__)
@@ -251,6 +355,7 @@ async def _run_read(
             state=ToolRequestState.FAILED,
             message=message,
             error_code="tool_exception",
+            query={"tool": tool_name, "status": "error"},
         )
         return message
     status = (
@@ -279,21 +384,20 @@ async def _run_read(
         "truncated": result.truncated,
         "error": result.error.model_dump() if result.error else None,
     }
+    record = None
     if result.error is None:
-        await ctx.store.save_observation(
-            Observation(
-                id=observation_id,
-                investigation_id=ctx.investigation_id,
-                tool_call_id=record_id,
-                source=result.source,
-                independence_key=f"{result.source}:{tool_name}",
-                summary=summary,
-                raw_ref=result.raw_ref or "",
-                status=status,
-                truncated=result.truncated,
-                delegation_id=CURRENT_DELEGATION.get(),
-                time_range=result.time_range,
-            )
+        record = Observation(
+            id=observation_id,
+            investigation_id=ctx.investigation_id,
+            tool_call_id=record_id,
+            source=result.source,
+            independence_key=f"{result.source}:{tool_name}",
+            summary=summary,
+            raw_ref=result.raw_ref or "",
+            status=status,
+            truncated=result.truncated,
+            delegation_id=CURRENT_DELEGATION.get(),
+            time_range=result.time_range,
         )
     if status is ObservationStatus.EMPTY:
         payload["note"] = "未取到数据；空结果不是反证，不能作为 refuting 依据。"
@@ -306,6 +410,7 @@ async def _run_read(
             message=message,
             error_code=result.error.code,
             result_ref=result.raw_ref,
+            query=payload,
         )
         return message
     await _finish_request(
@@ -314,6 +419,8 @@ async def _run_read(
         state=ToolRequestState.OBSERVED,
         message=message,
         result_ref=result.raw_ref,
+        observation_record=record,
+        query=payload,
     )
     ctx.progress.record(tool_name)
     if tool_name.startswith("knowledge."):
@@ -487,6 +594,20 @@ def _hypothesis_payload(hypothesis: Hypothesis, *, temp_id: str = "") -> dict[st
     }
 
 
+async def _record_hypothesis(ctx: AgentContext, item: dict[str, Any]) -> None:
+    if ctx.active_transaction is not None:
+        await ctx.active_transaction.append_event(
+            "hypothesis",
+            {
+                "id": item["id"],
+                "statement": ctx.scope.project_text(item["statement"]),
+                "status": item["status"],
+                "parent_id": item["parent_id"],
+            },
+        )
+    ctx.progress.record("hypothesis")
+
+
 async def _validate_parent(
     ctx: AgentContext,
     hypotheses: dict[str, Hypothesis],
@@ -526,6 +647,16 @@ async def manage_hypotheses(
     ctx, call_id, cached = await _prepare_request(runtime, "manage_hypotheses", payload)
     if cached is not None:
         return cached
+
+    async with ctx.ledger() as (ledger, tx):
+        return await _manage_hypotheses(
+            replace(ctx, store=ledger, active_transaction=tx), call_id, operations
+        )
+
+
+async def _manage_hypotheses(
+    ctx: AgentContext, call_id: str, operations: list[dict[str, Any]]
+) -> str:
     try:
         args = ManageHypothesesArgs(operations=operations)
     except ValidationError as exc:
@@ -585,7 +716,9 @@ async def manage_hypotheses(
             hypotheses[hypothesis.id] = hypothesis
             if operation.temp_id:
                 temp_map[operation.temp_id.strip()] = hypothesis.id
-            results.append(_hypothesis_payload(hypothesis, temp_id=operation.temp_id))
+            item = _hypothesis_payload(hypothesis, temp_id=operation.temp_id)
+            results.append(item)
+            await _record_hypothesis(ctx, item)
             continue
 
         target_id = operation.hypothesis_id.strip() or temp_map.get(operation.temp_id.strip(), "")
@@ -645,8 +778,9 @@ async def manage_hypotheses(
             update_parent=bool(parent_id),
         )
         hypotheses[updated.id] = updated
-        results.append(_hypothesis_payload(updated))
-        ctx.progress.record("hypothesis")
+        item = _hypothesis_payload(updated)
+        results.append(item)
+        await _record_hypothesis(ctx, item)
 
     message = _dump(
         {
@@ -657,7 +791,6 @@ async def manage_hypotheses(
         }
     )
     await _finish_request(ctx, call_id, state=ToolRequestState.OBSERVED, message=message)
-    ctx.progress.record("hypothesis")
     return message
 
 
@@ -680,6 +813,19 @@ async def assess_evidence(
     ctx, call_id, cached = await _prepare_request(runtime, "assess_evidence", payload)
     if cached is not None:
         return cached
+
+    async with ctx.ledger() as (ledger, tx):
+        return await _assess_evidence(
+            replace(ctx, store=ledger, active_transaction=tx), call_id, links, hypothesis_updates
+        )
+
+
+async def _assess_evidence(
+    ctx: AgentContext,
+    call_id: str,
+    links: list[dict[str, Any]],
+    hypothesis_updates: list[dict[str, Any]],
+) -> str:
     try:
         args = AssessEvidenceArgs(links=links, hypothesis_updates=hypothesis_updates)
     except ValidationError as exc:
@@ -753,6 +899,21 @@ async def assess_evidence(
                 error_code="knowledge_not_evidence",
             )
             return message
+    for update in args.hypothesis_updates:
+        if update.hypothesis_id not in hypotheses:
+            message = _error(
+                "unknown_hypothesis",
+                f"假设不存在或不属于本次调查：{update.hypothesis_id}",
+            )
+            await _finish_request(
+                ctx,
+                call_id,
+                state=ToolRequestState.FAILED,
+                message=message,
+                error_code="unknown_hypothesis",
+            )
+            return message
+    for link in args.links:
         await ctx.store.upsert_hypothesis_evidence(
             HypothesisEvidence(
                 id=f"he-{uuid.uuid4().hex[:12]}",
@@ -774,20 +935,7 @@ async def assess_evidence(
 
     updated_hypotheses: list[dict[str, Any]] = []
     for update in args.hypothesis_updates:
-        current = hypotheses.get(update.hypothesis_id)
-        if current is None:
-            message = _error(
-                "unknown_hypothesis",
-                f"假设不存在或不属于本次调查：{update.hypothesis_id}",
-            )
-            await _finish_request(
-                ctx,
-                call_id,
-                state=ToolRequestState.FAILED,
-                message=message,
-                error_code="unknown_hypothesis",
-            )
-            return message
+        current = hypotheses[update.hypothesis_id]
         updated = await ctx.store.update_hypothesis(
             current.id,
             statement=current.statement,
@@ -796,7 +944,6 @@ async def assess_evidence(
         )
         hypotheses[updated.id] = updated
         updated_hypotheses.append(_hypothesis_payload(updated))
-        ctx.progress.record("hypothesis")
 
     message = _dump(
         {
@@ -806,6 +953,11 @@ async def assess_evidence(
         }
     )
     await _finish_request(ctx, call_id, state=ToolRequestState.OBSERVED, message=message)
+    if ctx.active_transaction is not None:
+        for link in applied:
+            await ctx.active_transaction.append_event("evidence", link)
+    for item in updated_hypotheses:
+        await _record_hypothesis(ctx, item)
     return message
 
 
@@ -830,7 +982,7 @@ def _action_feedback(
     attempt: ActionAttempt | None,
     *,
     followup_ids: list[str],
-    write_sent: bool,
+    write_sent: bool | None,
 ) -> dict[str, Any]:
     verification = (attempt.verification if attempt else None) or {}
     disposition = decision.disposition.value if decision is not None else "recorded"
@@ -904,6 +1056,7 @@ async def _execute_and_feedback(
         )
     await ctx.budget.begin_action()
     try:
+        await ctx.ensure_active()
         attempt = await executor.execute_authorized(proposal.id, actor=actor)
     except ActionError as exc:
         attempt = await _attempt_for(ctx, proposal.id)
@@ -924,7 +1077,12 @@ async def _execute_and_feedback(
 
     followups = await _followup_ids(ctx, proposal.id)
     feedback = _action_feedback(
-        ctx, proposal, decision, attempt, followup_ids=followups, write_sent=True
+        ctx,
+        proposal,
+        decision,
+        attempt,
+        followup_ids=followups,
+        write_sent=_written(attempt) if ctx.scope is not None else True,
     )
     message = _dump(feedback)
     if (
@@ -1095,6 +1253,10 @@ async def request_action(
     ctx, call_id, cached = await _prepare_request(runtime, "request_action", args.model_dump())
     if cached is not None:
         return cached
+    existing = await ctx.store.get_tool_request(ctx.investigation_id, call_id)
+    if existing is not None and existing.state is ToolRequestState.ACTION_PENDING:
+        return await _resume_pending_action(ctx, call_id, existing)
+
     if ctx.progress.recovered:
         message = _error(
             "business_recovered",
@@ -1108,10 +1270,6 @@ async def request_action(
             error_code="business_recovered",
         )
         return message
-
-    existing = await ctx.store.get_tool_request(ctx.investigation_id, call_id)
-    if existing is not None and existing.state is ToolRequestState.ACTION_PENDING:
-        return await _resume_pending_action(ctx, call_id, existing)
 
     problem = await _validate_action_references(ctx, args)
     if problem is not None:
@@ -1131,8 +1289,8 @@ async def request_action(
     ctx.progress.ungrounded_actions = 0
 
     executor = ctx.executor
-    if executor is None:
-        message = _error("proposal_unavailable", "未配置动作执行器")
+    if executor is None or (ctx.scope is not None and not isinstance(executor, CardActions)):
+        message = _error("proposal_unavailable", "未接入受会话租约保护的动作执行器")
         await _finish_request(
             ctx,
             call_id,
@@ -1157,6 +1315,7 @@ async def request_action(
         "business_target": args.business_target,
         "observation_window_seconds": args.observation_window_seconds or None,
     }
+    await ctx.ensure_active()
     try:
         if args.action == "restart_pod":
             if not args.target_pod or not args.service:
@@ -1227,7 +1386,8 @@ async def request_action(
         )
         return message
 
-    if decision.disposition is RiskDisposition.AUTO and approval is not None:
+    automatic = decision.disposition is RiskDisposition.AUTO and approval is not None
+    if automatic and ctx.scope is None:
         message, _ = await _execute_and_feedback(ctx, proposal, decision, actor="model-agent")
         attempt = await _attempt_for(ctx, proposal.id)
         await _finish_request(
@@ -1267,7 +1427,6 @@ async def request_action(
 
     # 需要人工审批：先落账本与任务暂停状态，再中断等待。
     expires = approval.expires_at if approval is not None else None
-    await ctx.store.set_task_waiting(ctx.investigation_id, proposal_id=proposal.id)
     pause_payload = {
         "proposal_id": proposal.id,
         "kind": proposal.kind.value,
@@ -1277,20 +1436,33 @@ async def request_action(
         "reasons": decision.reasons,
         "expires_at": expires.isoformat() if expires else None,
     }
-    await _finish_request(
-        ctx,
-        call_id,
-        state=ToolRequestState.ACTION_PENDING,
-        message=_dump({"status": "waiting_approval", **pause_payload}),
-        proposal_id=proposal.id,
-    )
-    await ctx.budget.pause()
-    return _dump(interrupt(pause_payload))
+    async with ctx.ledger() as (ledger, tx):
+        await _finish_request(
+            replace(ctx, store=ledger, active_transaction=tx),
+            call_id,
+            state=ToolRequestState.ACTION_PENDING,
+            message=_dump({"status": "waiting_approval", "automatic": automatic, **pause_payload}),
+            proposal_id=proposal.id,
+        )
+        if not automatic:
+            await ledger.set_task_waiting(ctx.investigation_id, proposal_id=proposal.id)
+            await ctx.budget.pause(ledger=ledger)
+    if ctx.scope is None:
+        return _dump(interrupt(pause_payload))
+    pending = await ctx.store.get_tool_request(ctx.investigation_id, call_id)
+    return await _resume_pending_action(ctx, call_id, pending)
 
 
 async def _resume_pending_action(ctx: AgentContext, call_id: str, request: ToolRequest) -> str:
     """恢复进入工具：读账本与既有提案，不重新生成提案，也不重复执行。"""
     proposal_id = request.proposal_id or ""
+    if ctx.scope is not None:
+        pending = json.loads(request.result["tool_message"])
+        automatic = pending.pop("automatic")
+        pending.pop("status")
+        command = None if automatic else interrupt(pending)
+        return await _consume_card(ctx, call_id, proposal_id, command, automatic=automatic)
+
     proposal = await ctx.store.get_proposal(proposal_id) if proposal_id else None
     if proposal is None:
         message = _error("proposal_missing", f"账本记录的提案不存在：{proposal_id}")
@@ -1379,6 +1551,103 @@ async def _resume_pending_action(ctx: AgentContext, call_id: str, request: ToolR
         action_attempt_id=attempt.id if attempt else None,
     )
     return message
+
+
+async def _consume_card(
+    ctx: AgentContext, call_id: str, proposal_id: str, command: dict | None, *, automatic: bool
+) -> str:
+    executor = ctx.executor
+    if not isinstance(executor, CardActions):
+        raise RuntimeError("恢复卡片需要支持会话租约的动作执行器")
+    await ctx.ensure_active()
+    proposal = await ctx.store.get_proposal(proposal_id)
+    if proposal is None or proposal.investigation_id != ctx.investigation_id:
+        raise RuntimeError("中断点与提案的调查关联不一致")
+    attempt = await _attempt_for(ctx, proposal_id)
+    approval = (
+        await ctx.store.get_approval(proposal_id)
+        if automatic
+        else await executor.get_card_decision(proposal_id, session_id=ctx.scope.lease.session_id)
+    )
+    # 在途收敛由动作模块负责。仅既有终态回执可直接回放。
+    token = resume_token(proposal, attempt, approval)
+    if not automatic and (command is None or command.get("proposal_id") != proposal_id):
+        raise RuntimeError("恢复值与中断点不一致")
+    owns_decision = automatic or (token is not None and command.get("decision_id") == token)
+    if not owns_decision:
+        raise RuntimeError("恢复值未引用持久化决定或终态")
+
+    if attempt is not None:
+        if (
+            attempt.status is AttemptStatus.VERIFIED
+            and (attempt.verification or {}).get("outcome") == AttemptOutcome.IMPROVED.value
+        ):
+            ctx.progress.recovered = True
+            await ctx.store.record_recovery(ctx.investigation_id, at=datetime.now(UTC))
+        feedback = _action_feedback(
+            ctx,
+            proposal,
+            None,
+            attempt,
+            followup_ids=await _followup_ids(ctx, proposal.id),
+            write_sent=_written(attempt),
+        )
+        feedback["status"] = "replayed"
+        message = _dump(feedback)
+        await _finish_request(
+            ctx,
+            call_id,
+            state=ToolRequestState.ACTION_EXECUTED,
+            message=message,
+            proposal_id=proposal_id,
+            action_attempt_id=attempt.id,
+        )
+    elif (
+        proposal.status is ProposalStatus.APPROVED
+        and approval is not None
+        and (approval.decision.value == "approved")
+    ):
+        message, _ = await _execute_and_feedback(ctx, proposal, None, actor=approval.actor)
+        attempt = await _attempt_for(ctx, proposal_id)
+        await _finish_request(
+            ctx,
+            call_id,
+            state=ToolRequestState.ACTION_EXECUTED,
+            message=message,
+            proposal_id=proposal_id,
+            action_attempt_id=attempt.id if attempt else None,
+        )
+    else:
+        message = _dump(
+            {
+                "status": proposal.status.value,
+                "proposal_id": proposal_id,
+                "write_sent": False,
+                "reason": approval.reason if approval is not None else "提案已结束",
+                "note": "停止本次动作。可以继续只读调查，不得为规避决定重提同一动作。",
+            }
+        )
+        await _finish_request(
+            ctx,
+            call_id,
+            state=ToolRequestState.REJECTED,
+            message=message,
+            proposal_id=proposal_id,
+        )
+    ctx.progress.record("action")
+    return message
+
+
+def _written(attempt: ActionAttempt) -> bool | None:
+    evidence = attempt.result or {}
+    value = evidence.get("written", evidence.get("write_sent"))
+    if isinstance(value, bool):
+        return value
+    if attempt.status is AttemptStatus.VERIFIED:
+        return True
+    if attempt.status.value in {"intent", "voided"}:
+        return False
+    return None
 
 
 __all__ = [
