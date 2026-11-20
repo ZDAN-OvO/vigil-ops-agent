@@ -8,9 +8,15 @@ import pytest
 from db_env import DSN, TEST_REASON
 
 
+class ActionCleanup(list[str]):
+    def __init__(self):
+        super().__init__()
+        self.sessions: list[str] = []
+
+
 @pytest.fixture
 def cleanup():
-    ids: list[str] = []
+    ids = ActionCleanup()
     started_at = datetime.now(UTC)
     yield ids
     with psycopg.connect(DSN) as conn:
@@ -31,6 +37,24 @@ def cleanup():
             conn.execute("DELETE FROM approvals WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM audit_events WHERE correlation_id = %s", (proposal_id,))
             conn.execute("DELETE FROM action_proposals WHERE id = %s", (proposal_id,))
+
+        for session_id in ids.sessions:
+            for table in ("checkpoints", "checkpoint_writes", "checkpoint_blobs"):
+                conn.execute(f"DELETE FROM {table} WHERE thread_id = %s", (session_id,))
+            conn.execute(
+                "DELETE FROM session_events WHERE session_id = %s AND turn_id IS NOT NULL",
+                (session_id,),
+            )
+            conn.execute(
+                "UPDATE session_inputs SET turn_id = NULL, checkpoint_id = NULL, "
+                "delivered_step = NULL "
+                "WHERE session_id = %s",
+                (session_id,),
+            )
+            conn.execute("DELETE FROM session_turns WHERE session_id = %s", (session_id,))
+            conn.execute("DELETE FROM session_inputs WHERE session_id = %s", (session_id,))
+            conn.execute("DELETE FROM session_events WHERE session_id = %s", (session_id,))
+            conn.execute("DELETE FROM sessions WHERE id = %s", (session_id,))
 
 
 @pytest.fixture

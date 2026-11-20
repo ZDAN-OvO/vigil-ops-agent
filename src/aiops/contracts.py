@@ -300,10 +300,12 @@ class ProposalStatus(StrEnum):
     FAILED = "failed"
     UNKNOWN = "unknown"
     EXPIRED = "expired"
+    VOIDED = "voided"
 
 
 class AttemptStatus(StrEnum):
     INTENT = "intent"
+    VOIDED = "voided"
     EXECUTING = "executing"
     VERIFIED = "verified"
     FAILED = "failed"
@@ -349,6 +351,8 @@ class ActionProposal(Contract):
     prediction: str = ""
     observation_conditions: dict[str, Any] = Field(default_factory=dict)
     observation_window_seconds: int | None = None
+    session_id: str | None = None
+    session_turn_id: str | None = None
 
     @model_validator(mode="after")
     def automatic_proposal_needs_evidence(self) -> Self:
@@ -362,6 +366,7 @@ class ActionAttempt(Contract):
     proposal_id: str
     status: AttemptStatus
     idempotency_key: str
+    send_granted_at: AwareDatetime | None = None
     snapshot: dict[str, Any]
     request: dict[str, Any]
     started_at: AwareDatetime
@@ -404,6 +409,7 @@ class Approval(Contract):
     reason: str
     decided_at: AwareDatetime
     expires_at: AwareDatetime | None = None
+    revoked_at: AwareDatetime | None = None
 
 
 class RiskDisposition(StrEnum):

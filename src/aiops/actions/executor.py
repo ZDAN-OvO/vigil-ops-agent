@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import math
 import time
 import uuid
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,7 +16,15 @@ from loguru import logger
 from aiops.actions.outcome import SampleSummary, classify_outcome
 from aiops.actions.policy import decide, target_key
 from aiops.actions.restart_pod import PodPlan, PodRestartAdapter
-from aiops.actions.rollout_undo import ActionError, RolloutUndoAdapter
+from aiops.actions.rollout_undo import ActionError, RolloutPlan, RolloutUndoAdapter
+from aiops.actions.safety import (
+    ACTION_HEARTBEAT_SECONDS,
+    ActionSafety,
+    Reservation,
+)
+from aiops.actions.safety import (
+    proposal_hash as proposal_hash,
+)
 from aiops.contracts import (
     ActionAttempt,
     ActionFollowup,
@@ -30,13 +37,14 @@ from aiops.contracts import (
     ApprovalDecision,
     AttemptOutcome,
     AttemptStatus,
-    AuditEvent,
     ProposalStatus,
     RiskDecision,
     RiskDisposition,
     TimeRange,
 )
-from aiops.db import DuplicateAttempt, DuplicateProposal, Store
+from aiops.db import DuplicateProposal, Store
+from aiops.sessions.models import Lease, LeaseLost, SessionEvent
+from aiops.sessions.projection import project_text
 from aiops.tools.base import ToolContext
 from aiops.tools.prometheus import PrometheusClient
 
@@ -155,18 +163,6 @@ def _execution_status(
     return AttemptStatus.FAILED, ProposalStatus.FAILED
 
 
-def proposal_hash(proposal: ActionProposal) -> str:
-    payload = {
-        "id": proposal.id,
-        "kind": proposal.kind.value,
-        "target": proposal.target.model_dump(mode="json"),
-        "parameters": proposal.parameters,
-        "idempotency_key": proposal.idempotency_key,
-    }
-    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
 def _min_samples_for(verify_seconds: float, sample_seconds: float) -> int:
     """后段取 2–3 个样本；135 秒窗口用 3 个，避免单个预热失败否定恢复。"""
     samples = int(verify_seconds // max(1, sample_seconds))
@@ -192,6 +188,9 @@ class ActionExecutor:
         verify_grace_seconds: float | None = None,
         probe_expression: str = 'probe_http_status_code{job="frontend-probe"}',
         io_timeout_seconds: float = 10.0,
+        session_lease: Lease | None = None,
+        session_turn_id: str | None = None,
+        web_url: str | None = None,
     ) -> None:
         self._store = store
         self._adapter = adapter
@@ -203,7 +202,11 @@ class ActionExecutor:
         self._rollout_timeout = rollout_timeout_seconds
         self._verify_seconds = verify_seconds
         self._sample_seconds = sample_seconds
-        self._approval_ttl = approval_ttl_seconds
+        self._session_lease = session_lease
+        self._session_turn_id = session_turn_id
+        self._safety = ActionSafety(
+            store, web_url=web_url, approval_ttl_seconds=approval_ttl_seconds
+        )
         self._verify_delay = (
             float(verify_seconds) if verify_delay_seconds is None else verify_delay_seconds
         )
@@ -267,6 +270,7 @@ class ActionExecutor:
         observation_window_seconds: int | None = None,
     ) -> tuple[ActionProposal, RiskDecision, Approval | None]:
         """只做读检查与提案落库；不写集群，自动授权也只落库不执行。"""
+        self._scope()
         namespace = namespace or self._namespace
         window = self._purpose_window(
             purpose, prediction, absence_meaning, business_target, observation_window_seconds
@@ -283,18 +287,13 @@ class ActionExecutor:
                 uid=plan.deployment_uid,
                 resource_version=plan.resource_version,
             ),
-            parameters={
-                "from_revision": plan.current_revision,
-                "to_revision": plan.target_revision,
-                "target_image": plan.target_image,
-                "from_memory_limit": plan.current_memory_limit,
-                "to_memory_limit": plan.target_memory_limit,
-                "workload": plan.deployment_uid,
-            },
+            parameters=plan.approved_parameters(),
             idempotency_key=f"{plan.deployment_uid}:{plan.current_revision}",
             reason=reason,
             origin=origin,
             investigation_id=investigation_id,
+            session_id=self._session_lease.session_id if self._session_lease else None,
+            session_turn_id=self._session_turn_id,
             evidence_ids=evidence_ids or [],
             created_at=datetime.now(UTC),
             purpose=purpose,
@@ -305,11 +304,12 @@ class ActionExecutor:
                 "absence_meaning": absence_meaning,
                 "business_target": business_target,
                 "window_seconds": window,
+                "verification_plan": self._verification_plan(ActionKind.ROLLOUT_UNDO),
             },
             observation_window_seconds=window,
         )
         key = target_key(self._cluster, namespace, "Deployment", deployment)
-        decision = decide(proposal, target_busy=await self._store.target_is_locked(key))
+        decision = decide(proposal, target_busy=await self._safety.target_is_locked(key))
         proposal = proposal.model_copy(update={"status": _initial_status(decision)})
         approval = await self._persist(proposal, decision)
         await self._audit_safe(
@@ -387,6 +387,7 @@ class ActionExecutor:
         observation_window_seconds: int | None = None,
     ) -> tuple[ActionProposal, RiskDecision, Approval | None]:
         """读真实目标、验证适用性并落提案；不写集群。"""
+        self._scope()
         namespace = namespace or self._namespace
         window = self._purpose_window(
             purpose, prediction, absence_meaning, business_target, observation_window_seconds
@@ -413,6 +414,8 @@ class ActionExecutor:
                 "pod": plan.name,
                 "replica_set": plan.owner_name,
                 "owner_kind": plan.owner_kind,
+                "owner_uid": plan.owner_uid,
+                "spec_hash": plan.spec_hash,
                 "workload": workload,
                 "workload_name": plan.workload_name,
                 "discardable": plan.discardable,
@@ -426,6 +429,8 @@ class ActionExecutor:
             reason=reason,
             origin=origin,
             investigation_id=investigation_id,
+            session_id=self._session_lease.session_id if self._session_lease else None,
+            session_turn_id=self._session_turn_id,
             evidence_ids=evidence_ids or [],
             created_at=datetime.now(UTC),
             purpose=purpose,
@@ -436,13 +441,14 @@ class ActionExecutor:
                 "absence_meaning": absence_meaning,
                 "business_target": business_target or f"{service}{path}",
                 "window_seconds": window,
+                "verification_plan": self._verification_plan(ActionKind.RESTART_POD),
             },
             observation_window_seconds=window,
         )
         key = target_key(self._cluster, namespace, "Pod", plan.name)
         decision = decide(
             proposal,
-            target_busy=await self._store.target_is_locked(key),
+            target_busy=await self._safety.target_is_locked(key),
             # 同一工作负载最近一次执行未成功时不再自动放行。
             prior_auto_failure=await self._store.latest_proposal_blocks_auto(
                 self._cluster, namespace, workload, plan.owner_name or ""
@@ -465,6 +471,27 @@ class ActionExecutor:
             },
         )
         return proposal, decision, approval
+
+    def _verification_plan(self, kind: ActionKind) -> dict[str, Any]:
+        common = {
+            "window_seconds": self._verify_seconds,
+            "sample_seconds": self._sample_seconds,
+            "ready_timeout_seconds": self._rollout_timeout,
+            "minimum_samples": self._min_samples,
+        }
+        if kind is ActionKind.ROLLOUT_UNDO:
+            return {
+                **common,
+                "method": "prometheus",
+                "expression": self._probe_expression,
+                "grace_seconds": self._verify_grace,
+                "delay_seconds": self._verify_delay,
+            }
+        return {
+            **common,
+            "method": "pod_http_and_service_endpoints",
+            "grace_seconds": min(5.0, self._verify_grace),
+        }
 
     def _purpose_window(
         self,
@@ -582,304 +609,170 @@ class ActionExecutor:
         )
         return float(max(restart, rollout))
 
+    def _scope(self) -> tuple[Lease, str]:
+        lease, turn_id = self._session_lease, self._session_turn_id
+        if lease is None or turn_id is None or lease.side_turn_id is not None:
+            raise ActionError("scope_required", "动作需要持有有效的主线会话租约")
+        return lease, turn_id
+
+    async def publish_card(self, proposal_id: str, *, lease: Lease, turn_id: str) -> SessionEvent:
+        return await self._safety.publish_card(proposal_id, lease=lease, turn_id=turn_id)
+
+    async def get_card_decision(self, proposal_id: str, *, session_id: str) -> Approval | None:
+        return await self._safety.get_card_decision(proposal_id, session_id=session_id)
+
     async def execute_authorized(
         self, proposal_id: str, *, actor: str = "operator"
     ) -> ActionAttempt:
-        """执行已授权提案；重新校验授权、有效期、提案哈希与目标。"""
+        """通过主线轮次领取处置；接手时只读原尝试的回执。"""
+        lease, turn_id = self._scope()
+        while True:
+            reservation, receipt = await self._safety.reserve(
+                proposal_id,
+                lease=lease,
+                turn_id=turn_id,
+            )
+            if reservation is not None:
+                break
+            assert receipt is not None
+            if receipt.status is not AttemptStatus.EXECUTING:
+                return receipt
+            # 会话可被接手，仍由原发送者验证并续持动作锁。
+            await asyncio.sleep(1)
         proposal = await self._store.get_proposal(proposal_id)
-        if proposal is None:
-            raise ActionError("not_found", f"提案不存在：{proposal_id}")
-        if await self._store.get_attempt(proposal_id) is not None:
-            raise ActionError("already_executed", "提案已有执行记录，不重复写")
-        approval = await self._store.get_approval(proposal_id)
-        if approval is None or approval.decision is not ApprovalDecision.APPROVED:
-            raise ActionError("no_approval", "找不到有效的批准记录，不能执行")
-        if proposal.status is not ProposalStatus.APPROVED:
-            raise ActionError("not_approved", f"提案状态为 {proposal.status.value}，不能继续执行")
-        await self._audit(
-            proposal.id,
-            actor,
-            "action.execution_requested",
-            {"approval_id": approval.id},
-        )
-        return await self._execute(proposal, approval)
+        assert proposal is not None
+        heartbeat = asyncio.create_task(self._heartbeat(reservation))
+        try:
+            if proposal.target.cluster != self._cluster:
+                raise ActionError("cluster_mismatch", "当前集群与批准目标不一致")
+            approval = await self._store.get_approval(proposal_id)
+            if (
+                approval is None
+                or approval.decision is not ApprovalDecision.APPROVED
+                or approval.revoked_at is not None
+            ):
+                raise ActionError("no_approval", "找不到匹配当前提案的有效批准")
+            if approval.proposal_hash != proposal_hash(proposal):
+                raise ActionError("hash_mismatch", "审批后提案内容已变化")
+            if proposal.observation_conditions.get("verification_plan") != self._verification_plan(
+                proposal.kind
+            ):
+                raise ActionError("verification_changed", "当前验证配置与卡片不一致，需重新提案")
+            await self._require_approval_current(approval)
+            await self._audit(
+                proposal_id, actor, "action.execution_requested", {"approval_id": approval.id}
+            )
+            if proposal.kind is ActionKind.RESTART_POD:
+                return await self._execute_restart(proposal, approval, reservation)
+            if proposal.kind is ActionKind.ROLLOUT_UNDO:
+                return await self._execute_rollout(proposal, approval, reservation)
+            raise ActionError("policy_denied", "动作类型不受支持")
+        except ActionError as exc:
+            # 失败与关闭、失租、恢复竞争时，原驱动不能覆盖已持久化的状态。
+            status = "expired" if exc.code == "expired" else "failed"
+            with suppress(ActionError, LeaseLost):
+                await self._safety.fail_unsent(reservation, status=status, code=exc.code)
+            raise
+        except Exception as exc:  # noqa: BLE001 - 基础设施异常只能结束已确认未发送的动作
+            with suppress(Exception):
+                await self._safety.fail_unsent(
+                    reservation, status="failed", code=type(exc).__name__
+                )
+            raise
+        finally:
+            heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat
+
+    async def _require_approval_current(self, approval: Approval) -> None:
+        if not await self._safety.authorization_current(approval.id):
+            raise ActionError("expired", "批准已过期，需重新提案")
+
+    async def _heartbeat(self, reservation: Reservation) -> None:
+        try:
+            while True:
+                await asyncio.sleep(ACTION_HEARTBEAT_SECONDS)
+                if not await self._safety.renew(reservation):
+                    return
+        except Exception as exc:  # noqa: BLE001 - 写权限由数据库事务判定
+            logger.warning("动作续锁失败：{}", type(exc).__name__)
 
     async def _persist(self, proposal: ActionProposal, decision: RiskDecision) -> Approval | None:
-        """自动允许时提案与授权同事务写入；返回随提案一起落库的授权。"""
-        if decision.disposition is not RiskDisposition.AUTO:
-            try:
-                await self._store.save_proposal(proposal, decision)
-            except DuplicateProposal as exc:
-                raise ActionError("duplicate", str(exc)) from exc
-            return None
-        decided_at = datetime.now(UTC)
-        approval = Approval(
-            id=f"apr-{uuid.uuid4().hex[:12]}",
-            proposal_id=proposal.id,
-            proposal_hash=proposal_hash(proposal),
-            actor=f"policy:{decision.policy_version}",
-            decision=ApprovalDecision.APPROVED,
-            reason="自动允许：" + "；".join(decision.reasons),
-            decided_at=decided_at,
-            expires_at=decided_at + timedelta(seconds=self._approval_ttl),
-        )
+        lease, turn_id = self._scope()
         try:
-            await self._store.save_proposal_with_approval(proposal, decision, approval)
+            return await self._safety.save(
+                proposal,
+                decision,
+                lease=lease,
+                turn_id=turn_id,
+                auto_actor=f"policy:{decision.policy_version}"
+                if decision.disposition is RiskDisposition.AUTO
+                else None,
+            )
         except DuplicateProposal as exc:
             raise ActionError("duplicate", str(exc)) from exc
-        return approval
 
     async def _after_decision(
         self, proposal: ActionProposal, decision: RiskDecision, approval: Approval | None
     ) -> tuple[ActionProposal, RiskDecision]:
-        """自动允许的提案当场执行；其余原样返回，等待人工审批。"""
         if approval is None:
             return proposal, decision
-        await self._auto_execute(proposal, decision, approval)
+        try:
+            await self.execute_authorized(proposal.id, actor=approval.actor)
+        except ActionError as exc:
+            raise AutoExecutionError(exc.code, exc.message, proposal.id) from exc
+        except Exception as exc:  # noqa: BLE001 - 保留已持久化的提案 ID
+            raise AutoExecutionError("auto_execute_error", type(exc).__name__, proposal.id) from exc
         refreshed = await self._store.get_proposal(proposal.id)
         return (refreshed or proposal), decision
-
-    async def _auto_execute(
-        self, proposal: ActionProposal, decision: RiskDecision, approval: Approval
-    ) -> None:
-        """授权已与提案一起落库；这里只记审计并走同一执行链。"""
-        await self._audit_safe(
-            proposal.id,
-            approval.actor,
-            "action.auto_approved",
-            {
-                "approval_id": approval.id,
-                "policy_version": decision.policy_version,
-                "reasons": decision.reasons,
-            },
-        )
-        try:
-            await self._execute(proposal, approval)
-        except ActionError as exc:
-            # 提案已持久化且授权仍有效，人工可用 resume 继续；错误交给调用方。
-            await self._audit_safe(
-                proposal.id, "action-executor", "action.auto_blocked", {"code": exc.code}
-            )
-            raise AutoExecutionError(exc.code, exc.message, proposal.id) from exc
-        except Exception as exc:  # noqa: BLE001 - 已落库的提案必须有可追踪的失败上下文
-            await self._audit_safe(
-                proposal.id,
-                "action-executor",
-                "action.auto_blocked",
-                {"code": exc.__class__.__name__},
-            )
-            raise AutoExecutionError(
-                "auto_execute_error", exc.__class__.__name__, proposal.id
-            ) from exc
 
     async def _audit_safe(
         self, proposal_id: str, actor: str, event: str, payload: dict[str, Any]
     ) -> None:
-        """审计失败不能把已经落库的提案变成“不知道有没有提案”。"""
         try:
             await self._audit(proposal_id, actor, event, payload)
-        except Exception as exc:  # noqa: BLE001 - 保留提案 ID 比丢审计更重要
-            logger.warning("自动执行审计写入失败：{}", exc)
-
-    async def approve(
-        self, proposal_id: str, *, actor: str, reason: str = "", defer: bool = False
-    ) -> ActionAttempt | None:
-        """记录批准；默认立即执行，defer 时只留下可跨进程继续的授权。"""
-        approval = await self._record_decision(
-            proposal_id, actor=actor, reason=reason, decision=ApprovalDecision.APPROVED
-        )
-        if defer:
-            return None
-        proposal = await self._store.get_proposal(proposal_id)
-        if proposal is None:
-            raise ActionError("not_found", f"提案不存在：{proposal_id}")
-        return await self._execute(proposal, approval)
-
-    async def reject(self, proposal_id: str, *, actor: str, reason: str = "") -> ActionProposal:
-        await self._record_decision(
-            proposal_id, actor=actor, reason=reason, decision=ApprovalDecision.REJECTED
-        )
-        proposal = await self._store.get_proposal(proposal_id)
-        if proposal is None:
-            raise LookupError(f"提案不存在：{proposal_id}")
-        return proposal
+        except Exception as exc:  # noqa: BLE001 - 记录标识已持久化
+            logger.warning("动作审计写入失败：{}", type(exc).__name__)
 
     async def abandon(self, proposal_id: str, *, actor: str, reason: str) -> ActionProposal:
-        """把未执行的提案标记为拒绝，释放同一目标版本的幂等键。
-
-        用于审批后预算或前提不再满足、任务已终止的情形：没有写请求，也不应
-        继续占用 `idempotency_key` 阻止新的提案。
-        """
-        proposal = await self._store.get_proposal(proposal_id)
-        if proposal is None:
-            raise ActionError("not_found", f"提案不存在：{proposal_id}")
-        if await self._store.get_attempt(proposal_id) is not None:
-            raise ActionError("already_executed", "提案已有执行记录，不能放弃")
-        if proposal.status in {ProposalStatus.REJECTED, ProposalStatus.EXPIRED}:
-            return proposal
-        await self._store.set_proposal_status(proposal_id, ProposalStatus.REJECTED)
-        await self._audit(
+        lease, turn_id = self._scope()
+        return await self._safety.abandon(
             proposal_id,
-            actor,
-            "action.abandoned",
-            {"reason": reason, "previous_status": proposal.status.value},
-        )
-        saved = await self._store.get_proposal(proposal_id)
-        if saved is None:
-            raise LookupError(f"提案不存在：{proposal_id}")
-        return saved
-
-    async def resume(self, proposal_id: str, *, actor: str = "operator") -> ActionAttempt:
-        """继续执行已批准但尚未执行的提案；重新校验授权、有效期与目标。"""
-        proposal = await self._store.get_proposal(proposal_id)
-        if proposal is None:
-            raise ActionError("not_found", f"提案不存在：{proposal_id}")
-        if await self._store.get_attempt(proposal_id) is not None:
-            raise ActionError("already_executed", "提案已有执行记录，不重复写")
-        if proposal.status is not ProposalStatus.APPROVED:
-            raise ActionError("not_approved", f"提案状态为 {proposal.status.value}，不能继续执行")
-        approval = await self._store.get_approval(proposal_id)
-        if approval is None or approval.decision is not ApprovalDecision.APPROVED:
-            raise ActionError("no_approval", "找不到有效的批准记录，不能执行")
-        await self._audit(proposal.id, actor, "action.resumed", {"approval_id": approval.id})
-        return await self._execute(proposal, approval)
-
-    async def _record_decision(
-        self, proposal_id: str, *, actor: str, reason: str, decision: ApprovalDecision
-    ) -> Approval:
-        proposal = await self._require_pending(proposal_id)
-        target = (
-            ProposalStatus.APPROVED
-            if decision is ApprovalDecision.APPROVED
-            else ProposalStatus.REJECTED
-        )
-        # 状态迁移是唯一入口：并发审批只有一个进程抢到 pending → approved／rejected。
-        if not await self._store.transition_proposal(
-            proposal_id, expected=ProposalStatus.PENDING_APPROVAL, target=target
-        ):
-            current = await self._store.get_proposal(proposal_id)
-            status = current.status.value if current is not None else "missing"
-            raise ActionError("not_pending", f"提案状态为 {status}，不能审批")
-        decided_at = datetime.now(UTC)
-        approval = Approval(
-            id=f"apr-{uuid.uuid4().hex[:12]}",
-            proposal_id=proposal.id,
-            proposal_hash=proposal_hash(proposal),
+            lease=lease,
+            turn_id=turn_id,
             actor=actor,
-            decision=decision,
             reason=reason,
-            decided_at=decided_at,
-            expires_at=(
-                decided_at + timedelta(seconds=self._approval_ttl)
-                if decision is ApprovalDecision.APPROVED
-                else None
-            ),
         )
-        await self._store.save_approval(approval)
-        await self._audit(
-            proposal.id,
-            actor,
-            f"action.{decision.value}",
-            {
-                "approval_id": approval.id,
-                "proposal_hash": approval.proposal_hash,
-                "expires_at": approval.expires_at.isoformat() if approval.expires_at else None,
-            },
+
+    async def _rollback_plan(self, proposal: ActionProposal) -> RolloutPlan:
+        target = proposal.target
+        plan = await asyncio.to_thread(self._adapter.plan, target.namespace, target.name)
+        if (plan.deployment_uid, plan.resource_version) != (
+            target.uid,
+            target.resource_version,
+        ) or plan.approved_parameters() != proposal.parameters:
+            raise ActionError("drift", "审批后 Deployment 或历史 ReplicaSet 模板已变化")
+        return plan
+
+    async def _execute_rollout(
+        self,
+        proposal: ActionProposal,
+        approval: Approval,
+        reservation: Reservation,
+    ) -> ActionAttempt:
+        await self._rollback_plan(proposal)
+        # 写前采集业务基线，并核对期间目标与历史模板是否漂移。
+        baseline = await self._business_baseline()
+        plan = await self._rollback_plan(proposal)
+        await self._require_approval_current(approval)
+        await asyncio.to_thread(
+            self._adapter.apply,
+            plan,
+            dry_run=True,
+            proposal_id=proposal.id,
         )
-        return approval
-
-    async def _require_pending(self, proposal_id: str) -> ActionProposal:
-        proposal = await self._store.get_proposal(proposal_id)
-        if proposal is None:
-            raise ActionError("not_found", f"提案不存在：{proposal_id}")
-        if proposal.status is not ProposalStatus.PENDING_APPROVAL:
-            raise ActionError("not_pending", f"提案状态为 {proposal.status.value}，不能审批")
-        return proposal
-
-    async def _execute(self, proposal: ActionProposal, approval: Approval) -> ActionAttempt:
-        if await self._store.get_attempt(proposal.id) is not None:
-            raise ActionError("already_executed", "提案已有执行记录，不重复写")
-        if approval.decision is not ApprovalDecision.APPROVED:
-            raise ActionError("no_approval", "拒绝记录不能用于执行")
-        if approval.expires_at is not None and datetime.now(UTC) > approval.expires_at:
-            raise await self._fail(
-                proposal, "expired", "审批已过期，需重新提案", ProposalStatus.EXPIRED
-            )
-        if approval.proposal_hash != proposal_hash(proposal):
-            raise await self._fail(proposal, "hash_mismatch", "审批后提案内容已变化，授权失效")
-
-        key = target_key(
-            proposal.target.cluster,
-            proposal.target.namespace,
-            proposal.target.kind,
-            proposal.target.name,
-        )
-        if not await self._store.acquire_lock(key, proposal.id):
-            # 目标忙不是本提案的失败，保留原状态，避免覆盖正在执行的进程。
-            await self._audit(
-                proposal.id, "action-executor", "action.blocked", {"code": "target_busy"}
-            )
-            raise ActionError("target_busy", "目标已有未完成的执行，本次不重放")
-        try:
-            if proposal.kind is ActionKind.RESTART_POD:
-                return await self._execute_restart(proposal, approval)
-            return await self._execute_rollout(proposal, approval)
-        finally:
-            await self._store.release_lock(key, proposal.id)
-
-    async def _execute_rollout(self, proposal: ActionProposal, approval: Approval) -> ActionAttempt:
-        try:
-            plan = await asyncio.to_thread(
-                self._adapter.plan, proposal.target.namespace, proposal.target.name
-            )
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-
-        if (
-            plan.deployment_uid != proposal.target.uid
-            or plan.resource_version != proposal.target.resource_version
-        ):
-            raise await self._fail(proposal, "drift", "审批后目标资源已变化，需重新提案")
-
-        # 没有动作前基线就无法判断执行后是没改善还是变差，必须在写操作之前拿到。
-        try:
-            baseline = await self._business_baseline()
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-
-        # 基线窗口很长，期间目标可能漂移或授权过期，写前必须再核对一次。
-        try:
-            plan = await asyncio.to_thread(
-                self._adapter.plan, proposal.target.namespace, proposal.target.name
-            )
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-        if (
-            plan.deployment_uid != proposal.target.uid
-            or plan.resource_version != proposal.target.resource_version
-        ):
-            raise await self._fail(proposal, "drift", "基线期间目标资源已变化，需重新提案")
-        await self._require_approval_valid(proposal, approval)
-
-        # dry-run 不是写操作；通过后再用最终状态核对一次，才落执行意图。
-        try:
-            await asyncio.to_thread(
-                self._adapter.apply, plan, dry_run=True, proposal_id=proposal.id
-            )
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-        try:
-            plan = await asyncio.to_thread(
-                self._adapter.plan, proposal.target.namespace, proposal.target.name
-            )
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-        if (
-            plan.deployment_uid != proposal.target.uid
-            or plan.resource_version != proposal.target.resource_version
-        ):
-            raise await self._fail(proposal, "drift", "dry-run 后目标资源已变化，需重新提案")
-        await self._require_approval_valid(proposal, approval)
+        # 两次请求复用同一个计划。重新读取仅用于检查漂移。
+        await self._rollback_plan(proposal)
 
         attempt = ActionAttempt(
             id=f"att-{uuid.uuid4().hex[:12]}",
@@ -904,31 +797,15 @@ class ActionExecutor:
             },
             started_at=datetime.now(UTC),
         )
-        try:
-            await self._store.save_attempt(attempt)
-        except DuplicateAttempt as exc:
-            raise ActionError("already_executed", str(exc)) from exc
-        await self._store.set_proposal_status(proposal.id, ProposalStatus.EXECUTING)
-        await self._store.update_attempt(
-            attempt.id,
-            status=AttemptStatus.EXECUTING,
-            result={"stage": "apply_started"},
-        )
-        # 最后一次校验放在所有数据库 I/O 之后、真正写集群之前。
-        if approval.expires_at is not None and datetime.now(UTC) > approval.expires_at:
-            return await self._finish(
-                attempt,
-                AttemptStatus.FAILED,
-                ProposalStatus.EXPIRED,
-                result={"code": "expired"},
-                verification=_unknown_verification(baseline, "审批在写入前过期，未写集群"),
-            )
+        await self._safety.save_intent(reservation, attempt)
+        attempt = await self._safety.grant_send(reservation, attempt, approval)
         try:
             await asyncio.to_thread(
                 self._adapter.apply, plan, dry_run=False, proposal_id=proposal.id
             )
         except Exception as exc:  # noqa: BLE001 - 结果未知时停止，不重放写请求
             return await self._finish(
+                reservation,
                 attempt,
                 AttemptStatus.UNKNOWN,
                 ProposalStatus.UNKNOWN,
@@ -948,6 +825,7 @@ class ActionExecutor:
             runtime = await self._runtime_state(proposal)
         except Exception as exc:  # noqa: BLE001 - 应用后无法核实，停止等待人工
             return await self._finish(
+                reservation,
                 attempt,
                 AttemptStatus.UNKNOWN,
                 ProposalStatus.UNKNOWN,
@@ -1000,6 +878,7 @@ class ActionExecutor:
             known_failure=not resource_ok,
         )
         return await self._finish(
+            reservation,
             attempt,
             attempt_status,
             proposal_status,
@@ -1007,31 +886,21 @@ class ActionExecutor:
             verification=verification,
         )
 
-    async def _execute_restart(self, proposal: ActionProposal, approval: Approval) -> ActionAttempt:
+    async def _execute_restart(
+        self,
+        proposal: ActionProposal,
+        approval: Approval,
+        reservation: Reservation,
+    ) -> ActionAttempt:
         adapter = self._restart_adapter
         if adapter is None:
-            raise await self._fail(proposal, "adapter_missing", "未配置 restart_pod 适配器")
+            raise ActionError("adapter_missing", "未配置 restart_pod 适配器")
         plan = await self._restart_preconditions(proposal, approval)
-
-        # 删除后旧 Pod 不再存在，基线只能在删除前采集。
-        try:
-            baseline = await self._restart_baseline(
-                plan, str(proposal.parameters.get("path") or "/")
-            )
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-
-        # 采样等待期间目标可能失去可丢弃标记、Service 选择关系、停止门状态或授权有效期。
+        baseline = await self._restart_baseline(plan, str(proposal.parameters.get("path") or "/"))
         plan = await self._restart_preconditions(proposal, approval)
-        await self._require_approval_valid(proposal, approval)
-
-        # dry-run 不是写操作；通过后还要用最终状态再核对一次，再落执行意图。
-        try:
-            await asyncio.to_thread(adapter.dry_run, plan)
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-        plan = await self._restart_preconditions(proposal, approval)
-        await self._require_approval_valid(proposal, approval)
+        await self._require_approval_current(approval)
+        await asyncio.to_thread(adapter.dry_run, plan)
+        await self._restart_preconditions(proposal, approval)
 
         attempt = ActionAttempt(
             id=f"att-{uuid.uuid4().hex[:12]}",
@@ -1058,27 +927,13 @@ class ActionExecutor:
             },
             started_at=datetime.now(UTC),
         )
-        try:
-            await self._store.save_attempt(attempt)
-        except DuplicateAttempt as exc:
-            raise ActionError("already_executed", str(exc)) from exc
-        await self._store.set_proposal_status(proposal.id, ProposalStatus.EXECUTING)
-        await self._store.update_attempt(
-            attempt.id, status=AttemptStatus.EXECUTING, result={"stage": "apply_started"}
-        )
-        # 最后一次校验放在所有数据库 I/O 之后、真正写集群之前。
-        if approval.expires_at is not None and datetime.now(UTC) > approval.expires_at:
-            return await self._finish(
-                attempt,
-                AttemptStatus.FAILED,
-                ProposalStatus.EXPIRED,
-                result={"code": "expired"},
-                verification=_unknown_verification(baseline, "审批在写入前过期，未写集群"),
-            )
+        await self._safety.save_intent(reservation, attempt)
+        attempt = await self._safety.grant_send(reservation, attempt, approval)
         try:
             await asyncio.to_thread(adapter.execute, plan)
         except Exception as exc:  # noqa: BLE001 - 删除结果未知时停止，不重放
             return await self._finish(
+                reservation,
                 attempt,
                 AttemptStatus.UNKNOWN,
                 ProposalStatus.UNKNOWN,
@@ -1086,7 +941,7 @@ class ActionExecutor:
                     "stage": "apply",
                     "error": exc.__class__.__name__,
                     "code": getattr(exc, "code", None),
-                    "message": str(exc)[:200],
+                    "message": project_text(str(exc))[:200],
                 },
                 verification=_unknown_verification(baseline, "删除结果未知，停止等待人工核实"),
             )
@@ -1102,6 +957,7 @@ class ActionExecutor:
                 )
         except Exception as exc:  # noqa: BLE001 - 删除后结果不可核实，停止等待人工
             return await self._finish(
+                reservation,
                 attempt,
                 AttemptStatus.UNKNOWN,
                 ProposalStatus.UNKNOWN,
@@ -1109,7 +965,7 @@ class ActionExecutor:
                     "stage": "verify_after_delete",
                     "error": exc.__class__.__name__,
                     "code": getattr(exc, "code", None),
-                    "message": str(exc)[:200],
+                    "message": project_text(str(exc))[:200],
                 },
                 verification=_unknown_verification(
                     baseline, "删除后无法核实业务结果，停止等待人工"
@@ -1166,6 +1022,7 @@ class ActionExecutor:
             known_failure=known_failure or not resource_ok,
         )
         return await self._finish(
+            reservation,
             attempt,
             attempt_status,
             proposal_status,
@@ -1181,22 +1038,24 @@ class ActionExecutor:
         """删除前的全部硬检查；基线等待前后各跑一次，后一次用最终状态。"""
         adapter = self._restart_adapter
         if adapter is None:
-            raise await self._fail(proposal, "adapter_missing", "未配置 restart_pod 适配器")
-        try:
-            plan = await asyncio.to_thread(
-                adapter.plan, proposal.target.namespace, proposal.target.name
-            )
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
-        # Pod 的 resourceVersion 随状态更新频繁变化，身份以 UID 为准。
-        if plan.uid != proposal.target.uid:
-            raise await self._fail(proposal, "drift", "审批后目标 Pod 已变化，需重新提案")
+            raise ActionError("adapter_missing", "未配置 restart_pod 适配器")
+        plan = await asyncio.to_thread(
+            adapter.plan, proposal.target.namespace, proposal.target.name
+        )
+        if (plan.namespace, plan.name, plan.uid) != (
+            proposal.target.namespace,
+            proposal.target.name,
+            proposal.target.uid,
+        ):
+            raise ActionError("drift", "审批后目标 Pod 已变化，需重新提案")
         if plan.owner_kind != "ReplicaSet" or not plan.owner_uid:
-            raise await self._fail(
-                proposal, "not_controlled", "目标 Pod 没有 ReplicaSet 归属，删除后不会重建"
-            )
-        if plan.template_hash != proposal.parameters.get("template_hash"):
-            raise await self._fail(proposal, "template_changed", "目标 Pod 的模板与提案时不同")
+            raise ActionError("not_controlled", "目标 Pod 没有 ReplicaSet 归属，删除后不会重建")
+        if plan.owner_uid != proposal.parameters.get("owner_uid"):
+            raise ActionError("owner_changed", "目标 Pod 的控制器已变化")
+        if plan.template_hash != proposal.parameters.get(
+            "template_hash"
+        ) or plan.spec_hash != proposal.parameters.get("spec_hash"):
+            raise ActionError("template_changed", "目标 Pod 的模板与提案时不同")
         # 用执行前的真实状态重跑一次规则：提案等待期间目标可能失去可丢弃标记，
         # 持久化的提案本身也可能被改成不满足硬约束。
         rechecked = proposal.model_copy(
@@ -1223,27 +1082,17 @@ class ActionExecutor:
             decide(rechecked, target_busy=False, prior_auto_failure=prior_failure).disposition
             is RiskDisposition.DENY
         ):
-            raise await self._fail(proposal, "policy_denied", "执行前规则复查拒绝，不能删除该 Pod")
+            raise ActionError("policy_denied", "执行前规则复查拒绝，不能删除该 Pod")
         if prior_failure and approval.actor.startswith("policy:"):
-            raise await self._fail(
-                proposal,
+            raise ActionError(
                 "auto_stopped",
                 "同一工作负载最近一次执行未成功，自动授权失效，需人工重新提案",
             )
 
         # 审批、基线采样和 dry-run 期间都可能发生 OOM；身份未变不代表仍适用。
         service = str(proposal.parameters.get("service") or "")
-        try:
-            await self._restart_applicability(plan, service)
-        except ActionError as exc:
-            raise await self._fail(proposal, exc.code, exc.message) from exc
+        await self._restart_applicability(plan, service)
         return plan
-
-    async def _require_approval_valid(self, proposal: ActionProposal, approval: Approval) -> None:
-        if approval.expires_at is not None and datetime.now(UTC) > approval.expires_at:
-            raise await self._fail(
-                proposal, "expired", "审批已过期，需重新提案", ProposalStatus.EXPIRED
-            )
 
     async def _restart_baseline(self, plan: PodPlan, path: str) -> SampleSummary:
         """删除前直接从目标 Pod 采样；连接级失败不能当作基线。"""
@@ -1418,20 +1267,9 @@ class ActionExecutor:
             "raw_ref": result.raw_ref,
         }
 
-    async def _fail(
-        self,
-        proposal: ActionProposal,
-        code: str,
-        message: str,
-        status: ProposalStatus = ProposalStatus.FAILED,
-    ) -> ActionError:
-        """在写任何外部请求前结束提案，并把判定原因落审计。"""
-        await self._store.set_proposal_status(proposal.id, status)
-        await self._audit(proposal.id, "action-executor", f"action.{status.value}", {"code": code})
-        return ActionError(code, message)
-
     async def _finish(
         self,
+        reservation: Reservation,
         attempt: ActionAttempt,
         status: AttemptStatus,
         proposal_status: ProposalStatus,
@@ -1439,51 +1277,27 @@ class ActionExecutor:
         result: dict[str, Any] | None = None,
         verification: dict[str, Any] | None = None,
     ) -> ActionAttempt:
-        finished_at = datetime.now(UTC)
         proposal = await self._store.get_proposal(attempt.proposal_id)
         if proposal is None:
             raise LookupError(f"提案不存在：{attempt.proposal_id}")
         followup = _followup_for(
-            attempt, proposal, status, proposal_status, verification, result, finished_at
+            attempt, proposal, status, proposal_status, verification, result, datetime.now(UTC)
         )
-        await self._store.finish_attempt(
-            attempt.id,
-            proposal_id=proposal.id,
-            proposal_status=proposal_status,
+        return await self._safety.finish(
+            reservation,
+            attempt,
             status=status,
+            proposal_status=proposal_status,
             result=result,
             verification=verification,
-            finished_at=finished_at,
             followup=followup,
         )
-        await self._audit(
-            attempt.proposal_id,
-            "action-executor",
-            f"action.{proposal_status.value}",
-            {
-                "attempt_id": attempt.id,
-                "attempt_status": status.value,
-                "verification": verification,
-                "followup_id": followup.id if followup else None,
-            },
-        )
-        updated = await self._store.get_attempt(attempt.proposal_id)
-        if updated is None:
-            raise LookupError(f"执行记录不存在：{attempt.id}")
-        return updated
 
     async def _audit(
         self, correlation_id: str, actor: str, event: str, payload: dict[str, Any]
     ) -> None:
-        await self._store.append_audit(
-            [
-                AuditEvent(
-                    id=f"audit-{uuid.uuid4().hex[:12]}",
-                    correlation_id=correlation_id,
-                    actor=actor,
-                    event=event,
-                    occurred_at=datetime.now(UTC),
-                    payload=payload,
-                )
-            ]
-        )
+        lease, turn_id = self._scope()
+        async with self._store.transaction() as conn:
+            await self._safety.sessions.require_lease(conn, lease, main_only=True)
+            await self._safety.sessions.require_turn(conn, lease, turn_id)
+            await self._safety.audit(conn, correlation_id, actor, event, payload)

@@ -14,9 +14,9 @@ from threading import Lock
 from typing import Any
 
 from kubernetes import client as k8s_client
-from kubernetes import config as k8s_config
 from kubernetes.client.exceptions import ApiException
 
+from aiops.actions.kubernetes_write import WRITE_TIMEOUT_SECONDS, action_client
 from aiops.actions.rollout_undo import ActionError
 
 DISCARDABLE_LABEL = "vigil.io/discardable"
@@ -89,16 +89,7 @@ class PodRestartAdapter:
     def _api(self) -> k8s_client.CoreV1Api:
         with self._lock:
             if not self._loaded:
-                if self._kubeconfig is not None:
-                    k8s_config.load_kube_config(
-                        config_file=str(self._kubeconfig), context=self._context_name
-                    )
-                else:
-                    try:
-                        k8s_config.load_incluster_config()
-                    except k8s_config.ConfigException:
-                        k8s_config.load_kube_config(context=self._context_name)
-                self._client = k8s_client.ApiClient()
+                self._client = action_client(self._kubeconfig, self._context_name)
                 self._core = k8s_client.CoreV1Api(self._client)
                 self._apps = k8s_client.AppsV1Api(self._client)
                 self._loaded = True
@@ -140,6 +131,8 @@ class PodRestartAdapter:
         if owner is not None and owner.kind == "ReplicaSet" and self._apps is not None:
             try:
                 replicaset = self._apps.read_namespaced_replica_set(owner.name, namespace)
+                if replicaset.metadata.uid != owner.uid:
+                    raise ActionError("owner_changed", "Pod 的 ReplicaSet 身份已变化")
                 template_hash = _hash(
                     self._serialize(replicaset.spec.template) if replicaset.spec.template else {}
                 )
@@ -251,11 +244,33 @@ class PodRestartAdapter:
         """删除目标 Pod；前置条件保证删的是审批时看到的那个对象。"""
         core = self._api()
         try:
-            core.delete_namespaced_pod(plan.name, plan.namespace, body=self._delete_options(plan))
+            core.delete_namespaced_pod(
+                plan.name,
+                plan.namespace,
+                body=self._delete_options(plan),
+                _request_timeout=WRITE_TIMEOUT_SECONDS,
+            )
         except ApiException as exc:
             code = "precondition_failed" if exc.status == 409 else "api_error"
             raise ActionError(code, f"删除 Pod 失败：HTTP {exc.status}") from exc
         return {"deleted": plan.name, "uid": plan.uid}
+
+    def reconciliation_state(self, namespace: str, name: str, uid: str) -> dict[str, Any]:
+        try:
+            pod = self._api().read_namespaced_pod(
+                name, namespace, _request_timeout=WRITE_TIMEOUT_SECONDS
+            )
+        except ApiException as exc:
+            if exc.status == 404:
+                return {"original_present": False, "current_uid": None}
+            raise ActionError("read_failed", f"Pod 核实读取失败：HTTP {exc.status}") from exc
+        if not pod.metadata.uid:
+            raise ActionError("identity_unknown", "Pod 当前身份无法确认")
+        return {
+            "original_present": pod.metadata.uid == uid,
+            "current_uid": pod.metadata.uid,
+            "terminating": pod.metadata.deletion_timestamp is not None,
+        }
 
     def pods_of_owner(self, namespace: str, owner_uid: str) -> list[dict[str, Any]]:
         core = self._api()

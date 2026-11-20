@@ -716,6 +716,12 @@ class Store:
                     proposal.observation_window_seconds,
                 ),
             )
+            if proposal.session_id is not None or proposal.session_turn_id is not None:
+                await conn.execute(
+                    "UPDATE action_proposals SET session_id = %s, session_turn_id = %s "
+                    "WHERE id = %s",
+                    (proposal.session_id, proposal.session_turn_id, proposal.id),
+                )
         except psycopg.errors.UniqueViolation as exc:
             raise DuplicateProposal("同一目标版本已有进行中的提案") from exc
 
@@ -744,7 +750,7 @@ class Store:
                   FROM action_proposals
                  WHERE cluster = %s
                    AND namespace = %s
-                   AND status NOT IN ('pending_approval', 'denied', 'rejected', 'expired')
+                   AND status NOT IN ('pending_approval', 'denied', 'rejected', 'expired', 'voided')
                    AND (
                         parameters->>'workload' = %s
                         OR (
@@ -864,44 +870,37 @@ class Store:
                 (proposal_id,),
             )
             row = await cursor.fetchone()
-        if row is None:
-            return None
-        return Approval(
-            id=row["id"],
-            proposal_id=row["proposal_id"],
-            proposal_hash=row["proposal_hash"],
-            actor=row["actor"],
-            decision=row["decision"],
-            reason=row["reason"],
-            decided_at=row["decided_at"],
-            expires_at=row["expires_at"],
+        return _approval_from_row(row) if row else None
+
+    @staticmethod
+    async def _insert_attempt(conn: psycopg.AsyncConnection, attempt: ActionAttempt) -> None:
+        await conn.execute(
+            """
+            INSERT INTO action_attempts (
+                id, proposal_id, status, idempotency_key, snapshot, request,
+                result, verification, started_at, finished_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                attempt.id,
+                attempt.proposal_id,
+                attempt.status.value,
+                attempt.idempotency_key,
+                Jsonb(attempt.snapshot),
+                Jsonb(attempt.request),
+                Jsonb(attempt.result) if attempt.result is not None else None,
+                Jsonb(attempt.verification) if attempt.verification is not None else None,
+                attempt.started_at,
+                attempt.finished_at,
+            ),
         )
 
     async def save_attempt(self, attempt: ActionAttempt) -> None:
-        async with self._pool.connection() as conn:
-            try:
-                await conn.execute(
-                    """
-                    INSERT INTO action_attempts (
-                        id, proposal_id, status, idempotency_key, snapshot, request,
-                        result, verification, started_at, finished_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        attempt.id,
-                        attempt.proposal_id,
-                        attempt.status.value,
-                        attempt.idempotency_key,
-                        Jsonb(attempt.snapshot),
-                        Jsonb(attempt.request),
-                        Jsonb(attempt.result) if attempt.result is not None else None,
-                        Jsonb(attempt.verification) if attempt.verification is not None else None,
-                        attempt.started_at,
-                        attempt.finished_at,
-                    ),
-                )
-            except psycopg.errors.UniqueViolation as exc:
-                raise DuplicateAttempt("该提案已有执行记录") from exc
+        try:
+            async with self.transaction() as conn:
+                await self._insert_attempt(conn, attempt)
+        except psycopg.errors.UniqueViolation as exc:
+            raise DuplicateAttempt("该提案已有执行记录") from exc
 
     async def update_attempt(
         self,
@@ -1077,7 +1076,10 @@ class Store:
                     """
                     UPDATE action_followups
                        SET status = %s, resolved_at = %s, resolved_by = %s, resolution = %s
-                     WHERE id = %s AND status = %s
+                     WHERE id = %s AND status = %s AND NOT EXISTS (
+                         SELECT 1 FROM action_attempts a
+                         WHERE a.id = action_followups.attempt_id AND a.status = 'unknown'
+                     )
                     """,
                     (
                         FollowupStatus.RESOLVED.value,
@@ -1703,6 +1705,8 @@ def _proposal_from_row(row: dict) -> ActionProposal:
         prediction=row.get("prediction") or "",
         observation_conditions=row.get("observation_conditions") or {},
         observation_window_seconds=row.get("observation_window_seconds"),
+        session_id=row.get("session_id"),
+        session_turn_id=row.get("session_turn_id"),
     )
 
 
@@ -1789,6 +1793,10 @@ def _tool_request_from_row(row: dict) -> ToolRequest:
     )
 
 
+def _approval_from_row(row: dict) -> Approval:
+    return Approval(**{key: row.get(key) for key in Approval.model_fields})
+
+
 def _attempt_from_row(row: dict) -> ActionAttempt:
     return ActionAttempt(
         id=row["id"],
@@ -1796,6 +1804,7 @@ def _attempt_from_row(row: dict) -> ActionAttempt:
         status=row["status"],
         idempotency_key=row["idempotency_key"],
         snapshot=row["snapshot"],
+        send_granted_at=row.get("send_granted_at"),
         request=row["request"],
         result=row["result"],
         verification=row["verification"],

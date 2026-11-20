@@ -25,6 +25,7 @@ from aiops.actions.executor import (
     AutoExecutionError,
 )
 from aiops.actions.restart_pod import PodRestartAdapter
+from aiops.actions.safety import ActionSafety
 from aiops.contracts import (
     ActionAttempt,
     ActionFollowup,
@@ -190,11 +191,12 @@ def test_restart_rechecks_discardable_after_baseline(tmp_path, cleanup):
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(
+            executor = await build_executor(
                 store,
                 FakeAdapter(rollout_plan()),
                 FakePrometheus([200.0]),
                 tmp_path,
+                cleanup=cleanup,
                 restart_adapter=adapter,
                 verify_seconds=1,
                 sample_seconds=0.2,
@@ -228,11 +230,12 @@ def test_restart_rechecks_discardable_after_dry_run(tmp_path, cleanup):
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(
+            executor = await build_executor(
                 store,
                 FakeAdapter(rollout_plan()),
                 FakePrometheus([200.0]),
                 tmp_path,
+                cleanup=cleanup,
                 restart_adapter=adapter,
                 verify_seconds=1,
                 sample_seconds=0.2,
@@ -265,11 +268,12 @@ def test_restart_expiry_during_baseline_stops_before_delete(tmp_path, cleanup):
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(
+            executor = await build_executor(
                 store,
                 FakeAdapter(rollout_plan()),
                 FakePrometheus([200.0]),
                 tmp_path,
+                cleanup=cleanup,
                 restart_adapter=adapter,
                 verify_seconds=3,
                 sample_seconds=1.2,
@@ -297,45 +301,52 @@ def test_restart_expiry_during_baseline_stops_before_delete(tmp_path, cleanup):
 
 
 def test_restart_expiry_during_intent_write_stops_before_delete(monkeypatch, tmp_path, cleanup):
-    original = Store.save_attempt
+    original = ActionSafety.save_intent
 
-    async def slow_save(self, attempt):
-        await asyncio.sleep(1.1)
-        return await original(self, attempt)
+    async def expire_after_intent(self, reservation, attempt):
+        await original(self, reservation, attempt)
+        async with self.store.transaction() as conn:
+            await conn.execute(
+                "UPDATE approvals SET expires_at = clock_timestamp() WHERE proposal_id = %s",
+                (attempt.proposal_id,),
+            )
 
-    monkeypatch.setattr(Store, "save_attempt", slow_save)
+    monkeypatch.setattr(ActionSafety, "save_intent", expire_after_intent)
     adapter = FakeRestartAdapter(pod_plan(namespace="vigil-experiment"))
 
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(
+            executor = await build_executor(
                 store,
                 FakeAdapter(rollout_plan()),
                 FakePrometheus([1.0]),
                 tmp_path,
+                cleanup=cleanup,
                 restart_adapter=adapter,
                 verify_seconds=1,
                 sample_seconds=0.2,
-                approval_ttl_seconds=1,
             )
-            proposal, _ = await executor.propose_restart_pod(
-                pod="rebuild-demo-abc",
-                service="rebuild-demo",
-                path="/work",
-                reason=TEST_REASON,
-                actor="tester",
-                namespace="vigil-experiment",
-            )
-            cleanup.append(proposal.id)
-            saved = await store.get_proposal(proposal.id)
-            attempt = await store.get_attempt(proposal.id)
+            with pytest.raises(AutoExecutionError) as caught:
+                await executor.propose_restart_pod(
+                    pod="rebuild-demo-abc",
+                    service="rebuild-demo",
+                    path="/work",
+                    reason=TEST_REASON,
+                    actor="tester",
+                    namespace="vigil-experiment",
+                )
+            assert caught.value.code == "expired"
+            proposal_id = caught.value.proposal_id
+            cleanup.append(proposal_id)
+            saved = await store.get_proposal(proposal_id)
+            attempt = await store.get_attempt(proposal_id)
         return saved, attempt
 
     saved, attempt = asyncio.run(scenario())
     assert saved.status is ProposalStatus.EXPIRED
     assert attempt is not None
-    assert attempt.status.value == "failed"
+    assert attempt.status.value == "voided"
     assert [call[0] for call in adapter.calls] == ["dry_run"]
     assert read_followup(attempt.id) is None
 
@@ -346,11 +357,12 @@ def test_restart_proxy_error_is_not_a_business_baseline(tmp_path, cleanup):
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(
+            executor = await build_executor(
                 store,
                 FakeAdapter(rollout_plan()),
                 FakePrometheus([200.0]),
                 tmp_path,
+                cleanup=cleanup,
                 restart_adapter=adapter,
                 verify_seconds=1,
                 sample_seconds=0.2,
@@ -431,11 +443,12 @@ def test_restart_dry_run_failure_creates_no_attempt(tmp_path, cleanup):
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(
+            executor = await build_executor(
                 store,
                 FakeAdapter(rollout_plan()),
                 FakePrometheus([200.0]),
                 tmp_path,
+                cleanup=cleanup,
                 restart_adapter=adapter,
                 verify_seconds=1,
                 sample_seconds=0.2,
@@ -467,11 +480,12 @@ def test_restart_missing_baseline_stops_before_delete(tmp_path, cleanup):
     async def scenario():
         async with Store.open(DSN) as store:
             await store.migrate()
-            executor = build_executor(
+            executor = await build_executor(
                 store,
                 FakeAdapter(rollout_plan()),
                 FakePrometheus([200.0]),
                 tmp_path,
+                cleanup=cleanup,
                 restart_adapter=adapter,
                 verify_seconds=1,
                 sample_seconds=0.2,
