@@ -138,14 +138,7 @@ class ActionReconciler:
                 )
                 if not isolated or isolated == version:
                     raise ActionError("isolation_failed", "未确认原版本已失效")
-                state = await asyncio.to_thread(self.adapter.state, namespace, name)
-                if (
-                    state.get("uid") != uid
-                    or not state.get("resource_version")
-                    or state["resource_version"] == version
-                    or state.get("reconciliation_marker") != preparation
-                ):
-                    raise ActionError("isolation_failed", "隔离后无法核对 Deployment 身份与版本")
+                state = await self._settled_deployment(namespace, name, uid, version, preparation)
                 evidence = {"isolated_version": isolated, "state": state}
             elif row["kind"] == ActionKind.RESTART_POD and self.restart_adapter is not None:
                 state = await asyncio.to_thread(
@@ -181,6 +174,28 @@ class ActionReconciler:
                 {"attempt_id": attempt["id"], "sender_stopped": sender_stopped, **prepared},
             )
             return prepared
+
+    async def _settled_deployment(
+        self, namespace: str, name: str, uid: str, prior_version: str, marker: str
+    ) -> dict[str, Any]:
+        # 隔离注解会推进 generation。等控制器观测后再保存核实用的版本。
+        deadline = asyncio.get_running_loop().time() + WRITE_TIMEOUT_SECONDS
+        while True:
+            state = await asyncio.to_thread(self.adapter.state, namespace, name)
+            if (
+                state.get("uid") != uid
+                or not state.get("resource_version")
+                or state["resource_version"] == prior_version
+                or state.get("reconciliation_marker") != marker
+            ):
+                raise ActionError("isolation_failed", "隔离后无法核对 Deployment 身份与版本")
+            if state.get("generation") == state.get("observed_generation"):
+                return state
+            if asyncio.get_running_loop().time() >= deadline:
+                raise ActionError(
+                    "isolation_failed", "Deployment 控制器尚未确认隔离版本，保留目标锁"
+                )
+            await asyncio.sleep(0.25)
 
     async def reconcile_action(
         self,
