@@ -11,6 +11,7 @@ from langchain_core.messages import ToolMessage
 from aiops.agent.middleware import RunCancelled, cancel_requested
 from aiops.agent.tools import _finish_request, _prepare_request
 from aiops.contracts import ToolRequestState
+from aiops.sessions.models import LeaseLost
 
 
 class SkillReadMiddleware(AgentMiddleware):
@@ -36,12 +37,15 @@ class SkillReadMiddleware(AgentMiddleware):
                     content=cached, name="read_file", tool_call_id=call_id, status="error"
                 )
             try:
+                await ctx.ensure_active()
                 async with asyncio.timeout(
                     ctx.budget.read_tool_timeout(configured=ctx.tool_timeout_seconds)
                 ):
                     result = await handler(request)
                 if not isinstance(result, ToolMessage):
                     raise TypeError("Skill 文件读取未返回工具消息")
+            except LeaseLost:
+                raise
             except Exception as exc:  # noqa: BLE001 - 保存失败结果，重放时不重新打开文件
                 result = ToolMessage(
                     content=f"Skill 文件读取失败：{exc.__class__.__name__}",

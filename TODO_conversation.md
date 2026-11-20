@@ -56,10 +56,70 @@
 
 ## 进度
 
-- [ ] 轮次和插话
-- [ ] 暂停、旁路和恢复
-- [ ] 多进程故障注入
+- [x] 轮次和插话
+- [x] 暂停、旁路和恢复
+- [x] 多驱动竞争和故障注入
 
 ## 范围外的问题
 
 跨会话推荐和复盘不在本期。
+
+## CLI 与 serve 接入
+
+从 `aiops.agent.conversation` 导入 `ConversationDriver`、`ConversationResult` 与
+`AwaitingActionReceipt`。启动时先用 `Store.migrate()` 升级业务库，再用
+`aiops.sessions.checkpoint.setup_checkpoints(store)` 升级 LangGraph 表。
+
+- `ConversationDriver(settings=..., store=..., toolbox=..., executor_factory=..., model=..., project_text=...)`。
+  工具箱使用现有 `Toolbox`。生产环境按 Settings 创建模型，测试可注入模型和执行器替身。
+  入口传动作任务的共享文本投影；独立运行时可使用本模块的 `redact_text`。
+  消息用 `driver.sessions.enqueue_input(session_id, text, display_text=..., input_id=...)`，
+  会话标题与 `display_text` 要先投影。客户端只需要读会话与事件。
+- `async with driver.claim(session_id, lane="main") as run` 领取主线，`lane="side"`
+  领取一个旁路轮。`run is None` 表示该 lane 暂无可领取的驱动权或输入。
+  等待期间保持上下文会独立续租，退出时释放。一次性模式在退出前关闭上下文；
+  交互入口可持有主线并在卡片处再次调用 `drive()`，读取跨进程提交的决定。
+- `await run.drive() -> ConversationResult | None` 驱动一轮到停止点。
+  `None` 表示已领取但没有工作。结果的 `result` 是持久化 `SessionEvent`，
+  `exit_code` 从事件读取，`card` 为主线此次暂停的 `approval_required` 事件或 `None`。
+  旁路始于待审批状态，成功或预算停止时退出码为 3，结果只属于旁路轮。
+  驱动丢租约时抛 `LeaseLost`，关闭的会话拒绝开始新驱动；发现已开始且仍未收尾的动作尝试时抛
+  `AwaitingActionReceipt`，动作任务收敛尝试后继续驱动。存储错误交由入口映射退出码 1 或调度重试。
+- `serve` 合并 `list_runnable_main()`、`list_runnable_side()` 和动作模块的
+  `list_runnable_card_sessions()` 扫描结果，实际运行前仍领取相应租约。若会话停在卡片上，
+  CLI 可独立领取旁路，保持现有主线持有者继续轮询决定。
+- 事件用 `SessionStore.list_events(session_id, after_seq=...)` 和 `SessionEvent.as_dict()`。
+  单次机器输出以返回的 `result.seq` 为本次上界，入口处理续读与末行 `result`。
+  `tool_call` 的稳定 ID 与 `turn_id` 一起关联请求和结果，字段包括 `tool`、
+  `status`、`summary`、`observation_id`，查询完成时可带 `collected_at` 与 `time_range`。
+  `hypothesis` 带 `id`、`statement`、`status`、`parent_id`，`evidence` 带
+  `observation_id`、`hypothesis_id`、`relation`。
+  `message` 的助手事件带 `lane`。`result` 带 `status`、`summary`、`exit_code`、
+  `schema_version=1`、`lane`、`investigation_id`，完成时还有 `termination_code`，
+  停在卡片时带 `card_id`。原始结果和文件引用在调查账本内部，事件只引用观测 ID。
+  `input_delivered` 由 saver 在保存根 checkpoint 的同一事务提交。
+- 告警首轮由账本附带首条告警输入。首次排查的集群和命名空间来自 Settings，查询工具仍在固定范围内。
+  当前告警账本只保存首条文本，具体 `alert_names` 的结构化传递由服务入口联调补齐。
+  旁路创建时按数据库创建时间找到最近的已发布卡片，并读取卡片之前的消息及该调查已发布的观测引用。
+  旁路完成后，只在后续主线到达模型边界时将问答作为线索补入。现有账本接口未直接保存
+  旁路对应的暂停序号；如需跨数据库时钟调整保持同一边界，应由旁路领取事务保存该序号。
+
+## 动作接入
+
+- `executor_factory(*, lease, turn_id)` 返回执行器的异步上下文管理器。只在持有效主线租约时调用。
+  生产装配把 `lease`、`turn_id` 传作 `ActionExecutor(session_lease=..., session_turn_id=..., ...)`。
+  缺少会话卡片接口时拒绝动作准备、发布与执行。
+- `publish_card(proposal_id, *, lease, turn_id) -> SessionEvent` 在根 checkpoint 和
+  `__interrupt__` pending write 都保存后调用。需要按提案幂等并返回同一条事件。持久化中断后
+  发布失败时，本轮仍可进入普通主线接手扫描；发布成功后写等待结果并推进轮次状态。
+- `get_card_decision(proposal_id, *, session_id) -> Approval | None` 返回授权事务提交的决定，
+  `Approval.id` 随 `Command(resume=...)` 进入原中断点，工具在消费前复核对应持久化决定。
+  无审批记录的已决提案或尝试用持久化记录标识恢复。已有终态尝试直接回放回执；
+  `intent` 与 `executing` 交给处置模块收敛。执行由 `execute_authorized(proposal_id, actor=...)`
+  和处置模块的发送权事务完成，`card_decision`、`action_result` 由处置模块追加。
+- 准备动作落库后、工具账本还未关联提案时如果驱动中断，接手者只对可唯一核对的同轮草稿调用
+  受保护的 `abandon`。处置事务撤销未发送授权并释放幂等键，之后才结束本次工具请求。
+  已有关联的准备结果从工具账本恢复，自动授权也在持久化关联之后才进入执行器。
+
+现行旧 webhook 与历史调用仍使用原调查入口，等入口任务切换后退役。
+会话入口不领取旧调查租约，历史调查只读查询继续由 Store 提供。

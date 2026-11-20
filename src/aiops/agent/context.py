@@ -6,15 +6,19 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from aiops.actions.executor import ActionExecutor
 from aiops.agent.budget import BudgetLedger
+from aiops.agent.session_runtime import RunScope
 from aiops.contracts import Incident, TimeRange
 from aiops.db import Store
 from aiops.investigation.toolbox import Toolbox
+from aiops.sessions.models import SessionEvent
+from aiops.sessions.store import RunTransaction
 
 
 @dataclass
@@ -31,6 +35,7 @@ class Progress:
     seen_activity: int = -1
     budget_nudged: bool = False
     ungrounded_actions: int = 0
+    result_event: SessionEvent | None = None
     # 本期同一任务按批内顺序串行执行工具，不为跨任务或跨批次引入并行调度。
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # 同一调查同时只允许一个只读委派运行。
@@ -56,6 +61,22 @@ class AgentContext:
     tool_timeout_seconds: float
     model_reserve_seconds: float
     progress: Progress
+    scope: RunScope | None = None
+    active_transaction: RunTransaction | None = None
+
+    @asynccontextmanager
+    async def ledger(self):
+        if self.active_transaction is not None:
+            yield self.active_transaction.ledger, self.active_transaction
+        elif self.scope is None:
+            yield self.store, None
+        else:
+            async with self.scope.transaction() as tx:
+                yield tx.ledger, tx
+
+    async def ensure_active(self) -> None:
+        if self.scope is not None:
+            await self.scope.ensure_active()
 
     @property
     def cluster(self) -> str:

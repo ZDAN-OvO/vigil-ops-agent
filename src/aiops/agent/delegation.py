@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Sequence
 from contextvars import ContextVar
@@ -17,6 +18,7 @@ from aiops.agent.budget import BudgetExhausted
 from aiops.agent.context import AgentContext
 from aiops.agent.middleware import NoProgress, RunCancelled
 from aiops.contracts import Delegation, DelegationStatus
+from aiops.sessions.models import LeaseLost
 from aiops.skills import SkillSpec, detect_loaded_skills, render_signal_block
 
 CURRENT_CONTEXT: ContextVar[AgentContext | None] = ContextVar(
@@ -44,6 +46,7 @@ class ReadOnlyGuardMiddleware(AgentMiddleware):
         name = str((request.tool_call or {}).get("name") or "")
         if name not in self._allowed:
             raise ReadOnlyViolation(f"子 Agent 调用了非只读工具：{name or 'unknown'}")
+        await request.runtime.context.ensure_active()
         return await handler(request)
 
 
@@ -120,7 +123,9 @@ def build_task_runnable(
                 )
                 # 共享预算与只读边界的终止信号必须传回主循环，不能降级成普通失败。
                 raise
-            except BaseException as exc:  # noqa: BLE001 - 失败要落库并计数
+            except (LeaseLost, asyncio.CancelledError):
+                raise
+            except Exception as exc:  # noqa: BLE001 - 失败要落库并计数
                 logger.warning("委派调查失败：{}", exc.__class__.__name__)
                 await ctx.store.finish_delegation(
                     delegation.id,

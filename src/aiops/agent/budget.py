@@ -114,11 +114,11 @@ class BudgetLedger:
         self.phase = PHASE_INVESTIGATION
         await self.persist()
 
-    async def pause(self) -> None:
+    async def pause(self, *, ledger: Store | None = None) -> None:
         """暂停（等待审批或进程退出）：把已用秒数落库，之后不计时。"""
         self._flush()
         self.phase = PHASE_IDLE
-        await self.persist()
+        await self.persist(ledger=ledger)
 
     def _flush(self) -> None:
         if self.phase == PHASE_INVESTIGATION:
@@ -127,8 +127,8 @@ class BudgetLedger:
             self._action_base += self._tick()
         self._segment_started = self.clock()
 
-    async def persist(self) -> None:
-        await self.store.update_task_usage(
+    async def persist(self, *, ledger: Store | None = None) -> None:
+        await (ledger or self.store).update_task_usage(
             self.investigation_id,
             used_model_calls=self.used_model_calls,
             used_tool_calls=self.used_tool_calls,
@@ -160,10 +160,10 @@ class BudgetLedger:
         if self.total_seconds >= self.budget.max_total_seconds:
             raise BudgetExhausted("total_seconds", "总有效运行时间已用完")
 
-    async def spend_tool_call(self) -> None:
+    async def spend_tool_call(self, *, ledger: Store | None = None) -> None:
         self.check_tool_budget()
         self.used_tool_calls += 1
-        await self.persist()
+        await self.persist(ledger=ledger)
 
     # ---- 动作预留 ----
 

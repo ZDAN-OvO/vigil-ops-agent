@@ -18,12 +18,16 @@ from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
-from langchain_core.messages import HumanMessage
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.types import Command
 from loguru import logger
+from psycopg import Error as DatabaseError
+from pydantic import ValidationError
 
 from aiops.actions.executor import ActionExecutor
 from aiops.agent.budget import BudgetExhausted, BudgetLedger
@@ -35,6 +39,7 @@ from aiops.agent.delegation import (
     ReadOnlyViolation,
     build_task_runnable,
 )
+from aiops.agent.dialogue import DialogueMiddleware, events, input_message, paused_history
 from aiops.agent.errors import UngroundedAction
 from aiops.agent.middleware import (
     ActionBatchMiddleware,
@@ -47,12 +52,20 @@ from aiops.agent.middleware import (
     RunCancelled,
 )
 from aiops.agent.prompts import (
+    CONVERSATION_PROMPT,
+    SIDE_PROMPT,
     SYSTEM_PROMPT,
     correction_message,
     initial_message,
     missing_report_message,
 )
 from aiops.agent.schemas import ReportDraft
+from aiops.agent.session_runtime import (
+    AwaitingActionReceipt,
+    CardActions,
+    RunScope,
+    resume_token,
+)
 from aiops.agent.skill_reader import SkillReadMiddleware
 from aiops.config import Settings
 from aiops.contracts import (
@@ -69,10 +82,13 @@ from aiops.contracts import (
     TaskOutcome,
     TaskPhase,
     TerminationCode,
+    ToolRequestState,
 )
 from aiops.db import Store
-from aiops.investigation.toolbox import Toolbox
+from aiops.investigation.toolbox import ToolboxProtocol
 from aiops.report import Report, delegation_payloads
+from aiops.sessions.checkpoint import INPUT_IDS_CHANNEL, TURN_ID_METADATA, SessionCheckpointer
+from aiops.sessions.models import LeaseLost, SessionClosed, SessionEvent
 from aiops.skills import (
     SkillLoadError,
     SkillSpec,
@@ -122,14 +138,16 @@ class LangChainInvestigation:
         dsn: str,
         incident: Incident,
         investigation: Investigation,
-        toolbox: Toolbox,
+        toolbox: ToolboxProtocol,
         executor: ActionExecutor | None,
         runtime_path: Path | None = None,
-        model: ChatOpenAI | None = None,
+        model: BaseChatModel | None = None,
+        scope: RunScope | None = None,
     ) -> None:
         if settings.model_name is None:
             raise ValueError("未配置 VIGIL_MODEL_NAME")
         self._settings = settings
+        self._scope = scope
         self._store = store
         self._dsn = dsn
         self._incident = incident
@@ -201,6 +219,7 @@ class LangChainInvestigation:
             tool_timeout_seconds=self._settings.tool_timeout_seconds,
             model_reserve_seconds=float(self._settings.investigation_action_model_reserve_seconds),
             progress=Progress(recovered=task.recovered_at is not None),
+            scope=self._scope,
         )
         return task, context
 
@@ -247,34 +266,53 @@ class LangChainInvestigation:
 
     def _build_graph(
         self,
-        saver: AsyncPostgresSaver,
+        saver: BaseCheckpointSaver,
         catalog: Sequence[SkillSpec],
         signal_skills: Sequence[SkillSpec] = (),
     ):
         backend = self._skill_backend()
-        subagent = SubAgentMiddleware(
-            backend=backend,
-            subagents=[
-                CompiledSubAgent(
-                    name="general-purpose",
-                    description=(
-                        "只读调查员：可以查询指标、Kubernetes 资源、日志和 runbook，"
-                        "返回证据与判断，但不能执行写操作。"
-                    ),
-                    runnable=build_task_runnable(
-                        self._build_subagent_app(catalog),
-                        catalog=catalog,
-                        pinned=signal_skills,
-                    ),
+        side = self._scope is not None and self._scope.turn.lane == "side"
+        subagent = (
+            []
+            if side
+            else [
+                SubAgentMiddleware(
+                    backend=backend,
+                    subagents=[
+                        CompiledSubAgent(
+                            name="general-purpose",
+                            description=(
+                                "只读调查员：可以查询指标、Kubernetes 资源、日志和 runbook，"
+                                "返回证据与判断，但不能执行写操作。"
+                            ),
+                            runnable=build_task_runnable(
+                                self._build_subagent_app(catalog),
+                                catalog=catalog,
+                                pinned=signal_skills,
+                            ),
+                        )
+                    ],
                 )
-            ],
+            ]
         )
+        tools = READ_ONLY_TOOLS if side else AGENT_TOOLS
+        prompt = SIDE_PROMPT if side else CONVERSATION_PROMPT if self._scope else SYSTEM_PROMPT
+        # 会话 checkpoint 只序列化普通字典；收尾仍由 ReportDraft 严格验证。
+        schema = ReportDraft.model_json_schema() if self._scope else ReportDraft
         return create_agent(
             self._model,
-            tools=AGENT_TOOLS,
-            system_prompt=SYSTEM_PROMPT,
-            response_format=ToolStrategy(ReportDraft, handle_errors=self._guard.handle),
+            tools=tools,
+            system_prompt=prompt,
+            response_format=None
+            if side
+            else ToolStrategy(schema, handle_errors=self._guard.handle),
             middleware=[
+                *([DialogueMiddleware()] if self._scope else []),
+                *(
+                    [ReadOnlyGuardMiddleware(read_only_names(build_registry()) | {"read_file"})]
+                    if side
+                    else []
+                ),
                 ActionBatchMiddleware(),
                 SkillReadMiddleware(),
                 BudgetMiddleware(
@@ -290,7 +328,7 @@ class LangChainInvestigation:
                     offload_binary_content=False,
                 ),
                 SkillsMiddleware(backend=backend, sources=["/"]),
-                subagent,
+                *subagent,
             ],
             context_schema=AgentContext,
             checkpointer=saver,
@@ -298,7 +336,11 @@ class LangChainInvestigation:
 
     def _config(self) -> dict[str, Any]:
         config: dict[str, Any] = {
-            "configurable": {"thread_id": self._investigation_id},
+            "configurable": {
+                "thread_id": (
+                    self._scope.turn.checkpoint_thread_id if self._scope else self._investigation_id
+                )
+            },
             "recursion_limit": 200,
         }
         if self._callbacks:
@@ -350,6 +392,8 @@ class LangChainInvestigation:
     # ------------------------------------------------------------------ 运行
 
     async def run(self) -> Report:
+        if self._scope is not None:
+            raise ValueError("会话调查由 ConversationDriver 驱动")
         task, context = await self._open_context()
         if task.phase is TaskPhase.TERMINAL:
             return await self._report(context, model_summary_completed=True)
@@ -395,6 +439,8 @@ class LangChainInvestigation:
             await self._store.release_task_lease(self._investigation_id, self._lease_owner)
 
     async def resume(self, *, proposal_id: str, decision: str, actor: str = "operator") -> Report:
+        if self._scope is not None:
+            raise ValueError("会话调查从持久化卡片决定恢复")
         task = await self._store.get_task(self._investigation_id)
         if task is None:
             raise TaskNotResumable("该调查不是单 Agent 任务，没有可恢复的 checkpoint")
@@ -441,14 +487,242 @@ class LangChainInvestigation:
         finally:
             await self._store.release_task_lease(self._investigation_id, self._lease_owner)
 
+    async def run_conversation(
+        self, saver: SessionCheckpointer
+    ) -> tuple[SessionEvent, SessionEvent | None]:
+        """从本轮已提交的根状态继续，返回结果事件和可能存在的审批卡片。"""
+        scope = self._scope
+        if scope is None:
+            raise ValueError("缺少会话运行范围")
+        task, context = await self._open_context()
+        if task.cancel_requested_at is not None:
+            await self._abort(context, TerminationCode.CANCELLED, "任务收到取消请求")
+            return context.progress.result_event, None
+        catalog = await self._load_skills(context)
+        if isinstance(catalog, Report):
+            return context.progress.result_event, None
+        matched = match_signal_skills(catalog, self._incident) if scope.turn.lane == "main" else []
+        graph = self._build_graph(saver, catalog, matched)
+        config = self._config()
+        last = await saver.aget_tuple(config)
+        if last is None or last.metadata.get(TURN_ID_METADATA) != scope.turn.id:
+            first = await scope.sessions.get_input(scope.turn.first_input_id)
+            if first is None:
+                raise LookupError("轮次缺少首条输入")
+            await self._store.set_investigation_skills(
+                self._investigation_id, [spec.usage(SkillTrigger.SIGNAL) for spec in matched]
+            )
+            frame = (
+                f"本轮查询范围：{context.cluster}/{context.namespace}。"
+                "此前工具消息和证据属于各自轮次，回答当前状态请重新查询。"
+                + render_signal_block(matched)
+            )
+            if scope.turn.lane == "side":
+                history = await paused_history(scope, self._store)
+                frame += "\n暂停点之前的会话和观测摘要：\n" + "\n".join(history)
+            payload = {
+                "messages": [
+                    HumanMessage(id=f"vigil-turn-{scope.turn.id}", content=frame),
+                    input_message(first.id, first.text),
+                ],
+                INPUT_IDS_CHANNEL: [first.id],
+            }
+        else:
+            state = await graph.aget_state(config)
+            if state.interrupts:
+                command, waiting = await self._card_resume(context, task, state.interrupts)
+                if waiting is not None:
+                    return waiting
+                payload = command
+            elif state.next:
+                payload = None
+            else:
+                return await self._finish_conversation(graph, state.values, context, catalog)
+        await context.budget.start()
+        result = await self._invoke(graph, payload, context)
+        if isinstance(result, Report):
+            return context.progress.result_event, None
+        return await self._finish_conversation(graph, result, context, catalog)
+
+    async def _card_resume(self, context: AgentContext, task: InvestigationTask, interrupts):
+        scope = self._scope
+        if len(interrupts) != 1 or scope.turn.lane != "main":
+            raise RuntimeError("主线必须停在唯一的卡片中断点")
+        interrupted = interrupts[0]
+        proposal_id = interrupted.value["proposal_id"]
+        executor = context.executor
+        if not isinstance(executor, CardActions):
+            raise RuntimeError("恢复卡片需要支持会话租约的动作执行器")
+        await context.ensure_active()
+        proposal = await self._store.get_proposal(proposal_id)
+        if proposal is None or proposal.investigation_id != self._investigation_id:
+            raise RuntimeError("卡片与当前调查的关联失效")
+        approval = await executor.get_card_decision(proposal_id, session_id=scope.turn.session_id)
+        attempt = await self._store.get_attempt(proposal_id)
+        token = resume_token(proposal, attempt, approval)
+        if token is None:
+            return None, await self._publish_pause(context, proposal_id)
+
+        async with scope.transaction() as tx:
+            if task.phase is TaskPhase.WAITING_APPROVAL:
+                await tx.ledger.resume_task(self._investigation_id)
+            if tx.turn.state == "awaiting_approval":
+                await tx.set_turn_state("running")
+        return Command(
+            resume={
+                interrupted.id: {
+                    "proposal_id": proposal_id,
+                    "decision_id": token,
+                }
+            }
+        ), None
+
+    async def _publish_pause(
+        self, context: AgentContext, proposal_id: str
+    ) -> tuple[SessionEvent, SessionEvent]:
+        scope = self._scope
+        await context.ensure_active()
+        # 先确认 LangGraph 已返回并完成 checkpoint 和 pending writes，发布可幂等重试。
+        card = await context.executor.publish_card(
+            proposal_id, lease=scope.lease, turn_id=scope.turn.id
+        )
+        async with scope.transaction() as tx:
+            if tx.turn.state == "running":
+                event = await tx.append_event(
+                    "result",
+                    {
+                        "status": "awaiting_approval",
+                        "summary": "等待人工审批",
+                        "exit_code": 3,
+                        "schema_version": 1,
+                        "card_id": proposal_id,
+                        "investigation_id": self._investigation_id,
+                        "lane": "main",
+                    },
+                )
+                await tx.set_turn_state("awaiting_approval")
+                return event, card
+
+        async for event in events(scope.sessions, scope.turn.session_id, after_seq=card.seq):
+            if (
+                event.type == "result"
+                and event.turn_id == scope.turn.id
+                and (event.payload.get("card_id") == proposal_id)
+            ):
+                return event, card
+        raise RuntimeError("已暂停的轮次缺少结果事件")
+
+    async def _finish_conversation(
+        self, graph, result: dict[str, Any], context: AgentContext, catalog: Sequence[SkillSpec]
+    ) -> tuple[SessionEvent, SessionEvent | None]:
+        scope = self._scope
+        while True:
+            interrupts = result.get("__interrupt__", ())
+            if interrupts:
+                return await self._publish_pause(context, interrupts[0].value["proposal_id"])
+            messages = result.get("messages") or []
+            start = next(
+                (i for i, m in enumerate(messages) if m.id == f"vigil-turn-{scope.turn.id}"), 0
+            )
+            await self._record_loaded_skills(catalog, {"messages": messages[start:]})
+            answer = next(
+                (
+                    str(m.text)
+                    for m in reversed(messages[start:])
+                    if isinstance(m, AIMessage) and not m.tool_calls and m.text.strip()
+                ),
+                "",
+            )
+            raw = result.get("structured_response")
+            draft = None
+            problems = []
+            if raw is not None:
+                try:
+                    draft = ReportDraft.model_validate(raw)
+                except ValidationError:
+                    problems = ["结构化报告的字段或类型无效"]
+                else:
+                    problems = await self._validate_draft(draft, context)
+            if draft is not None and not problems:
+                await self._decide_outcome(context, draft)
+                return context.progress.result_event, None
+
+            requests = await self._store.list_tool_requests(self._investigation_id)
+            investigation = self._incident.trigger == "alert" or any(
+                item.tool in {"manage_hypotheses", "assess_evidence", "request_action"}
+                for item in requests
+                if item.state is not ToolRequestState.RUNNING
+            )
+            if raw is None and answer and (scope.turn.lane == "side" or not investigation):
+                await self._complete(
+                    context,
+                    draft=None,
+                    outcome=TaskOutcome.INCONCLUSIVE,
+                    code=TerminationCode.INSUFFICIENT_EVIDENCE,
+                    conclusion=None,
+                    detail=answer,
+                )
+                return context.progress.result_event, None
+
+            correction_id = f"vigil-report-correction-{scope.turn.id}"
+            if scope.turn.lane == "side" or any(m.id == correction_id for m in messages):
+                await self._abort(
+                    context, TerminationCode.INVALID_REPORT, "本轮未生成有效回答或报告"
+                )
+                return context.progress.result_event, None
+            if context.budget.phase == "idle":
+                await context.budget.start()
+            text = correction_message(problems) if problems else missing_report_message()
+            result = await self._invoke(
+                graph, {"messages": [HumanMessage(id=correction_id, content=text)]}, context
+            )
+            if isinstance(result, Report):
+                return context.progress.result_event, None
+
     async def _invoke(self, graph, payload, context: AgentContext) -> dict[str, Any] | Report:
         """执行一次图调用；把运行故障改写成确定性终态，不伪装成调查结论。"""
         token = CURRENT_CONTEXT.set(context)
         try:
+            if self._scope is not None:
+                return await graph.ainvoke(
+                    payload, self._config(), context=context, durability="sync"
+                )
             return await graph.ainvoke(payload, self._config(), context=context)
+        except (LeaseLost, SessionClosed, DatabaseError, AwaitingActionReceipt):
+            if self._scope is not None:
+                raise
+            return await self._abort(context, TerminationCode.STORE_FAILURE, "数据库操作失败")
         except RunCancelled:
             return await self._abort(context, TerminationCode.CANCELLED, "任务收到取消请求")
         except BudgetExhausted as exc:
+            if self._scope is not None:
+                observations = await self._store.list_observations(self._investigation_id)
+                observed = [item for item in observations if item.status is ObservationStatus.OK]
+                detail = f"预算耗尽（{exc.item}），结论不完整。已取得 {len(observed)} 条有效观测。"
+                if observed:
+                    detail += (
+                        " 最近观测："
+                        + "、".join(
+                            f"{item.source} {item.time_range.end.isoformat()}"
+                            for item in observed[-3:]
+                        )
+                        + "。"
+                    )
+                if context.progress.recovered:
+                    detail += " 动作验证已记录业务恢复。"
+                return await self._complete(
+                    context,
+                    draft=None,
+                    outcome=(
+                        TaskOutcome.RECOVERED
+                        if context.progress.recovered
+                        else TaskOutcome.INCONCLUSIVE
+                    ),
+                    code=TerminationCode.BUDGET_EXHAUSTED,
+                    conclusion=None,
+                    model_summary_completed=False,
+                    detail=detail,
+                )
             if context.progress.recovered:
                 return await self._complete(
                     context,
@@ -701,7 +975,6 @@ class LangChainInvestigation:
         model_summary_completed: bool = True,
         detail: str = "",
     ) -> Report:
-        await context.budget.pause()
         finished_at = datetime.now(UTC)
         if conclusion:
             status = InvestigationStatus.COMPLETED
@@ -712,46 +985,110 @@ class LangChainInvestigation:
         else:
             status = InvestigationStatus.INCONCLUSIVE
             termination_reason = detail or "证据不足，未形成根因候选"
-        await self._store.set_investigation_status(
-            self._investigation_id,
-            status,
+        answer = draft.conclusion if draft is not None else detail
+        return await self._finalize(
+            context,
+            status=status,
+            outcome=outcome,
+            code=code,
+            detail=detail,
+            finished_at=finished_at,
             conclusion=conclusion,
             termination_reason=termination_reason,
-            finished_at=finished_at,
+            answer=answer,
+            model_summary_completed=model_summary_completed,
         )
-        await self._store.finish_task(
-            self._investigation_id,
-            outcome=outcome,
-            termination_code=code.value,
-            finished_at=finished_at,
-        )
-        await self._audit(status, outcome, code, detail)
-        return await self._report(context, model_summary_completed=model_summary_completed)
 
     async def _abort(
         self, context: AgentContext | None, code: TerminationCode, detail: str
     ) -> Report:
-        finished_at = datetime.now(UTC)
-        await self._store.set_investigation_status(
-            self._investigation_id,
-            InvestigationStatus.ABORTED,
-            conclusion=None,
-            termination_reason=detail,
-            finished_at=finished_at,
-        )
-        await self._store.finish_task(
-            self._investigation_id,
-            outcome=TaskOutcome.ABORTED,
-            termination_code=code.value,
-            finished_at=finished_at,
-        )
-        await self._audit(InvestigationStatus.ABORTED, TaskOutcome.ABORTED, code, detail)
         if context is None:
             _, context = await self._open_context()
-        return await self._report(context, model_summary_completed=False)
+        return await self._finalize(
+            context,
+            status=InvestigationStatus.ABORTED,
+            outcome=TaskOutcome.ABORTED,
+            code=code,
+            detail=detail,
+            finished_at=datetime.now(UTC),
+            conclusion=None,
+            termination_reason=detail,
+            answer="",
+            model_summary_completed=False,
+        )
 
-    async def _audit(self, status, outcome, code, detail: str) -> None:
-        await self._store.append_audit(
+    async def _finalize(
+        self,
+        context: AgentContext,
+        *,
+        status: InvestigationStatus,
+        outcome: TaskOutcome,
+        code: TerminationCode,
+        detail: str,
+        finished_at: datetime,
+        conclusion: str | None,
+        termination_reason: str | None,
+        answer: str,
+        model_summary_completed: bool,
+    ) -> Report:
+        side_question = ""
+        if self._scope is not None and self._scope.turn.lane == "side":
+            first = await self._scope.sessions.get_input(self._scope.turn.first_input_id)
+            if first is not None:
+                side_question = self._scope.project_text(first.text)
+        async with context.ledger() as (ledger, tx):
+            if tx is not None or status is not InvestigationStatus.ABORTED:
+                await context.budget.pause(ledger=ledger)
+            await ledger.set_investigation_status(
+                self._investigation_id,
+                status,
+                conclusion=conclusion,
+                termination_reason=termination_reason,
+                finished_at=finished_at,
+            )
+            await ledger.finish_task(
+                self._investigation_id,
+                outcome=outcome,
+                termination_code=code.value,
+                finished_at=finished_at,
+            )
+            await self._audit(status, outcome, code, detail, ledger=ledger)
+            if tx is not None:
+                exit_code = (
+                    4
+                    if code is TerminationCode.BUDGET_EXHAUSTED
+                    else (1 if status is InvestigationStatus.ABORTED else 0)
+                )
+                summary = self._scope.project_text(answer or detail or "本轮完成")
+                if answer and exit_code in (0, 4):
+                    await tx.append_event(
+                        "message", {"role": "assistant", "text": summary, "lane": tx.turn.lane}
+                    )
+                result = {
+                    "schema_version": 1,
+                    "status": (
+                        "budget_exhausted"
+                        if exit_code == 4
+                        else "failed"
+                        if exit_code
+                        else "completed"
+                    ),
+                    "summary": summary,
+                    "exit_code": exit_code,
+                    "investigation_id": self._investigation_id,
+                    "termination_code": code.value,
+                    "lane": tx.turn.lane,
+                }
+                if tx.turn.lane == "side" and exit_code != 1:
+                    result["side_question"] = side_question
+                    # 旁路开始时的待审批先于预算退出；真实的预算终止仍可从代码读取。
+                    result["exit_code"] = 3
+                context.progress.result_event = await tx.append_event("result", result)
+                await tx.set_turn_state("aborted" if exit_code == 1 else "completed")
+        return await self._report(context, model_summary_completed=model_summary_completed)
+
+    async def _audit(self, status, outcome, code, detail: str, *, ledger: Store) -> None:
+        await ledger.append_audit(
             [
                 AuditEvent(
                     id=f"audit-{uuid.uuid4().hex[:12]}",
