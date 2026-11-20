@@ -4,6 +4,7 @@ import hmac
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from secrets import token_urlsafe
 from typing import Annotated, Any
 from urllib.parse import parse_qs
@@ -15,8 +16,9 @@ from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from starlette.routing import Route
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp
 
 from aiops.actions.rollout_undo import ActionError
@@ -33,6 +35,7 @@ _COOKIE = "vigil_browser"
 _API_LIMIT = 64 * 1024
 _MONITORING_BLOCKS = ("alerts", "probes", "changes", "services", "warnings", "nodes")
 MonitoringSnapshot = Callable[[], Awaitable[dict[str, Any]]]
+STATIC_DIR = Path(__file__).with_name("static")
 
 
 class BrowserAuth:
@@ -176,6 +179,19 @@ def build_web_app(
     auth: BrowserAuth,
     monitoring: MonitoringSnapshot | None = None,
 ) -> Starlette:
+    async def page(request: Request) -> FileResponse:
+        if "session_id" in request.path_params:
+            _id(request, "session_id")
+        return FileResponse(
+            STATIC_DIR / "index.html",
+            headers={
+                "Content-Security-Policy": (
+                    "default-src 'self'; object-src 'none'; base-uri 'none'; "
+                    "frame-ancestors 'none'; form-action 'self'"
+                ),
+            },
+        )
+
     async def require_session(request: Request, *, open_only: bool = False) -> Session:
         session = await sessions.get_session(_id(request, "session_id"))
         if session is None:
@@ -357,6 +373,9 @@ if (token) {{
 
     app = Starlette(
         routes=[
+            Route("/", page),
+            Route("/sessions/{session_id}", page),
+            Mount("/static", app=StaticFiles(directory=STATIC_DIR)),
             Route("/login", login_page, methods=["GET"]),
             Route("/login", login, methods=["POST"]),
             Route("/api/sessions", list_sessions),

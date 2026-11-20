@@ -208,6 +208,7 @@ class SessionStore:
         input_id: str | None = None,
         *,
         alert_names: tuple[str, ...] = (),
+        alert_origin: bool = False,
     ) -> SessionInput:
         if (await self.lock_session(conn, session_id)).state == "closed":
             raise SessionClosed(session_id)
@@ -217,12 +218,10 @@ class SessionStore:
             if row["session_id"] != session_id or row["text"] != text:
                 raise ValueError("输入 ID 已绑定其它输入")
             return SessionInput(**row)
-        event = await self.append_event(
-            conn,
-            session_id,
-            "message",
-            {"role": "user", "text": display_text, "input_id": input_id},
-        )
+        payload = {"role": "user", "text": display_text, "input_id": input_id}
+        if alert_origin:
+            payload["source"] = "alert"
+        event = await self.append_event(conn, session_id, "message", payload)
         row = await _one(
             conn,
             """
@@ -271,7 +270,7 @@ class SessionStore:
             session = await self._insert_session(conn, title=title, group_key=group_key)
             if session is not None:
                 incoming = await self._enqueue_input(
-                    conn, session.id, text, display_text, alert_names=alert_names
+                    conn, session.id, text, display_text, alert_names=alert_names, alert_origin=True
                 )
                 turn = await self._new_turn(conn, incoming, lane="main")
                 event = await _one(

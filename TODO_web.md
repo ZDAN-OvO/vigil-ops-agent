@@ -46,7 +46,9 @@
 
 ## 验证
 
-- 新增可重复运行的浏览器和样式命令，记录在测试入口。用浏览器验证 1440×900、1280×800 与减少动态效果设置，并从卡片链接测试待审批、已决、已作废和不存在的四类结果。
+- 在仓库根目录运行 `uv run --frozen --with tinycss2==1.5.1 python tests/web/check_styles.py` 检查样式与 SVG。
+- 安装 Google Chrome 后运行 `uv run --frozen --with playwright==1.61.0 python tests/web/browser_cases.py`。测试自动启动独立同源 fixture，覆盖 1440×900、1280×800 两档四态、减少动态效果、十一条卡片推进和四类卡片锚点。
+- 运行 `uv build --wheel` 检查 `aiops/static/` 随包分发。生产服务从 `aiops/static/index.html` 提供 `/` 和 `/sessions/{id}`，静态资源前缀为 `/static/`。
 - 由 [集成与切换验收](TODO_release-verification.md) 复跑已安装资源、真实服务和卡片的审批行为。
 
 ## 停止条件
@@ -56,9 +58,10 @@
 
 ## 进度
 
-- [ ] 会话、账本、卡片和只读态
-- [ ] 六块面板、交互和键盘
-- [ ] 样式、状态矩阵和正式包验证
+- [x] 新建会话、恢复、账本、卡片和只读态
+- [x] 六块面板、交互和键盘
+- [x] 样式检查、浏览器状态矩阵和 wheel 静态资源检查
+- [ ] 接入生产服务并验证安装包的访问、审批与流式输出
 
 ## 范围外的问题
 
