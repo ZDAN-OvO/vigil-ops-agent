@@ -240,7 +240,14 @@ if (token) {{
         limit = _number(request, "limit", 50, 1, 200)
         rows = await sessions.list_sessions(limit=limit)
         pending = await safety.pending_card_sessions([row.id for row in rows])
-        return JSONResponse({"sessions": [_summary(row, pending) for row in rows]})
+        reason = auth.disabled_reason(request)
+        return JSONResponse(
+            {
+                "sessions": [_summary(row, pending) for row in rows],
+                "approval_enabled": reason is None,
+                "approval_disabled_reason": reason,
+            }
+        )
 
     async def create_session(request: Request) -> JSONResponse:
         require_write(request)

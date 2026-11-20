@@ -96,7 +96,7 @@ CLI 调用 `await aiops.serve.run_serve(settings, interactive=stdin_is_tty and s
 
 | 方法与路径 | 请求与成功响应 |
 |---|---|
-| `GET /api/sessions` | `limit` 默认 50，范围 1–200。200 `{sessions: Session[]}`，按更新倒序。 |
+| `GET /api/sessions` | `limit` 默认 50，范围 1–200。200 `{sessions: Session[], approval_enabled, approval_disabled_reason}`，按更新倒序。 |
 | `POST /api/sessions` | 无请求体。201 `{session: Session}`，新建一条可输入的用户会话。 |
 | `GET /api/sessions/{session_id}` | 200 `{session: Session, approval_enabled: boolean, approval_disabled_reason: string\|null}`。 |
 | `GET /api/sessions/{session_id}/events` | `after_seq` 默认 0，`limit` 默认 100（1–200）。200 `{events: SessionEvent[], next_after_seq: number, has_more: boolean}`。 |

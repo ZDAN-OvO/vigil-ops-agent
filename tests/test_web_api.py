@@ -80,6 +80,7 @@ def test_create_session_requires_browser_login_and_can_accept_first_message(isol
             auth = BrowserAuth(interactive=True)
             async with _client(settings, store, auth) as client:
                 headers = {"Origin": settings.web_origin}
+                assert (await client.get("/api/sessions")).json()["approval_enabled"] is False
                 assert (await client.post("/api/sessions", headers=headers)).status_code == 403
                 await _login(client, auth, settings.web_origin)
                 assert (await client.post("/api/sessions")).status_code == 403
@@ -96,6 +97,7 @@ def test_create_session_requires_browser_login_and_can_accept_first_message(isol
                 assert response.json()["queued_seq"] == 2
                 listing = await client.get("/api/sessions")
                 assert listing.json()["sessions"][0]["id"] == session["id"]
+                assert listing.json()["approval_enabled"] is True
 
     asyncio.run(run())
 
