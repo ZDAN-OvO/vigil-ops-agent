@@ -91,8 +91,14 @@ AlertManager 的首次 firing 为同一 `groupKey` 创建会话和首轮调查�
 记录结论和依据。隔离失败或状态无法确定时，保留目标锁。
 
 旧版升级采用停机切换。先停旧 webhook 和驱动，确认进程已退出且禁止自动重启。备份
-PostgreSQL，并将备份恢复到独立库验证可读。对切换目标运行 `vigil admin migrate`，
-然后先预览，再实际执行：
+PostgreSQL，并将备份恢复到独立库验证可读。
+
+若旧库仍在 0010 或更早版本，先导出需要保留的调查、证据和工具调用记录。
+[0011 迁移](../src/aiops/migrations/0011_skills_and_delegations.sql) 会删除
+`hypothesis_revisions`、`evidence` 和 `tool_calls`，旧证据不会转换为 `observations`。
+需要查阅原报告时，升级前用旧版在备份副本上核对并导出。验收预演的起始库已在 0011。
+
+对切换目标运行 `vigil admin migrate`，然后先预览，再实际执行：
 
 ```bash
 vigil admin prepare-legacy-cutover

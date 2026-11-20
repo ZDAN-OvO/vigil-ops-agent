@@ -4,6 +4,20 @@
 Python 3.12.14。浏览器用 Chrome 157.0.8103.78，调用方用 Claude Code 2.1.329。
 验收库、浏览器和实验集群均使用本次独立配置。
 
+## 受测版本与目标
+
+| 用途 | 提交 | wheel SHA-256 |
+| --- | --- | --- |
+| 真实 Claude Code、交互终端和告警网页 | `a5f04c2a261fa1f3ca44c028f752341bd57187b3` | `54267cf611eedba23e570b6984a7c558936ad53f87343366f076b24fa3145c6b` |
+| 跨进程接手、非交互服务、审批阻断、最终人工核实 | `178dd6604483f9516c3320c28266ffe5acc917e3` | `95484df220fe733ca06ada0fd92a7fcfaadf2ae5d16d8a71bedd8b9b9704ee14` |
+| 旧库夹具 | `4765fb30198c72bb2a271c5da6679888fe59f399`，应用到 0011 | 源码运行 |
+
+独立集群为 `k3d-vigil-af-iybt7uz6`，PostgreSQL 容器为
+`vigil-agent-first-pg-iybt7uz6`。F01 目标为 `vigil-shop/Deployment/productcatalogservice`，
+版本隔离和审批阻断使用 `vigil-experiment` 内新建的短期 Deployment。旧库切换在
+`vigil_legacy_fixture` 的备份副本 `vigil_cutover_trial` 上执行。真实入口和跨进程场景
+分别使用 `vigil_installed_trial`、`vigil_terminal_trial` 和 `vigil_takeover_trial`。
+
 ## 安装版的真实入口
 
 构建 wheel 后在无源码目录启动，用 `vigil admin migrate` 升到 0014。
@@ -23,6 +37,37 @@ Python 3.12.14。浏览器用 Chrome 157.0.8103.78，调用方用 Claude Code 2.
 
 实验上的首次终端调查没满足业务证据要求，执行器拒绝处置。重跑时明确要求核查入口失败
 和 Deployment 历史，并使用另一份演练库，完成了批准、实际写入和验证。
+
+### 复跑要点
+
+1. 用与场景对应的提交构建 wheel，按[安装与配置](USAGE.md#1-安装与配置)准备独占库和
+   实验集群端口转发。核对 kubeconfig 与 context 指向实验集群。运行 `vigil admin migrate`
+   和 `vigil admin doctor`，确认迁移齐备且能发现五份内置 Skill。
+2. 健康场景在 Claude Code 中用 Bash 执行
+   `vigil -p "checkoutservice 现在健康吗？查询副本、重启和 Warning 事件" --output stream-json | tail -n 1`。
+   核对工具收到的 `result` 和退出码 0。
+3. 以[坏发布步骤](../faults/f01-bad-release/README.md#4-操作步骤)单独执行注入，
+   核对首页 500 和 `frontend-probe`。交互终端运行 `vigil "首页返回 500"`，出现查询时
+   输入发布线索。核对送达事件和卡片后按终端提示批准。告警场景用同一注入方式，
+   在交互式 `vigil serve` 启动后等自然 firing，再在 Chrome 登录和批准。
+   每轮复位前核对首页 200、坏 ReplicaSet 为零副本、动作 `verified` 和实际 PATCH 次数。
+4. 跨进程场景使用 `vigil -p "首页返回 500，请先调查再提回滚卡片" --output stream-json`，
+   以 3 退出后用网页链接打开该卡片。核对未登录批准返回 403。登录批准后执行
+   `vigil --resume SESSION_ID --output stream-json`，将持久化序号和同会话网页事件比对。
+5. 分组通知场景经实验 AlertManager 的 `POST /api/v2/alerts` 发入同告警名、不同
+   instance 的两条假数据，依次设第一条和第二条已恢复，再次触发一条。
+   该场景使用真实接收服务和 AlertManager；第 3 步使用真实首页故障自然产生的告警，
+   [告警 TCP 验证](../tests/test_webhook.py)使用固定 payload。
+
+本地保留的脱敏证据按场景索引。审计仅留对象、时间、dry-run 和结果码。
+
+| 场景 | 证据文件 |
+| --- | --- |
+| Claude Code 实际 Bash 与末行 | `claude-vigil-tail-outer.jsonl` |
+| 终端、真实告警、跨进程接手 | `scenario-b-audit.log`、`scenario-c-audit.log`、`takeover-audit.log`、`takeover-resumed.jsonl` |
+| AlertManager 真投递及浏览器结果 | `scenario-c-events.json`、`alertmanager-roundtrip.log`、`browser-evidence/alert-card-verified.png` |
+| 阻断、隔离与旧库 | `negative-approval-evidence.log`、`action-real-k3d-adapter.log`、`cutover-status.log`、`cutover-reconcile-final.log` |
+| 门禁和浏览器夹具 | `release-check-all.log`、`installed-frontend-fixture.log` |
 
 ## 并发与异常回归
 
