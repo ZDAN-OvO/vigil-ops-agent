@@ -218,6 +218,7 @@ class OnceOutput:
         self.session_id: str | None = None
         self.cursor = 0
         self.cards: list[SessionEvent] = []
+        self.side_card: SessionEvent | None = None
 
     async def attach(self, session: Session, *, resumed: bool) -> None:
         self.session_id = session.id
@@ -278,9 +279,14 @@ class OnceOutput:
             )
         )
         if self.mode == "json":
+            side_card = self.side_card if result and result.payload.get("lane") == "side" else None
             payload["cards"] = [
-                card.as_dict() for card in self.cards if result and card.turn_id == result.turn_id
+                card.as_dict()
+                for card in self.cards
+                if card == side_card or (result and card.turn_id == result.turn_id)
             ]
+            if side_card is not None:
+                payload["card_id"] = side_card.payload["card_id"]
         if self.mode != "text":
             await _write(_json(payload))
         elif result is None:
@@ -351,6 +357,40 @@ async def _drive_once(
             task.exception()
 
 
+async def _drive_side_input(
+    driver: ConversationDriver, session_id: str, text: str, output: OnceOutput
+) -> ConversationResult | None:
+    sessions = driver.sessions
+    incoming = await sessions.enqueue_input(session_id, text, display_text=project_text(text))
+    deadline = asyncio.get_running_loop().time() + (
+        driver.settings.investigation_budget_seconds
+        + driver.settings.investigation_budget_action_seconds
+    )
+    cursor = incoming.queued_seq
+    delivered_turn = None
+    delivered_lane = None
+    while asyncio.get_running_loop().time() < deadline:
+        async for event in _events(sessions, session_id, after=cursor):
+            cursor = event.seq
+            if event.type == "input_delivered" and event.payload.get("input_id") == incoming.id:
+                delivered_turn = event.turn_id
+                delivered_lane = event.payload["lane"]
+            if event.type == "result" and delivered_turn and event.turn_id == delivered_turn:
+                return ConversationResult(event)
+        session = await sessions.get_session(session_id)
+        if session.state == "closed":
+            return None
+        lane: TurnLane = delivered_lane or (
+            "side" if session.state == "awaiting_approval" else "main"
+        )
+        with suppress(LeaseLost, SessionClosed, AwaitingActionReceipt):
+            async with driver.claim(session_id, lane=lane) as run:
+                if run is not None and await _drive_once(run, output, sessions) is not None:
+                    continue
+        await asyncio.sleep(POLL_SECONDS)
+    raise CLIError("等待本次输入的结果超时")
+
+
 async def _once(
     driver: ConversationDriver, session: Session, args: argparse.Namespace, output: OnceOutput
 ) -> ConversationResult | None:
@@ -365,6 +405,7 @@ async def _once(
         output.cursor, history = await _turn_history(sessions, session)
         if lane == "side":
             if history is not None and history.card is not None:
+                output.side_card = history.card
                 await output.emit(history.card)
             output.cursor = session.last_seq
     elif resumed:
@@ -372,14 +413,18 @@ async def _once(
 
     if args.message and session.state == "closed":
         raise SessionClosed(session.id)
+    if session.state == "closed":
+        await output.read(sessions, through=session.last_seq)
+        return None
     outcome = None
-    if session.state != "closed":
-        if lane == "side":
-            # 旁路领取事务需要已排队的消息来创建旁路轮。
-            await _enqueue(sessions, session.id, args.message)
+    if lane == "side":
+        outcome = await _drive_side_input(driver, session.id, args.message, output)
+        if outcome is None:
+            raise SessionClosed(session.id)
+    else:
         async with driver.claim(session.id, lane=lane) as run:
             if run is not None:
-                if lane == "main" and args.message:
+                if args.message:
                     await _enqueue(sessions, session.id, args.message)
                 outcome = await _drive_once(run, output, sessions)
             elif args.message or session.state in {"working", "interrupted"}:

@@ -316,6 +316,46 @@ def test_paused_once_releases_lease_and_persists_takeover_receipt(child_env, tmp
     assert (tmp_path / "writes").read_text().splitlines() == ["uid-pod-cli-stable"]
 
 
+def test_side_json_waits_for_its_own_input_and_keeps_main_card(child_env):
+    card = _card_run(child_env)
+    session_id = card["session_id"]
+
+    async def seed_interrupted_side():
+        async with Store.open(child_env["VIGIL_DATABASE_URL"]) as store:
+            sessions = SessionStore(store)
+            await sessions.enqueue_input(session_id, "旧问题", display_text="旧问题")
+            lease = await sessions.acquire_side_lease(session_id, "finished-test-process")
+            assert lease is not None
+            await sessions.release_lease(lease)
+
+    asyncio.run(seed_interrupted_side())
+    proc = _run(child_env, "-p", "本次提问", "--resume", session_id, "--output", "json")
+    assert proc.returncode == 3, proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["side_question"] == "本次提问"
+    assert result["card_id"] == card["card_id"]
+    assert result["cards"] == [card]
+    assert _sql(child_env, "SELECT count(*) FROM session_inputs WHERE checkpoint_id IS NULL") == [
+        (0,)
+    ]
+
+
+def test_closed_resume_reports_closure_after_historical_card(child_env):
+    card = _card_run(child_env)
+    session_id = card["session_id"]
+
+    async def close():
+        async with Store.open(child_env["VIGIL_DATABASE_URL"]) as store:
+            async with store.transaction() as conn:
+                await ActionSafety(store).close_session(conn, session_id, reason="预演关闭")
+
+    asyncio.run(close())
+    events = _stream(_run(child_env, "--resume", session_id, "--output", "stream-json"), 0)
+    assert any(event["type"] == "session_closed" for event in events[:-1])
+    assert events[-1]["status"] == "closed"
+    assert events[-1]["seq"] is None
+
+
 def test_pipe_and_machine_modes_never_approve_or_reject(child_env):
     card = _card_run(child_env, "json")
     session_id, card_id = card["session_id"], card["card_id"]
@@ -823,6 +863,7 @@ class _Model(ScriptedChatModel):
 def _child_main():
     class TestSettings(Settings):
         web_url: str = WEB_URL
+        web_port: int = 8123
 
     cli.Settings = lambda: TestSettings(_env_file=None)
     if os.environ.get("CLI_TEST_SERVE"):
