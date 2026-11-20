@@ -154,4 +154,6 @@ def test_rollback_chooses_only_the_expected_deployment_replicaset(monkeypatch):
     plan = adapter.plan("vigil-shop", "catalog")
     assert plan.replica_set_uid == "target-uid"
     assert plan.target_image == "v1"
-    assert plan.changes == [{"op": "replace", "path": "/spec/containers/0/image", "value": "v1"}]
+    assert plan.changes == [
+        {"op": "replace", "path": "/spec/containers/0/image", "current": "v3", "value": "v1"}
+    ]
