@@ -1,11 +1,13 @@
 """新项目配置，配置文件位置不依赖进程工作目录。"""
 
 import os
+import re
 from importlib.resources import files
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -14,6 +16,7 @@ _SOURCE_CHECKOUT = (
     and (PROJECT_ROOT / "pyproject.toml").is_file()
 )
 _CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "vigil"
+WEB_HOST = "127.0.0.1"
 
 
 class Settings(BaseSettings):
@@ -59,13 +62,16 @@ class Settings(BaseSettings):
     # 仓库内置 Skill；只允许本地目录，远程分发留到后续阶段。
     skills_dir: Path | None = None
 
-    # 告警入口。token 未配置时服务拒绝启动，避免裸奔的 webhook。
+    # 网页固定监听 IPv4 loopback。公开给会话事件的网页地址可不配置。
+    web_port: int = Field(default=8090, ge=1, le=65535)
+    web_url: str | None = None
+
+    # 告警入口由显式配置的实验网关地址启用。
     cluster: str = "vigil-lab"
     namespace: str = "vigil-shop"
     webhook_token: SecretStr | None = None
-    webhook_host: str = "127.0.0.1"
-    webhook_port: int = 8081
-    dedup_minutes: int = 10
+    webhook_host: str | None = None
+    webhook_port: int = Field(default=8091, ge=1, le=65535)
 
     # 受控执行的时间窗，同样是临时默认值。
     action_rollout_timeout_seconds: float = 180.0
@@ -82,6 +88,40 @@ class Settings(BaseSettings):
     langfuse_public_key: SecretStr | None = None
     langfuse_secret_key: SecretStr | None = None
     langfuse_host: str = "https://cloud.langfuse.com"
+
+    @model_validator(mode="after")
+    def validate_web_url(self) -> "Settings":
+        if self.web_url not in (None, self.web_origin, f"{self.web_origin}/"):
+            raise ValueError("VIGIL_WEB_URL 必须是本机网页的 HTTP 源，端口须与监听一致")
+        return self
+
+    @property
+    def web_authority(self) -> str:
+        return WEB_HOST if self.web_port == 80 else f"{WEB_HOST}:{self.web_port}"
+
+    @property
+    def web_origin(self) -> str:
+        return f"http://{self.web_authority}"
+
+    def validate_webhook_listener(self) -> None:
+        if self.webhook_host is None and self.webhook_token is None:
+            return
+        if self.webhook_host is None or self.webhook_token is None:
+            raise ValueError("告警监听需要同时配置 VIGIL_WEBHOOK_HOST 和 VIGIL_WEBHOOK_TOKEN")
+        try:
+            host = ip_address(self.webhook_host)
+        except ValueError:
+            raise ValueError("VIGIL_WEBHOOK_HOST 必须是实验网关的具体 IP 地址") from None
+        if (
+            host.is_unspecified
+            or host.is_multicast
+            or host.is_reserved
+            or host.is_global
+            or (str(host) == WEB_HOST and self.webhook_port == self.web_port)
+        ):
+            raise ValueError("VIGIL_WEBHOOK_HOST 必须是独立于网页监听的具体单播地址")
+        if not re.fullmatch(r"[A-Za-z0-9._~+/=-]+", self.webhook_token.get_secret_value()):
+            raise ValueError("VIGIL_WEBHOOK_TOKEN 必须使用非空 Bearer 令牌")
 
     @property
     def runtime_path(self) -> Path:

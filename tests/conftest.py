@@ -144,3 +144,20 @@ def action_session_ids():
                     },
                 )
             _delete_session(conn, session_id)
+
+
+@pytest.fixture
+def isolated_serve_dsn():
+    """调度器扫描整个 schema，每条服务测试使用独立账本。"""
+    from psycopg import sql
+    from psycopg.conninfo import make_conninfo
+
+    if not DSN:
+        pytest.skip("未配置 VIGIL_DATABASE_URL")
+    schema = f"serve_{uuid4().hex}"
+    with psycopg.connect(DSN, autocommit=True) as administer:
+        administer.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+        try:
+            yield make_conninfo(DSN, options=f"-csearch_path={schema}")
+        finally:
+            administer.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
