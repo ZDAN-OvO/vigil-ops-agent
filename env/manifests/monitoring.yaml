@@ -160,7 +160,7 @@ data:
       - name: vigil-webhook
         webhook_configs:
           - url: http://172.20.0.1:8091/webhook/alertmanager
-            send_resolved: false
+            send_resolved: true
             http_config:
               authorization:
                 type: Bearer

@@ -28,6 +28,7 @@ class RollbackRecord:
     started_at: datetime
     approved_by: str | None
     finished_at: datetime | None = None
+    replica_set_uid: str | None = None
 
 
 class RollbackHistory(Protocol):
@@ -56,14 +57,17 @@ class PostgresRollbackHistory:
                            AS target_revision,
                        COALESCE(a.snapshot->>'target_image', p.parameters->>'target_image')
                            AS target_image,
-                       a.started_at, a.finished_at, approval.actor AS approved_by
+                       COALESCE(a.send_granted_at, a.started_at) AS started_at,
+                       p.parameters->'replica_set'->>'uid' AS replica_set_uid,
+                       a.finished_at, approval.actor AS approved_by
                   FROM action_attempts a
                   JOIN action_proposals p ON p.id = a.proposal_id
                   LEFT JOIN LATERAL (
                       SELECT actor FROM approvals r
                        WHERE r.proposal_id = p.id AND r.decision = 'approved'
-                         AND r.decided_at <= a.started_at
-                         AND (r.expires_at IS NULL OR r.expires_at >= a.started_at)
+                         AND r.decided_at <= COALESCE(a.send_granted_at, a.started_at)
+                         AND (r.expires_at IS NULL OR
+                              r.expires_at > COALESCE(a.send_granted_at, a.started_at))
                          AND (a.snapshot->>'approval_hash' IS NULL
                               OR r.proposal_hash = a.snapshot->>'approval_hash')
                        ORDER BY r.decided_at DESC, r.id DESC LIMIT 1
@@ -71,7 +75,8 @@ class PostgresRollbackHistory:
                  WHERE p.cluster = %s AND p.namespace = %s AND p.target_kind = 'Deployment'
                    AND p.kind = 'rollout_undo' AND p.status = 'succeeded'
                    AND a.status = 'verified' AND a.finished_at <= %s
-                   AND a.started_at >= %s AND a.finished_at >= a.started_at
+                   AND COALESCE(a.send_granted_at, a.started_at) >= %s
+                   AND a.finished_at >= COALESCE(a.send_granted_at, a.started_at)
                 """,
                 (self._cluster, self._namespace, end, start),
             )
@@ -96,6 +101,7 @@ class Revision:
     revisions: tuple[int, ...]
     image: str | None
     cause: str
+    uid: str
 
 
 def _revisions(deployments: list[dict], replicasets: list[dict]) -> tuple[list[Revision], bool]:
@@ -123,6 +129,7 @@ def _revisions(deployments: list[dict], replicasets: list[dict]) -> tuple[list[R
                 revisions=tuple(int(n) for n in versions if n),
                 image=containers[0]["image"] if containers else None,
                 cause=annotations.get(CHANGE_CAUSE) or "",
+                uid=metadata.get("uid") or "",
             )
         )
     return revisions, incomplete
@@ -145,7 +152,9 @@ def _retained_revision(record: RollbackRecord, revisions: list[Revision]) -> Rev
     candidates = exact or [
         item
         for item in same_template
-        if record.target_revision in item.revisions and item.created_at <= record.started_at
+        if record.target_revision in item.revisions
+        and item.created_at <= record.started_at
+        and (record.replica_set_uid is None or item.uid == record.replica_set_uid)
     ]
     return candidates[0] if len(candidates) == 1 else None
 

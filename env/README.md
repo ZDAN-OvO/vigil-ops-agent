@@ -154,7 +154,7 @@ kubectl port-forward -n vigil-monitoring svc/prometheus 9090:9090 --address 127.
 
 ## 8. 告警入口
 
-AlertManager 通过 webhook 把 firing 告警交给 Vigil 的接收端。接收端只保留白名单标签，`scenario` 等实验标记不会进入事件。
+AlertManager 通过 webhook 投递告警触发和恢复通知。Vigil 按推送中的 `groupKey` 归并，整组恢复后关闭会话。
 
 | 项目 | 实测值 |
 |---|---|
@@ -162,7 +162,7 @@ AlertManager 通过 webhook 把 firing 告警交给 Vigil 的接收端。接收�
 | 172.20.0.1 | k3d 网络网关，即宿主在 `k3d-vigil-lab` 网络上的地址；换机器要重新确认 |
 | 鉴权 | `Authorization: Bearer <token>`，token 存于 Secret `vigil-webhook-token` 的 `token` 键 |
 | 路由 | `alertname="FrontendProbeFailed"` 走 `vigil-webhook`，其余仍为 `default` |
-| 去重 | 同一告警指纹在 `VIGIL_DEDUP_MINUTES`（默认 10 分钟）内只建一次事件 |
+| 会话 | 同一组最多一个未关闭的会话。重复触发只追加消息，关闭后再次触发会新建会话 |
 
 宿主地址可用下面的命令确认，不要把 172.20.0.1 当成固定值：
 
@@ -170,16 +170,18 @@ AlertManager 通过 webhook 把 firing 告警交给 Vigil 的接收端。接收�
 docker inspect k3d-vigil-lab-server-0 --format '{{range $n, $net := .NetworkSettings.Networks}}{{$n}} gw={{$net.Gateway}}{{"\n"}}{{end}}'
 ```
 
-启动接收端前先建 Secret，token 从 `.env` 读取，不写入仓库：
+启动接收端前，用本地保存的令牌文件创建 Secret：
 
 ```bash
-kubectl create secret generic vigil-webhook-token -n vigil-monitoring \
-  --from-literal=token="$(grep '^VIGIL_WEBHOOK_TOKEN=' .env | cut -d= -f2-)"
+kubectl --kubeconfig "$VIGIL_KUBECONFIG" --context "$VIGIL_KUBE_CONTEXT" \
+  create secret generic vigil-webhook-token -n vigil-monitoring \
+  --from-file=token="$VIGIL_WEBHOOK_TOKEN_FILE"
 ```
 
-接收端的启动入口随命令行一起重做，见设计文档；启动参数仍读 `VIGIL_WEBHOOK_HOST`、`VIGIL_WEBHOOK_PORT`。
-
-接收端运行期间保持 Prometheus 的 port-forward 在线。
+停止旧接收进程后，配置 `VIGIL_WEBHOOK_HOST` 为确认的实验网关，
+`VIGIL_WEBHOOK_PORT` 为接收端口，`VIGIL_WEBHOOK_TOKEN` 与 Secret 的内容一致。
+运行 `vigil serve`，在同一次变更中更新 AlertManager 的接收地址、Bearer 文件和
+`send_resolved: true`，重载配置后核对 firing 与 resolved 投递。
 
 ## 9. 删除集群
 
