@@ -1,7 +1,7 @@
 # Vigil 安装与切换验收
 
 验证环境为独立 PostgreSQL 17.11、k3d v5.9.0 / Kubernetes v1.35.5+k3s1、
-Python 3.12.14。浏览器用本机 Chrome，调用方用 Claude Code 2.1.329。
+Python 3.12.14。浏览器用 Chrome 157.0.8103.78，调用方用 Claude Code 2.1.329。
 验收库、浏览器和实验集群均使用本次独立配置。
 
 ## 安装版的真实入口
@@ -14,8 +14,11 @@ Python 3.12.14。浏览器用本机 Chrome，调用方用 Claude Code 2.1.329。
 | Claude Code 调用 | 用 Bash 执行安装版 `vigil -p "checkoutservice 现在健康吗？" --output stream-json`。末条 `result` 为 0。实时查询 Deployment、Pod 和 Warning 事件，期望与可用副本各 1，Pod 零重启。 |
 | 交互终端 | 按 F01 方式发布故障版本。终端在查询时加入一条发布线索，账本有两条送达。核对回滚卡片后用 `/approve` 确认。审计记录 Vigil 的 dry-run 和一次实际写入，首页恢复 200，结果为 `verified`。 |
 | 告警和网页 | AlertManager 的 firing 创建会话。安装版记录内置调查 Skill，Chrome 经一次性链接登录并批准实际回滚卡片。审计记录 dry-run 和一次实际写入，首页恢复 200。整组 resolved 关闭原会话，已获发送权的动作完成验证，页面显示“已验证”。 |
+| 跨进程接手 | 安装版 `-p` 输出卡片链接，以 3 退出并释放租约。直接请求批准返回 403，Chrome 登录后批准。服务仅发出一次实际写入，`--resume` 的各条持久化事件与网页按 `session_id`、`seq` 逐字段一致。 |
+| 非交互服务 | 后台 `vigil serve` 未打印登录链接，读取原样可用。同源写请求返回 403，收到 SIGTERM 后正常退出。 |
 | Grafana | 原首页抓取与三条独立入口探测均成功。服务和节点查询实际 CPU、内存曲线，五张大盘加载。发布大盘能查询 F01 普通发布和 Vigil 回滚。 |
-| 关闭和版本隔离 | 在独立 Deployment 实测回滚移除新增环境变量，保留两个副本。隔离注解后旧版本请求两次被 API 以 422 拒绝，fresh rollback 成功。 |
+| 关闭和版本隔离 | 在独立 Deployment 实测回滚移除新增环境变量，保留两个副本。隔离注解后旧版本请求两次被 API 以 422 拒绝，使用有效版本的回滚成功。 |
+| 审批阻断 | 在独立 Deployment 构造拒绝、过期和目标漂移。分别返回 `not_approved`、`expired` 和 `drift`。Kubernetes 审计没有记录 Vigil 对这三个动作发送的写请求。 |
 
 实验上的首次终端调查没满足业务证据要求，执行器拒绝处置。重跑时明确要求核查入口失败
 和 Deployment 历史，并使用另一份演练库，完成了批准、实际写入和验证。
@@ -44,6 +47,8 @@ uv run --frozen --with playwright==1.61.0 python tests/web/browser_cases.py
 
 305 秒持租约由真实 PostgreSQL 验证。动作锁续期覆盖长于首个租期的验证，测试缩短了时钟
 以验证接手竞争。界面矩阵使用夹具驱动各态，真实网页验收使用安装版服务与真实集群。
+本次以严格 msgpack 模式运行 `make check-all`，367 项通过，零跳过。Chrome 夹具 9 组通过，
+包含 11 条卡片状态路径。
 
 ## 旧库切换预演
 
