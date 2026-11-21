@@ -67,6 +67,9 @@ sha256sum dist/*.whl
 
 本机脱敏验收资料保存在 `/home/zdan/.local/state/vigil/validation/fastapi-20261121/`，
 包含两份 wheel、下表证据和复跑脚本，独立于 `/tmp` 保留，未纳入 Git。
+主线程独立复跑的完整门禁、两版 Python 安装验收和真实处置证据保存在其
+`parent-replay/` 子目录，实验目标为 `fastapi-784af8b59a-web`，同样记录一次实际 PATCH
+及恢复关闭，并确认任务标签下零残余。
 在该目录执行 `bash rerun.sh REPO all`，也可用 `gate`、`browser` 或 `cluster`。
 脚本从固定提交解包，创建独占 PostgreSQL，锁定版本构建 wheel 并从仓库外启动。
 `cluster` 核对实验集群、命名空间 UID 与审计策略后才创建资源，使用单独监听及按 UID
