@@ -34,7 +34,7 @@ Agent 选择查询、整理证据并提出动作。执行器根据固化卡片�
 
 | 模块 | 源码入口 | 依赖与职责边界 |
 |---|---|---|
-| 接入 | [cli.py](src/aiops/cli.py)、[serve.py](src/aiops/serve.py)、[webhook.py](src/aiops/webhook.py) | 终端、同源网页 API 和独立告警监听；通过 factory 装配会话 |
+| 接入 | [cli.py](src/aiops/cli.py)、[serve.py](src/aiops/serve.py)、[web_api.py](src/aiops/web_api.py)、[webhook.py](src/aiops/webhook.py) | 终端、FastAPI 本机网页和 Starlette 告警监听，通过 factory 装配会话 |
 | 会话账本 | [sessions/](src/aiops/sessions) | 会话、输入、序号、主旁路租约、原子 checkpoint 投递及共享出站投影 |
 | 调查 | [agent/](src/aiops/agent)、[factory.py](src/aiops/investigation/factory.py) | 编排模型、预算、假设、证据与终态；依赖工具、Store 和动作执行器 |
 | 排查能力 | [skills.py](src/aiops/skills.py)、[registry.py](src/aiops/tools/registry.py)、[toolbox.py](src/aiops/investigation/toolbox.py) | 装配 Skill 与工具；委派共享预算和观测，只有只读能力 |
@@ -44,6 +44,11 @@ Agent 选择查询、整理证据并提出动作。执行器根据固化卡片�
 | 值班面板 | [monitoring/](src/aiops/monitoring) | 读取 Prometheus、Kubernetes 和已核实动作，生成本地快照和发布指标 |
 
 运行状态与诊断结果独立记录：任务结束不等于查明根因，动作执行不等于业务恢复。业务数据结构和枚举定义在 `contracts.py`，数据库约束定义在 `migrations/`。
+
+FastAPI 在回环监听同源提供 React 页面、静态资源和会话 API。首页和会话深链接有显式
+路由。两套 ASGI 应用共用请求体上限与错误响应。网页中间件和一次性登录负责本机
+Host、浏览器来源及写操作凭证的校验。告警监听使用独立的地址和 Bearer 令牌，
+`serve` 统一处理两个监听的生命周期。
 
 ## 后续扩展边界
 
