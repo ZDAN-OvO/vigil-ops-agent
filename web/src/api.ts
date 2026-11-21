@@ -63,6 +63,8 @@ export type CardUpdate = EventOf<"card_decision", {
 
 export type ObservationEvent = EventOf<"tool_call", {
   id?: string | null;
+  lane?: "main" | "side";
+  delegated?: boolean;
   status?: "running" | "ok" | "empty" | "error" | "rejected";
   tool?: string;
   summary?: string;

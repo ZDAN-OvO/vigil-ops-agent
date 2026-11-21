@@ -193,6 +193,8 @@ async def _prepare_request(
                 {
                     "id": _public_call_id(call_id),
                     "tool": tool_name,
+                    "lane": tx.turn.lane,
+                    "delegated": CURRENT_DELEGATION.get() is not None,
                     "summary": "正在查询",
                     "status": "running",
                     "observation_id": None,
@@ -299,6 +301,8 @@ async def _finish_request(
                 {
                     "id": _public_call_id(call_id),
                     "tool": query["tool"],
+                    "lane": tx.turn.lane,
+                    "delegated": CURRENT_DELEGATION.get() is not None,
                     "summary": {
                         "ok": "已取得观测",
                         "empty": "未查询到数据",

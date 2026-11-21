@@ -21,6 +21,7 @@ from test_agent_recovery import _preamble, _valid_report
 
 from aiops.agent import tools as agent_tools
 from aiops.agent.conversation import ConversationDriver, redact_text
+from aiops.agent.delegation import CURRENT_DELEGATION
 from aiops.agent.engine import LangChainInvestigation
 from aiops.agent.skill_reader import SkillReadMiddleware
 from aiops.contracts import ApprovalDecision, ProposalStatus, ToolRequestState
@@ -190,6 +191,32 @@ class BlockingToolbox(FakeToolbox):
         self.called.set()
         await self.reply.wait()
         return await super().run(context, time_range, request)
+
+
+@pytest.mark.parametrize("delegated", [False, True])
+def test_tool_failure_events_keep_main_and_delegation_source(tmp_path, delegated):
+    async def run():
+        toolbox = FakeToolbox({DEPLOY_TOOL: TimeoutError("来源测试")})
+        async with case(
+            tmp_path, toolbox=toolbox, responses=[deploys(), AIMessage(content="查询失败")]
+        ) as (driver, sid):
+            await enqueue(driver, sid, "查询副本")
+            token = CURRENT_DELEGATION.set("dlg-source-test" if delegated else None)
+            try:
+                async with driver.claim(sid) as main:
+                    await main.drive()
+            finally:
+                CURRENT_DELEGATION.reset(token)
+            events = [
+                event
+                for event in await driver.sessions.list_events(sid)
+                if event.type == "tool_call"
+            ]
+            assert [event.payload["status"] for event in events] == ["running", "error"]
+            assert all(event.payload["lane"] == "main" for event in events)
+            assert all(event.payload["delegated"] is delegated for event in events)
+
+    asyncio.run(run())
 
 
 def test_public_assistant_message_precedes_tool_and_excludes_private_model_fields(tmp_path):
@@ -873,6 +900,10 @@ def test_side_started_before_approval_finishes_without_changing_main(tmp_path):
                 (update,) = [event for event in side_events if event.payload.get("interim")]
                 assert skill.payload["lane"] == update.payload["lane"] == "side"
                 assert skill.payload["name"] == "pod-rebuild"
+                tool_events = [event for event in side_events if event.type == "tool_call"]
+                assert [event.payload["status"] for event in tool_events] == ["running", "ok"]
+                assert all(event.payload["lane"] == "side" for event in tool_events)
+                assert all(event.payload["delegated"] is False for event in tool_events)
                 assert skill.seq < update.seq < done.result.seq < answer.result.seq
                 assert (await driver.sessions.get_session(sid)).state == "idle"
 

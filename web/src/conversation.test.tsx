@@ -69,6 +69,30 @@ test("轮次终结仅移除本轮遗留的查询中状态，并保留失败提�
   expect(screen.getAllByText("正在查询", { selector: ".observation-summary" })).toHaveLength(1);
 });
 
+test("主线、旁路、委派和历史观测的来源在结果回放后仍可区分", () => {
+  const events = [
+    query(1, { id: "main", lane: "main", delegated: false }),
+    query(2, { id: "side", turn_id: "side", lane: "side", delegated: false }),
+    query(3, { id: "delegated", lane: "main", delegated: true }),
+    query(4, { id: "historical" }),
+  ];
+  const { container, rerender } = render(<Conversation {...options} events={events} />);
+  const labels = () => Array.from(container.querySelectorAll(".observation-head"))
+    .map((node) => node.textContent);
+  expect(labels()[0]).toContain("主线");
+  expect(labels()[1]).toContain("旁路");
+  expect(labels()[2]).toContain("主线 · 只读委派");
+  expect(labels()[3]).toContain("来源未记录");
+  rerender(<Conversation {...options} events={[
+    ...events,
+    ...events.map((event, index) => ({ ...event, seq: index + 5, status: "ok" as const })),
+  ]} />);
+  expect(container.querySelectorAll(".observation")).toHaveLength(4);
+  expect(labels()[1]).toContain("旁路");
+  expect(labels()[2]).toContain("只读委派");
+  expect(labels()[3]).toContain("来源未记录");
+});
+
 test("同一轮的最终回复与临时说明相同只显示一次", () => {
   const interim = { ...envelope, type: "message", role: "assistant", text: "已核对副本", interim: true, seq: 1 } as const;
   const { rerender } = render(<Conversation {...options} events={[interim, query(2)]} />);

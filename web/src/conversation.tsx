@@ -29,7 +29,10 @@ function Observation({ event, reveal, finished }: {
   return <Collapsible.Root render={<section ref={node} />} open={open} onOpenChange={setOpen}
     className="observation" data-status={running && finished ? "incomplete" : event.status}>
     <header className="observation-head">
-      <Stamp>OBSERVATION · {tool} · {time(event.collected_at || event.ts, true)}</Stamp>
+      <Stamp>OBSERVATION · {tool} · {time(event.collected_at || event.ts, true)}
+        {" · "}{event.lane === "main" ? "主线" : event.lane === "side" ? "旁路" : "来源未记录"}
+        {event.delegated && " · 只读委派"}
+      </Stamp>
       <Collapsible.Trigger ref={trigger} className="disclosure" aria-label="展开或收起观测">
         {open ? "[−]" : "[+]"}
       </Collapsible.Trigger>
