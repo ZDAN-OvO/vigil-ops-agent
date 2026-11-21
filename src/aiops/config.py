@@ -11,7 +11,7 @@ from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_SOURCE_CHECKOUT = (
+SOURCE_CHECKOUT = (
     Path(__file__).resolve().parents[1].name == "src"
     and (PROJECT_ROOT / "pyproject.toml").is_file()
 )
@@ -21,7 +21,7 @@ WEB_HOST = "127.0.0.1"
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(PROJECT_ROOT if _SOURCE_CHECKOUT else _CONFIG_DIR) / ".env",
+        env_file=(PROJECT_ROOT if SOURCE_CHECKOUT else _CONFIG_DIR) / ".env",
         env_prefix="VIGIL_",
         extra="ignore",
     )
@@ -129,7 +129,7 @@ class Settings(BaseSettings):
     def runtime_path(self) -> Path:
         root = (
             PROJECT_ROOT
-            if _SOURCE_CHECKOUT
+            if SOURCE_CHECKOUT
             else Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "vigil"
         )
         return (root / self.runtime_dir).resolve()
@@ -137,8 +137,8 @@ class Settings(BaseSettings):
     @property
     def skills_path(self) -> Path:
         if self.skills_dir is not None:
-            return ((PROJECT_ROOT if _SOURCE_CHECKOUT else Path.cwd()) / self.skills_dir).resolve()
-        if _SOURCE_CHECKOUT:
+            return ((PROJECT_ROOT if SOURCE_CHECKOUT else Path.cwd()) / self.skills_dir).resolve()
+        if SOURCE_CHECKOUT:
             return PROJECT_ROOT / "skills"
         # Python 安装 wheel 时会把包资源解包到文件系统，Skill 读取器可直接使用该目录。
         return Path(str(files("aiops").joinpath("_builtin_skills")))

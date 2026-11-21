@@ -10,8 +10,9 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from aiops.sessions.models import SessionEvent
 from aiops.sessions.projection import project_payload, project_template_diff
+from aiops.web_api import PAGE_CSP
 
-STATIC = Path(__file__).resolve().parents[2] / "src" / "aiops" / "static"
+STATIC = Path(__file__).resolve().parents[2] / "web" / "dist"
 WHEN = datetime(2026, 11, 20, 2, 14, tzinfo=UTC)
 SECRET = "fictional-fixture-secret-value"
 LOCAL_PATH = "/home/fixture/private-run/raw.json"
@@ -290,7 +291,7 @@ class Fixture:
             def log_message(self, *_args):
                 pass
 
-            def send(self, status, data, *, mime="application/json", cookie=False):
+            def send(self, status, data, *, mime="application/json", page=False):
                 content = (
                     data
                     if isinstance(data, bytes)
@@ -299,10 +300,12 @@ class Fixture:
                 self.send_response(status)
                 self.send_header("Content-Type", mime)
                 self.send_header("Content-Length", str(len(content)))
-                if cookie and fixture.approval_enabled:
-                    self.send_header(
-                        "Set-Cookie", "fixture_access=public; Path=/; SameSite=Strict; HttpOnly"
-                    )
+                if page:
+                    self.send_header("Content-Security-Policy", PAGE_CSP)
+                    if fixture.approval_enabled:
+                        self.send_header(
+                            "Set-Cookie", "fixture_access=public; Path=/; SameSite=Strict; HttpOnly"
+                        )
                 self.end_headers()
                 self.wfile.write(content)
 
@@ -319,12 +322,16 @@ class Fixture:
                         200,
                         (STATIC / "index.html").read_bytes(),
                         mime="text/html; charset=utf-8",
-                        cookie=True,
+                        page=True,
                     )
-                elif parts[0] == "static" and len(parts) == 2:
-                    path = STATIC / parts[1]
-                    if path.is_file() and path.parent == STATIC:
-                        self.send(200, path.read_bytes(), mime=guess_type(path.name)[0])
+                elif url.path.startswith("/static/"):
+                    path = (STATIC / unquote(url.path.removeprefix("/static/"))).resolve()
+                    if path.is_relative_to(STATIC) and path.is_file():
+                        self.send(
+                            200,
+                            path.read_bytes(),
+                            mime=guess_type(path.name)[0] or "application/octet-stream",
+                        )
                     else:
                         self.error(404, "not_found", "资源不存在")
                 elif url.path == "/api/sessions":

@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+dev = ["playwright==1.61.0", "pytest>=8,<10", "ruff>=0.11,<1", "tinycss2==1.5.1"]
 
 [project.scripts]
 vigil = "aiops.cli:main"
@@ -34,11 +34,16 @@ requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-# 包目录同时包含迁移和网页任务交付的 static/ 资源。
+# 包目录包含数据库迁移。网页产物由普通 wheel 钩子加入。
 packages = ["src/aiops"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "aiops/_builtin_skills"
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+
+[tool.hatch.build.targets.sdist.force-include]
+"web/dist" = "web/dist"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

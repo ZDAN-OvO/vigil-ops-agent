@@ -138,6 +138,7 @@ textarea::placeholder { color: var(--dim); }
   animation: spin 1.6s linear infinite;
 }
 
+.spinner[data-hidden] { display: none; }
 .spinner circle, .spinner path { fill: none; stroke-width: 1px; }
 .spinner circle { stroke: var(--line-hi); }
 .spinner path { stroke: var(--gold); }
@@ -176,13 +177,12 @@ textarea::placeholder { color: var(--dim); }
   border-right: 1px solid var(--line);
   border-radius: 0;
 }
-.ledger-window { flex: 1; min-width: 0; display: flex; justify-content: flex-end; overflow: hidden; }
+.ledger-window { flex: 1; min-width: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); overflow: hidden; }
 .ledger-cell {
   display: grid;
   align-content: center;
   justify-items: start;
   gap: 3px;
-  width: var(--ledger-width);
   min-width: 0;
   padding: 0 8px;
   border: 0;
@@ -204,11 +204,10 @@ textarea::placeholder { color: var(--dim); }
 .ledger-cell.current .stamp { color: var(--gold); }
 .ledger-cell[aria-expanded="true"] { background-color: var(--surface-2); }
 .ledger-next { color: var(--dim); }
+.event-positioner { z-index: 2; }
 .event-popover {
-  position: fixed;
-  z-index: 2;
   width: max-content;
-  max-width: 560px;
+  max-width: min(560px, calc(100dvw - 16px));
   max-height: 200px;
   overflow: auto;
   overscroll-behavior: contain;
@@ -244,7 +243,7 @@ textarea::placeholder { color: var(--dim); }
   visibility: hidden;
   transition: grid-template-rows var(--click) var(--ui), visibility var(--click) var(--ui);
 }
-.fold-body.open { grid-template-rows: 1fr; visibility: visible; }
+.fold-body:not([data-starting-style], [data-ending-style], [hidden]) { grid-template-rows: 1fr; visibility: visible; }
 .fold-body > div { overflow: hidden; min-height: 0; }
 .observation pre {
   white-space: pre-wrap;
@@ -302,10 +301,10 @@ textarea::placeholder { color: var(--dim); }
   background-color: var(--gold);
   color: var(--bg);
 }
-.card-action-bar .approve:not(:disabled):hover,
+.card-action-bar .approve:not(:disabled, [aria-disabled="true"]):hover,
 .card-action-bar .approve:focus-visible { background-color: var(--gold-hi); }
 .card-action-bar .approve:focus-visible { outline-color: var(--bg); }
-.card-action-bar .approve:disabled { color: var(--bg); background-color: var(--gold-deep); }
+.card-action-bar .approve:is(:disabled, [aria-disabled="true"]) { color: var(--bg); background-color: var(--gold-deep); }
 .card-foot { border-top: 1px solid var(--line); padding: 7px 12px; font-size: 12px; }
 .card-foot-line { display: flex; align-items: center; gap: 7px; }
 .card-status-change { animation: status-change var(--click) var(--ui) both; }

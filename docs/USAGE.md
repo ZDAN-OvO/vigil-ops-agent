@@ -3,7 +3,15 @@
 ## 1. 安装与配置
 
 在源码目录运行 `uv sync --frozen --group dev`，以下命令可加 `uv run --frozen` 前缀。
-如需在没有源码的主机上运行，先用 `uv build --wheel` 构建，再把 wheel 安装到独立环境：
+源码安装后即可使用终端命令。使用 Node.js 26 和 npm 执行 `make web-build` 后，
+`vigil serve` 从 `web/dist` 读取网页。发布时先构建网页，再生成带静态资源的 wheel：
+
+```bash
+make web-build
+uv build --wheel
+```
+
+把 wheel 安装到独立的 Python 环境后，可以直接运行终端和网页。运行环境只需 Python：
 
 ```bash
 uv venv --python 3.12 /path/to/vigil-env
@@ -125,9 +133,8 @@ AlertManager 入口。
 | `unknown` 或人工待办 | 从 `vigil admin followups` 找对应动作，核对原发送者和集群结果后人工处理 |
 
 源码环境可以用 `make check-all` 检查代码。要覆盖数据库路径，请明确设置独占的
-`VIGIL_DATABASE_URL`。网页静态检查和浏览器 fixture 可分别运行：
+`VIGIL_DATABASE_URL`。网页检查需安装 Chrome。只运行网页门禁时使用：
 
 ```bash
-uv run --frozen --with tinycss2==1.5.1 python tests/web/check_styles.py
-uv run --frozen --with playwright==1.61.0 python tests/web/browser_cases.py
+make web-test
 ```

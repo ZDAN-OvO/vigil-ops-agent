@@ -6,7 +6,7 @@ from pathlib import Path
 
 import tinycss2
 
-STATIC = Path(__file__).resolve().parents[2] / "src" / "aiops" / "static"
+STATIC = Path(__file__).resolve().parents[2] / "web"
 TOKENS = {
     "--bg": "#0b0c0e",
     "--bg-sunk": "#08090a",
@@ -188,12 +188,14 @@ class PageStyles(HTMLParser):
 
 
 def check_script(source):
-    # 动态样式只允许账本的几何定位，颜色、字体和 SVG 描边由样式表管理。
-    assignments = re.findall(r"\.style\.(\w+)\s*=", source)
-    assert set(assignments) <= {"left", "top", "maxWidth"}
-    properties = re.findall(r"\.style\.setProperty\(\s*['\"]([^'\"]+)", source)
-    assert set(properties) <= {"--ledger-width"}
-    assert not re.search(r"\.style\s*=|\.style\.cssText\s*=|\.insertRule\(", source)
+    # 应用布局和样式令牌由样式表管理。SVG 样式属性使用可静态检查的值。
+    assert not re.search(r"\.style\b|\.insertRule\(|\bstyle\s*=", source)
+    assert not re.search(r"<style\b", source)
+    for match in re.finditer(r"""\b(fill|stroke|strokeWidth)\s*=\s*("[^"]*"|'[^']*'|\{)""", source):
+        name, literal = match.groups()
+        assert literal != "{", f"无法静态检查 SVG 属性: {name}"
+        value = tinycss2.parse_component_value_list(literal[1:-1])
+        check_property("stroke-width" if name == "strokeWidth" else name, value, svg=True)
     for match in re.finditer(
         r"""\.setAttribute\(\s*["'](style|fill|stroke|stroke-width)["']\s*,\s*([^\n]+?)\)""", source
     ):
@@ -206,15 +208,16 @@ def check_script(source):
 
 
 def main():
-    for path in STATIC.glob("*.css"):
+    for path in (STATIC / "src").rglob("*.css"):
         rules = tinycss2.parse_stylesheet(
             path.read_text(), skip_comments=True, skip_whitespace=True
         )
         check_rules(rules)
     for path in STATIC.glob("*.html"):
         PageStyles().feed(path.read_text())
-    for path in STATIC.glob("*.js"):
-        check_script(path.read_text())
+    for suffix in ("*.ts", "*.tsx"):
+        for path in (STATIC / "src").rglob(suffix):
+            check_script(path.read_text())
     print("网页样式静态检查通过")
 
 

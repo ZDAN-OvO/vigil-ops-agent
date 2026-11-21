@@ -19,7 +19,6 @@ from pathlib import Path
 from threading import Thread
 from types import ModuleType
 from uuid import uuid4
-from zipfile import ZipFile
 
 import psycopg
 import pytest
@@ -729,28 +728,11 @@ class _ModelGateway(BaseHTTPRequestHandler):
         self.wfile.write(result)
 
 
-def test_wheel_cli_uses_packaged_skills_from_outside_source(child_env, tmp_path):
+def test_wheel_cli_uses_packaged_skills_from_outside_source(child_env, tmp_path, built_wheel):
     uv = shutil.which("uv")
-    if uv is None:
-        pytest.skip("未安装 uv，跳过 wheel 验证")
-    dist = tmp_path / "dist"
-    subprocess.run(
-        [uv, "build", "--wheel", "--out-dir", str(dist)],
-        cwd=PROJECT_ROOT,
-        check=True,
-        capture_output=True,
-        timeout=45,
-    )
-    (wheel,) = dist.glob("*.whl")
-    with ZipFile(wheel) as archive:
-        resources = archive.namelist()
-    assert sum(name.startswith("aiops/_builtin_skills/") for name in resources) >= 5
-    assert "aiops/migrations/0013_action_safety.sql" in resources
-    assert any(name.endswith(".dist-info/entry_points.txt") for name in resources)
-
     install = tmp_path / "installed"
     subprocess.run(
-        [uv, "pip", "install", "--no-deps", "--target", str(install), str(wheel)],
+        [uv, "pip", "install", "--no-deps", "--target", str(install), str(built_wheel)],
         cwd=tmp_path,
         check=True,
         capture_output=True,

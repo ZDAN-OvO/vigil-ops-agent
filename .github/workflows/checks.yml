@@ -1,6 +1,6 @@
 name: checks
 
-# 只跑离线可核对的部分：ruff 与不依赖数据库的测试。
+# 检查网页产物和不依赖数据库的 Python 用例。
 # 需要 VIGIL_DATABASE_URL 的用例会自动跳过，所以这里不装 PostgreSQL；
 # 真实库与集群行为由真实环境实测和 PR 评论中的截图覆盖，不在 CI 里假装跑过。
 on:
@@ -24,10 +24,19 @@ jobs:
         with:
           enable-cache: true
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
       - name: 安装依赖
         run: uv sync --frozen --group dev
 
-      - name: 格式、lint 与测试
+      - name: 核对系统 Chrome
+        run: google-chrome --version
+
+      - name: 格式、lint、网页构建与测试
         run: make check-all
 
       - name: 格式检查没有改写文件
