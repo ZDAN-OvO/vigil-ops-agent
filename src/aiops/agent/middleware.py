@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from dataclasses import replace
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest
@@ -23,7 +25,9 @@ from openai import (
 
 from aiops.agent.budget import BudgetExhausted
 from aiops.agent.context import AgentContext
+from aiops.sessions.checkpoint import PUBLIC_EVENTS_CHANNEL
 from aiops.sessions.models import LeaseLost
+from aiops.sessions.projection import project_text
 
 RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 MAX_MODEL_ATTEMPTS = 5
@@ -72,6 +76,24 @@ def _batch_tool_calls(state: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+_PRIVATE_MARKUP = re.compile(r"<\s*/?\s*(?:think|thinking|reasoning|analysis)\b", re.I)
+
+
+def public_model_text(message: AIMessage) -> str:
+    """只取普通输出文本；含私有标记的正文整体弃用。"""
+    content = message.content
+    blocks = [content] if isinstance(content, str) else content
+    texts = []
+    for block in blocks:
+        text = (
+            block.get("text") if isinstance(block, dict) and block.get("type") == "text" else block
+        )
+        if isinstance(text, str):
+            texts.append(text)
+    text = "".join(texts)
+    return "" if _PRIVATE_MARKUP.search(text) else text
+
+
 class BudgetMiddleware(AgentMiddleware):
     """模型调用计数、重试与硬截止；每次尝试先扣预算。"""
 
@@ -116,6 +138,24 @@ class BudgetMiddleware(AgentMiddleware):
                 async with asyncio.timeout(timeout):
                     response = await handler(request)
                 await ctx.ensure_active()
+                if ctx.scope is not None:
+                    # 进入图状态和待写 checkpoint 的消息仅保留会话所需字段。
+                    response = replace(
+                        response,
+                        result=[
+                            AIMessage(
+                                id=message.id,
+                                name=message.name,
+                                content=public_model_text(message),
+                                tool_calls=message.tool_calls,
+                                invalid_tool_calls=message.invalid_tool_calls,
+                                usage_metadata=message.usage_metadata,
+                            )
+                            if isinstance(message, AIMessage)
+                            else message
+                            for message in response.result
+                        ],
+                    )
                 return response
             except (BudgetExhausted, LeaseLost):
                 raise
@@ -154,6 +194,17 @@ class ProgressMiddleware(AgentMiddleware):
         else:
             ctx.progress.seen_activity = ctx.progress.activity
             await ctx.budget.reset_no_progress()
+        if ctx.scope is not None:
+            # 结构化报告已附有合成工具回执，只在工具执行前公开普通正文。
+            message = state["messages"][-1]
+            if isinstance(message, AIMessage):
+                text = project_text(public_model_text(message))
+                if text.strip():
+                    return {
+                        PUBLIC_EVENTS_CHANNEL: [
+                            ("message", {"role": "assistant", "text": text, "interim": True})
+                        ]
+                    }
         return None
 
 

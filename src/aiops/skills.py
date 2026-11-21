@@ -17,6 +17,7 @@ from typing import Any
 import yaml
 
 from aiops.contracts import Incident, SkillTrigger, SkillUsage
+from aiops.sessions.projection import project_payload
 
 FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 MAX_SKILL_BYTES = 1024 * 1024
@@ -38,6 +39,23 @@ class SkillSpec:
 
     def usage(self, trigger: SkillTrigger) -> SkillUsage:
         return SkillUsage(name=self.name, content_hash=self.content_hash, trigger=trigger)
+
+    def public_event(
+        self,
+        trigger: SkillTrigger,
+        *,
+        status: str = "loaded",
+        version_known: bool = True,
+    ) -> dict[str, Any]:
+        payload = {
+            "name": self.name,
+            "description": self.description,
+            "trigger": trigger.value,
+            "status": status,
+        }
+        if version_known:
+            payload["content_hash"] = self.content_hash
+        return project_payload(payload)
 
 
 def _split_list(value: Any) -> list[str]:

@@ -50,6 +50,7 @@ from aiops.agent.middleware import (
     ProgressMiddleware,
     ReportErrorGuard,
     RunCancelled,
+    public_model_text,
 )
 from aiops.agent.prompts import (
     CONVERSATION_PROMPT,
@@ -87,7 +88,12 @@ from aiops.contracts import (
 from aiops.db import Store
 from aiops.investigation.toolbox import ToolboxProtocol
 from aiops.report import Report, delegation_payloads
-from aiops.sessions.checkpoint import INPUT_IDS_CHANNEL, TURN_ID_METADATA, SessionCheckpointer
+from aiops.sessions.checkpoint import (
+    INPUT_IDS_CHANNEL,
+    PUBLIC_EVENTS_CHANNEL,
+    TURN_ID_METADATA,
+    SessionCheckpointer,
+)
 from aiops.sessions.models import LeaseLost, SessionClosed, SessionEvent
 from aiops.skills import (
     SkillLoadError,
@@ -261,7 +267,7 @@ class LangChainInvestigation:
             system_prompt=SUBAGENT_PROMPT,
             middleware=[
                 ReadOnlyGuardMiddleware(allowed),
-                SkillReadMiddleware(),
+                SkillReadMiddleware(catalog),
                 BudgetMiddleware(
                     configured_timeout=self._settings.model_timeout_seconds,
                     max_retries=self._settings.model_max_retries,
@@ -328,7 +334,7 @@ class LangChainInvestigation:
                     else []
                 ),
                 ActionBatchMiddleware(),
-                SkillReadMiddleware(),
+                SkillReadMiddleware(catalog),
                 BudgetMiddleware(
                     configured_timeout=self._settings.model_timeout_seconds,
                     max_retries=self._settings.model_max_retries,
@@ -523,9 +529,6 @@ class LangChainInvestigation:
             first = await scope.sessions.get_input(scope.turn.first_input_id)
             if first is None:
                 raise LookupError("轮次缺少首条输入")
-            await self._store.set_investigation_skills(
-                self._investigation_id, [spec.usage(SkillTrigger.SIGNAL) for spec in matched]
-            )
             frame = (
                 f"本轮查询范围：{context.cluster}/{context.namespace}。"
                 "此前工具消息和证据属于各自轮次，回答当前状态请重新查询。"
@@ -540,6 +543,9 @@ class LangChainInvestigation:
                     input_message(first.id, first.text),
                 ],
                 INPUT_IDS_CHANNEL: [first.id],
+                PUBLIC_EVENTS_CHANNEL: [
+                    ("skill", spec.public_event(SkillTrigger.SIGNAL)) for spec in matched
+                ],
             }
         else:
             state = await graph.aget_state(config)
@@ -551,12 +557,12 @@ class LangChainInvestigation:
             elif state.next:
                 payload = None
             else:
-                return await self._finish_conversation(graph, state.values, context, catalog)
+                return await self._finish_conversation(graph, state.values, context)
         await context.budget.start()
         result = await self._invoke(graph, payload, context)
         if isinstance(result, Report):
             return context.progress.result_event, None
-        return await self._finish_conversation(graph, result, context, catalog)
+        return await self._finish_conversation(graph, result, context)
 
     async def _card_resume(self, context: AgentContext, task: InvestigationTask, interrupts):
         scope = self._scope
@@ -627,7 +633,7 @@ class LangChainInvestigation:
         raise RuntimeError("已暂停的轮次缺少结果事件")
 
     async def _finish_conversation(
-        self, graph, result: dict[str, Any], context: AgentContext, catalog: Sequence[SkillSpec]
+        self, graph, result: dict[str, Any], context: AgentContext
     ) -> tuple[SessionEvent, SessionEvent | None]:
         scope = self._scope
         while True:
@@ -638,12 +644,13 @@ class LangChainInvestigation:
             start = next(
                 (i for i, m in enumerate(messages) if m.id == f"vigil-turn-{scope.turn.id}"), 0
             )
-            await self._record_loaded_skills(catalog, {"messages": messages[start:]})
             answer = next(
                 (
-                    str(m.text)
+                    text
                     for m in reversed(messages[start:])
-                    if isinstance(m, AIMessage) and not m.tool_calls and m.text.strip()
+                    if isinstance(m, AIMessage)
+                    and not m.tool_calls
+                    and (text := public_model_text(m)).strip()
                 ),
                 "",
             )

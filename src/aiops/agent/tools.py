@@ -967,8 +967,10 @@ async def _assess_evidence(
     )
     await _finish_request(ctx, call_id, state=ToolRequestState.OBSERVED, message=message)
     if ctx.active_transaction is not None:
-        for link in applied:
-            await ctx.active_transaction.append_event("evidence", link)
+        for link, assessed in zip(applied, args.links, strict=True):
+            public = project_payload({**link, "rationale": assessed.rationale})
+            public["rationale"] = public["rationale"][:500]
+            await ctx.active_transaction.append_event("evidence", public)
     for item in updated_hypotheses:
         await _record_hypothesis(ctx, item)
     return message

@@ -15,12 +15,14 @@ from investigation_support import (
     settings,
 )
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from test_agent_actions import _approved
 from test_agent_recovery import _preamble, _valid_report
 
 from aiops.agent import tools as agent_tools
 from aiops.agent.conversation import ConversationDriver, redact_text
 from aiops.agent.engine import LangChainInvestigation
+from aiops.agent.skill_reader import SkillReadMiddleware
 from aiops.contracts import ApprovalDecision, ProposalStatus, ToolRequestState
 from aiops.db import Store
 from aiops.sessions.checkpoint import SessionCheckpointer, setup_checkpoints
@@ -188,6 +190,162 @@ class BlockingToolbox(FakeToolbox):
         self.called.set()
         await self.reply.wait()
         return await super().run(context, time_range, request)
+
+
+def test_public_assistant_message_precedes_tool_and_excludes_private_model_fields(tmp_path):
+    async def run():
+        toolbox = BlockingToolbox()
+        message = deploys().model_copy(
+            update={
+                "content": [
+                    {"type": "reasoning", "text": "private-reasoning-block"},
+                    {"type": "thinking", "thinking": "private-thinking-block"},
+                    {"type": "text", "text": "先核对副本。token=demo-progress /home/demo/private"},
+                ],
+                "additional_kwargs": {"reasoning_content": "private-reasoning-kwargs"},
+                "response_metadata": {"private_state": "private-response-metadata"},
+            }
+        )
+        async with case(
+            tmp_path, toolbox=toolbox, responses=[message, AIMessage(content="当前有两个副本。")]
+        ) as (driver, sid):
+            await enqueue(driver, sid, "查当前副本")
+            async with driver.claim(sid) as main:
+                task = asyncio.create_task(main.drive())
+                try:
+                    await asyncio.wait_for(toolbox.called.wait(), 5)
+                    events = await driver.sessions.list_events(sid)
+                    running = events[-1]
+                    public = events[-2]
+                    assert public.type == "message" and public.payload["role"] == "assistant"
+                    assert public.payload == {
+                        "role": "assistant",
+                        "lane": "main",
+                        "interim": True,
+                        "text": "先核对副本。token=[已遮盖] [已遮盖]",
+                    }
+                    assert running.type == "tool_call" and running.payload["status"] == "running"
+                    assert running.turn_id == public.turn_id
+                finally:
+                    toolbox.reply.set()
+                    result = await task
+            assert result.exit_code == 0
+            events = [event.as_dict() for event in await driver.sessions.list_events(sid)]
+            checkpoint = await AsyncPostgresSaver(driver.store._pool).aget_tuple(
+                {"configurable": {"thread_id": sid}}
+            )
+            for marker in (
+                "private-reasoning-block",
+                "private-thinking-block",
+                "private-reasoning-kwargs",
+                "private-response-metadata",
+            ):
+                assert marker not in repr(events)
+                assert marker not in repr(checkpoint)
+            assert [e["text"] for e in events if e.get("role") == "assistant"] == [
+                public.payload["text"],
+                "当前有两个副本。",
+            ]
+
+    asyncio.run(run())
+
+
+def test_skill_events_follow_actual_reads_and_survive_pending_write_failure(tmp_path, monkeypatch):
+    async def run():
+        root = tmp_path / "skills"
+        for name, metadata in (
+            ("signal", "metadata:\n  vigil-auto-load-sources: manual\n"),
+            ("by-description", ""),
+            ("recommended", ""),
+        ):
+            directory = root / name
+            directory.mkdir(parents=True)
+            (directory / "SKILL.md").write_text(
+                f'---\nname: {name}\ndescription: "核对 token=demo-skill /home/demo/catalog"\n'
+                f"{metadata}---\n\n私有 Skill 正文标记\n",
+                encoding="utf-8",
+            )
+        (root / "notes.md").write_text("name: recommended\ndescription: 伪匹配", encoding="utf-8")
+        fields = {"file_path": "/by-description/SKILL.md"}
+        good = call("read_file", fields, "actual-read")
+        other_reads = [
+            call("read_file", {**fields, "offset": 999}, "failed-read"),
+            call("read_file", {**fields, "limit": 0}, "empty-read"),
+            call("read_file", {"file_path": "/notes.md"}, "unrelated-read"),
+        ]
+        checks = AIMessage(content="", tool_calls=[m.tool_calls[0] for m in other_reads])
+        original = SkillReadMiddleware.awrap_tool_call
+        crashed = False
+
+        async def lose_tool_write(self, request, handler):
+            nonlocal crashed
+            result = await original(self, request, handler)
+            if not crashed and request.tool_call.get("id") == "actual-read":
+                crashed = True
+                raise LeaseLost("模拟读取成功、工具 pending write 未提交")
+            return result
+
+        monkeypatch.setattr(SkillReadMiddleware, "awrap_tool_call", lose_tool_write)
+        async with case(
+            tmp_path,
+            skills_dir=root,
+            responses=[good, checks, AIMessage(content="本轮读取完成")],
+        ) as (driver, sid):
+            await enqueue(driver, sid, "调查并核实 Skill")
+            async with driver.claim(sid) as main:
+                with pytest.raises(LeaseLost):
+                    await main.drive()
+            assert crashed
+            before = [e for e in await driver.sessions.list_events(sid) if e.type == "skill"]
+            assert [(e.payload["name"], e.payload["trigger"]) for e in before] == [
+                ("signal", "signal"),
+                ("by-description", "description"),
+            ]
+            async with driver.claim(sid) as resumed:
+                result = await resumed.drive()
+            assert result.exit_code == 0
+            events = [e for e in await driver.sessions.list_events(sid) if e.type == "skill"]
+            assert events[:2] == before
+            assert [(e.payload["name"], e.payload["status"]) for e in events] == [
+                ("signal", "loaded"),
+                ("by-description", "loaded"),
+                ("by-description", "failed"),
+            ]
+            assert {e.turn_id for e in events} == {result.result.turn_id}
+            assert all(e.payload["lane"] == "main" for e in events)
+            assert all(len(e.payload["content_hash"]) == 64 for e in events[:2])
+            assert "content_hash" not in events[2].payload
+            for marker in ("私有 Skill 正文标记", "demo-skill", "/home/demo", "/by-description"):
+                assert marker not in repr(events)
+            report = await driver.store.get_investigation(result.result.payload["investigation_id"])
+            assert {skill.name for skill in report.skills} == {"signal", "by-description"}
+
+    asyncio.run(run())
+
+
+def test_delegated_skill_read_is_attributed_to_current_turn(tmp_path):
+    async def run():
+        responses = [
+            call("task", {"description": "查询方法", "subagent_type": "general-purpose"}, "child"),
+            call("read_file", {"file_path": "/pod-rebuild/SKILL.md"}, "child-skill"),
+            AIMessage(content="已查阅方法"),
+            AIMessage(content="只读调查结束"),
+        ]
+        async with case(tmp_path, responses=responses) as (driver, sid):
+            await enqueue(driver, sid, "查阅方法")
+            async with driver.claim(sid) as main:
+                result = await main.drive()
+            assert result.exit_code == 0
+            (event,) = [
+                event
+                for event in await driver.sessions.list_events(sid)
+                if event.type == "skill" and event.payload.get("delegated")
+            ]
+            assert event.turn_id == result.result.turn_id
+            assert event.payload["name"] == "pod-rebuild" and event.payload["status"] == "loaded"
+            assert event.payload["lane"] == "main"
+
+    asyncio.run(run())
 
 
 def test_interjection_is_persisted_before_next_model_and_late_input_starts_next_turn(tmp_path):
@@ -438,7 +596,8 @@ def test_takeover_replays_saved_tool_result_after_pending_write_failure(tmp_path
 
         monkeypatch.setattr(agent_tools, "_finish_request", fail_on_result)
         toolbox = FakeToolbox()
-        async with case(tmp_path, toolbox=toolbox, responses=[deploys()]) as (driver, session_id):
+        message = deploys().model_copy(update={"content": "先读取当前副本观测。"})
+        async with case(tmp_path, toolbox=toolbox, responses=[message]) as (driver, session_id):
             await enqueue(driver, session_id, "查一次")
             async with driver.claim(session_id) as main:
                 with pytest.raises(LeaseLost):
@@ -451,6 +610,10 @@ def test_takeover_replays_saved_tool_result_after_pending_write_failure(tmp_path
             assert result.exit_code == 0
             investigation_id = result.result.payload["investigation_id"]
             assert len(await driver.store.list_observations(investigation_id)) == 1
+            events = await driver.sessions.list_events(session_id)
+            assert [e.payload["text"] for e in events if e.payload.get("interim")] == [
+                "先读取当前副本观测。"
+            ]
 
     asyncio.run(run())
 
@@ -681,7 +844,13 @@ def test_side_started_before_approval_finishes_without_changing_main(tmp_path):
                     settings=driver.settings,
                     store=driver.store,
                     toolbox=side_toolbox,
-                    model=ScriptedChatModel(responses=[deploys(), AIMessage(content="旁路完成")]),
+                    model=ScriptedChatModel(
+                        responses=[
+                            call("read_file", {"file_path": "/pod-rebuild/SKILL.md"}, "side-skill"),
+                            deploys().model_copy(update={"content": "核对旁路问题的副本数。"}),
+                            AIMessage(content="旁路完成"),
+                        ]
+                    ),
                 )
                 async with side_driver.claim(sid, lane="side") as side:
                     running = asyncio.create_task(side.drive())
@@ -695,6 +864,16 @@ def test_side_started_before_approval_finishes_without_changing_main(tmp_path):
                     answer = await running
                 assert answer.result.payload["summary"] == "旁路完成" and answer.exit_code == 3
                 assert answer.result.turn_id != done.result.turn_id
+                side_events = [
+                    event
+                    for event in await driver.sessions.list_events(sid)
+                    if event.turn_id == answer.result.turn_id
+                ]
+                (skill,) = [event for event in side_events if event.type == "skill"]
+                (update,) = [event for event in side_events if event.payload.get("interim")]
+                assert skill.payload["lane"] == update.payload["lane"] == "side"
+                assert skill.payload["name"] == "pod-rebuild"
+                assert skill.seq < update.seq < done.result.seq < answer.result.seq
                 assert (await driver.sessions.get_session(sid)).state == "idle"
 
                 def later(messages):

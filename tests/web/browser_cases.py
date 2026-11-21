@@ -1,6 +1,5 @@
 """通过独立同源服务在 Chrome 检查网页，不使用数据库或集群。"""
 
-import json
 import unittest
 
 from fixture import CARD, LOCAL_PATH, SECRET, Fixture
@@ -64,7 +63,6 @@ class BrowserCases(unittest.TestCase):
             ),
         )
         self.card = self.page.locator(f"#card-{CARD}")
-        self.popup = self.page.locator(".event-popover")
 
     def open_card(self, anchor=CARD):
         self.page.goto(self.fixture.url + PATH + f"#card-{anchor}")
@@ -74,11 +72,6 @@ class BrowserCases(unittest.TestCase):
         if anchor == CARD:
             expect(self.card).to_have_class("card anchor-target")
             expect(self.card).to_be_focused()
-
-    def assert_seq(self, seq):
-        current = self.page.locator(".ledger-cell[aria-current=true]")
-        expect(current).to_have_attribute("data-seq", str(seq))
-        expect(current).to_be_in_viewport()
 
     def assert_no_errors(self, *, external=()):
         self.assertEqual(self.errors, [])
@@ -98,7 +91,6 @@ class BrowserCases(unittest.TestCase):
         expect(self.page.locator("#session-meta")).to_have_attribute(
             "data-state", "awaiting_approval"
         )
-        self.assert_seq(len(self.fixture.events["alert-demo"]))
 
     def test_card_matrix(self):
         fixtures = [
@@ -203,7 +195,6 @@ class BrowserCases(unittest.TestCase):
                 expect(page.locator(".topbar")).to_have_css("height", "48px")
                 expect(page.locator(".sessions")).to_have_css("width", "240px")
                 expect(monitor).to_have_css("width", "360px")
-                expect(page.locator(".ledger")).to_have_css("height", "64px")
                 expect(page.locator("body")).to_have_css("background-color", "rgb(11, 12, 14)")
                 expect(page.locator("#session-title")).to_have_css("font-size", "30px")
                 self.assertIn(
@@ -248,11 +239,6 @@ class BrowserCases(unittest.TestCase):
                     control.click()
                 expect(page.locator(".observation .fold-body.open")).to_have_count(6)
                 self.assert_no_overflow()
-                page.locator(".ledger-cell[aria-current=true]").hover()
-                expect(self.popup).to_be_visible()
-                expect(self.popup).to_have_css("backdrop-filter", "blur(12px) saturate(1.2)")
-                self.assert_no_overflow()
-                page.keyboard.press("Escape")
                 page.get_by_role("button", name="收起值班面板").click()
                 expect(monitor).to_have_css("width", "42px")
                 self.assert_no_overflow()
@@ -270,119 +256,79 @@ class BrowserCases(unittest.TestCase):
             self.page.evaluate("""() => [
           document.documentElement, document.body, document.querySelector('.workspace'),
           ...document.querySelector('.workspace').children,
-          document.querySelector('.conversation-scroll'), document.querySelector('.ledger-window')
+          document.querySelector('.conversation-scroll')
         ].filter(node => node.scrollWidth > node.clientWidth).map(node => node.className)"""),
             [],
         )
 
-    def test_ledger_evidence_delivery_paging_and_reconnect(self):
+    def test_tool_card_survives_paging_reconnect_and_evidence_jump(self):
         self.fixture.duplicate_events = True
+        original = self.fixture.events["alert-demo"][2]
+        original.update(
+            id="pod-call",
+            status="running",
+            summary="正在查询",
+            collected_at=None,
+            observation=None,
+            observation_id=None,
+        )
         self.open_card()
-        expect(self.page.get_by_text("已送入 · 第 6 步")).to_be_visible()
-        expect(self.page.get_by_text("旁路 · 未送入主线")).to_be_visible()
-        expect(self.page.get_by_text("观测不可回查").filter(visible=True)).to_be_visible()
-        self.card.get_by_role("button", name="E1", exact=True).click()
-        expect(self.page.locator(".observation .fold-body.open")).to_have_count(1)
-
-        root = self.page.locator("#ledger")
-        first = self.page.locator(".ledger-cell[data-seq]").first
-        original = int(first.get_attribute("data-seq"))
-        root.focus()
-        self.page.keyboard.press("ArrowLeft")
-        expect(first).to_have_attribute("data-seq", str(original - 1))
-        self.assert_seq(15)
-        first.focus()
-        expect(self.popup).to_be_visible()
-        self.page.keyboard.press("Tab")
-        expect(self.popup).to_be_focused()
-        self.page.keyboard.press("Shift+Tab")
-        expect(first).to_be_focused()
-        self.page.keyboard.press("Tab")
-        self.page.keyboard.press("Escape")
-        expect(first).to_be_focused()
-        expect(self.popup).to_be_hidden()
-        self.page.locator("#session-title").hover()
-        first.hover()
-        expect(self.popup).to_be_visible()
-        first_rect = first.bounding_box()
-        pop_rect = self.popup.bounding_box()
-        self.assertLessEqual(pop_rect["width"], 560)
-        self.assertLessEqual(pop_rect["height"], 200)
-        self.assertAlmostEqual(first_rect["x"], pop_rect["x"], delta=1)
-        self.page.mouse.move(pop_rect["x"] + 10, pop_rect["y"] + 10)
-        expect(self.popup).to_be_visible()
-        seq = int(first.get_attribute("data-seq"))
-        self.assertEqual(
-            json.loads(self.popup.inner_text()), self.fixture.events["alert-demo"][seq - 1]
-        )
-        expect(self.popup).not_to_contain_text(SECRET)
-        expect(self.popup).not_to_contain_text(LOCAL_PATH)
-        root.focus()
-        for _ in range(2):
-            self.page.keyboard.press("ArrowLeft")
-        observation = root.locator('.ledger-cell[data-seq="8"]')
-        observation.focus()
-        projected = self.fixture.events["alert-demo"][7]
-        self.assertEqual(json.loads(self.popup.inner_text()), projected)
-        self.assertEqual(projected["observation"]["token"], "[已遮盖]")
-        self.assertEqual(projected["observation"]["source"], "[已遮盖]")
-        response = self.page.request.get(
-            self.fixture.url
-            + PATH.replace("/sessions", "/api/sessions")
-            + "/events?after_seq=0&limit=100"
-        )
-        for content in (
-            response.text(),
-            self.page.request.get(self.fixture.url + "/api/monitoring").text(),
-            self.popup.inner_text(),
-        ):
-            self.assertNotIn(SECRET, content)
-            self.assertNotIn(LOCAL_PATH, content)
+        page = self.page
+        expect(page.locator("#ledger, .event-popover")).to_have_count(0)
+        expect(page.get_by_text("已送入 · 第 6 步")).to_be_visible()
+        expect(page.get_by_text("旁路 · 未送入主线")).to_be_visible()
+        expect(page.get_by_text("观测不可回查").filter(visible=True)).to_have_count(2)
+        cards = page.locator(".observation")
+        expect(cards).to_have_count(6)
+        first = cards.first
+        expect(first).to_have_attribute("data-status", "running")
+        node = first.element_handle()
         self.fixture.query_cursors.clear()
 
         self.fixture.reject_reads = True
-        expect(self.page.locator("#connection")).to_have_text("连接中断 · 正在重试")
+        expect(page.locator("#connection")).to_have_text("连接中断 · 正在重试")
         self.fixture.push("message", role="assistant", text="断开期间新增的消息")
         for number in range(105):
             self.fixture.push("evidence", evidence_id=f"page-{number}", observation_id="obs-0")
+        self.fixture.push(
+            "tool_call",
+            id="pod-call",
+            tool="k8s_pod_status",
+            status="ok",
+            summary="已取得观测",
+            observation_id="obs-0",
+            observation={"rows": 2, "token": SECRET, "path": LOCAL_PATH},
+        )
         self.fixture.reject_reads = False
-        expect(self.page.get_by_text("断开期间新增的消息")).to_have_count(1)
-        self.assert_seq(121)
-        expect(self.page.locator("#connection")).to_be_empty()
+
+        expect(page.get_by_text("断开期间新增的消息")).to_have_count(1)
+        expect(page.locator("#connection")).to_be_empty()
+        expect(first).to_have_attribute("data-status", "ok")
+        expect(cards).to_have_count(6)
+        self.assertTrue(node.evaluate("(node) => node === document.querySelector('.observation')"))
         self.assertIn(15, self.fixture.query_cursors)
         self.assertIn(115, self.fixture.query_cursors)
         self.assertNotIn(0, self.fixture.query_cursors)
-        expect(self.page.locator("body")).not_to_contain_text(SECRET)
-        expect(self.page.locator("body")).not_to_contain_text(LOCAL_PATH)
-        self.assert_no_errors()
 
-    def test_ledger_popup_aligns_at_viewport_edge_and_tabs_to_next_cell(self):
-        self.open_card()
-        page = self.page
-        page.get_by_role("button", name="收起值班面板").click()
-        current = page.locator(".ledger-cell[aria-current=true]")
-        current.hover()
-        expect(self.popup).to_be_visible()
-        page.wait_for_function("""() => {
-          const popup = document.querySelector('.event-popover')?.getBoundingClientRect();
-          const trigger = document.querySelector('.ledger-cell[aria-current=true]');
-          return popup && Math.abs(popup.right - trigger.getBoundingClientRect().right) <= 1;
-        }""")
-        page.keyboard.press("Escape")
-        expect(current).to_be_focused()
-        expect(self.popup).to_be_hidden()
-        page.keyboard.press("Enter")
-        expect(self.popup).to_be_focused()
-        page.keyboard.press("Escape")
-        expect(current).to_be_focused()
+        self.card.get_by_role("button", name="E1", exact=True).click()
+        expect(first.locator(".fold-body.open")).to_be_visible()
+        expect(first.get_by_role("button")).to_be_focused()
+        expect(first.locator("pre")).to_contain_text('"rows": 2')
+        expect(first.locator("pre")).to_contain_text("[已遮盖]")
+        expect(page.locator("body")).not_to_contain_text(SECRET)
+        expect(page.locator("body")).not_to_contain_text(LOCAL_PATH)
 
-        page.locator("#session-title").hover()
-        cells = page.locator(".ledger-cell[data-seq]")
-        cells.first.focus()
-        page.keyboard.press("Tab")
-        expect(self.popup).to_be_focused()
-        page.keyboard.press("Tab")
-        expect(cells.nth(1)).to_be_focused()
+        page.reload()
+        expect(cards).to_have_count(6)
+        expect(first).to_have_attribute("data-status", "ok")
+        response = page.request.get(
+            self.fixture.url
+            + PATH.replace("/sessions", "/api/sessions")
+            + "/events?after_seq=115&limit=100"
+        )
+        self.assertEqual(response.json()["events"][-1]["seq"], 122)
+        self.assertNotIn(SECRET, response.text())
+        self.assertNotIn(LOCAL_PATH, response.text())
         self.assert_no_errors()
 
     def test_monitoring_questions_links_and_missing_values(self):

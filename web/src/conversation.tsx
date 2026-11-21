@@ -1,10 +1,14 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ComponentProps, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { Access, CardEvent, CardUpdate, Decision, DeliveryEvent, ObservationEvent, SessionEvent } from "./api";
 import { Card } from "./card";
 import { Stamp, time } from "./ui";
 
-function Observation({ event, reveal }: { event: ObservationEvent; reveal: object | undefined }) {
+function Observation({ event, reveal, finished }: {
+  event: ObservationEvent; reveal: object | undefined; finished: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const node = useRef<HTMLElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -18,38 +22,58 @@ function Observation({ event, reveal }: { event: ObservationEvent; reveal: objec
 
   const tool = event.tool?.replaceAll("_", " ") || "查询";
   const details = event.observation;
-  const text = details == null ? "观测详情未取到"
+  const running = event.status === "running";
+  const summary = running && finished ? "查询未完成" : event.summary;
+  const text = details == null ? (running && !finished ? "正在查询" : "观测详情未取到")
     : typeof details === "string" ? details : JSON.stringify(details, null, 2);
-  return <Collapsible.Root render={<section ref={node} />} open={open} onOpenChange={setOpen} className="observation">
+  return <Collapsible.Root render={<section ref={node} />} open={open} onOpenChange={setOpen}
+    className="observation" data-status={running && finished ? "incomplete" : event.status}>
     <header className="observation-head">
-      <Stamp>OBSERVATION · {tool} · {time(event.collected_at, true)}</Stamp>
+      <Stamp>OBSERVATION · {tool} · {time(event.collected_at || event.ts, true)}</Stamp>
       <Collapsible.Trigger ref={trigger} className="disclosure" aria-label="展开或收起观测">
         {open ? "[−]" : "[+]"}
       </Collapsible.Trigger>
     </header>
-    <p className="observation-summary">{event.summary}</p>
+    <p className="observation-summary">{summary}</p>
     <Collapsible.Panel keepMounted className={open ? "fold-body open" : "fold-body"} inert={!open}>
       <div><pre>{text}</pre></div>
     </Collapsible.Panel>
   </Collapsible.Root>;
 }
 
+function callKey(event: ObservationEvent): string | undefined {
+  if (event.id && event.turn_id) return JSON.stringify([event.session_id, event.turn_id, event.id]);
+}
+
 function project(events: SessionEvent[]) {
   const deliveries = new Map<string, DeliveryEvent>();
   const observations = new Map<string, number>();
+  const toolCards = new Map<number, ObservationEvent>();
+  const calls = new Map<string, number>();
   const evidence = new Map<string, string>();
   const cardUpdates = new Map<string, { update: CardUpdate; expiresAt?: string | null }>();
   const repeatedResults = new Set<number>();
   const replies = new Map<string | undefined | null, Set<string>>();
+  const completedTurns = new Set<string>();
+  let closed = false;
 
   for (const event of events) {
     switch (event.type) {
       case "input_delivered":
         deliveries.set(event.input_id, event);
         break;
-      case "tool_call":
-        if (event.observation_id) observations.set(event.observation_id, event.seq);
+      case "tool_call": {
+        const call = callKey(event);
+        const first = (call ? calls.get(call) : undefined) ?? event.seq;
+        if (call) calls.set(call, first);
+        const current = toolCards.get(first);
+        // 终结结果优先，重放的开始事件不会让观测重新进入查询中。
+        if (!current || current.status === "running" || event.status !== "running") {
+          toolCards.set(first, event);
+        }
+        if (event.observation_id) observations.set(event.observation_id, first);
         break;
+      }
       case "evidence": {
         const id = event.evidence_id ?? event.id;
         if (id && event.observation_id) evidence.set(id, event.observation_id);
@@ -62,19 +86,46 @@ function project(events: SessionEvent[]) {
         cardUpdates.set(event.card_id, { update: event, expiresAt: cardUpdates.get(event.card_id)?.expiresAt });
         break;
       case "message":
-        if (event.role === "assistant") {
+        if (event.role === "assistant" && !event.interim) {
           const texts = replies.get(event.turn_id) ?? new Set();
           texts.add(event.text);
           replies.set(event.turn_id, texts);
         }
         break;
       case "result":
+        if (event.turn_id && event.status !== "awaiting_approval") completedTurns.add(event.turn_id);
         if (event.summary && replies.get(event.turn_id)?.has(event.summary)) repeatedResults.add(event.seq);
+        break;
+      case "session_closed":
+        closed = true;
         break;
     }
   }
-  return { deliveries, observations, evidence, cardUpdates, repeatedResults };
+  return { deliveries, observations, toolCards, evidence, cardUpdates, repeatedResults, replies, completedTurns, closed };
 }
+
+function linkUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if ((url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password) {
+      return url.href;
+    }
+  } catch {
+    // 只有有效的 HTTP(S) 目的地址可作为链接。
+  }
+  return "";
+}
+
+const markdownComponents: ComponentProps<typeof Markdown>["components"] = {
+  a: ({ href, children }) => href
+    ? <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+    : <>{children}</>,
+  img: ({ alt }) => <>{alt}</>,
+  pre: ({ children }) => <pre tabIndex={0}>{children}</pre>,
+  table: ({ children }) => <div className="markdown-table" tabIndex={0}><table>{children}</table></div>,
+  th: ({ children }) => <th>{children}</th>,
+  td: ({ children }) => <td>{children}</td>,
+};
 
 function Message({ event, delivery }: { event: Extract<SessionEvent, { type: "message" }>; delivery?: DeliveryEvent }) {
   const alert = event.source === "alert";
@@ -82,8 +133,14 @@ function Message({ event, delivery }: { event: Extract<SessionEvent, { type: "me
   const hint = delivery?.lane === "side" ? "旁路 · 未送入主线"
     : Number.isInteger(delivery?.step) ? `已送入 · 第 ${delivery?.step} 步` : null;
   return <div className={user ? "message user-message" : "message"}>
-    <Stamp>{alert ? "ALERT" : user ? "你" : "AGENT"}</Stamp>
-    <p>{event.text}</p>
+    <Stamp>{alert ? "ALERT" : user ? "你" : event.lane === "side" ? "AGENT · 旁路" : "AGENT"}</Stamp>
+    {event.role === "assistant" && !alert
+      ? <div className="assistant-markdown">
+        <Markdown remarkPlugins={[remarkGfm]} skipHtml urlTransform={linkUrl} components={markdownComponents}>
+          {event.text}
+        </Markdown>
+      </div>
+      : <p>{event.text}</p>}
     {hint && <p className="stamp delivery">{hint}</p>}
   </div>;
 }
@@ -127,12 +184,26 @@ export function Conversation({ events, access, anchor, notice, decide }: Convers
   function renderEvent(event: SessionEvent): ReactNode {
     switch (event.type) {
       case "message":
+        if (event.interim && projection.replies.get(event.turn_id)?.has(event.text)) return null;
         return <Message event={event} delivery={event.input_id ? projection.deliveries.get(event.input_id) : undefined} />;
-      case "tool_call":
-        return <Observation event={event} reveal={reveal?.seq === event.seq ? reveal : undefined} />;
+      case "tool_call": {
+        const observation = projection.toolCards.get(event.seq);
+        if (!observation) return null;
+        return <Observation event={observation} reveal={reveal?.seq === event.seq ? reveal : undefined}
+          finished={projection.closed || (event.turn_id != null && projection.completedTurns.has(event.turn_id))} />;
+      }
+      case "skill":
+        return <p><Stamp>Skill · </Stamp>{event.name} · {event.status === "loaded" ? "已加载" : "读取失败"}
+          {" · "}{event.trigger === "signal" ? "信号触发" : "主动读取"}
+          {event.lane === "side" && " · 旁路"}{event.delegated && " · 只读委派"}</p>;
       case "hypothesis": {
         const color = event.status === "supported" ? "ok" : event.status === "refuted" ? "danger" : "dim";
         return <p><Stamp>HYPOTHESIS {event.id} · </Stamp>{event.statement} → <Stamp className={color}>{event.status}</Stamp></p>;
+      }
+      case "evidence": {
+        if (!event.rationale || !event.relation) return null;
+        const relation = { supporting: "支持", refuting: "反驳", neutral: "中性" }[event.relation];
+        return <p><Stamp>证据 · {relation} {event.hypothesis_id} · </Stamp>{event.rationale}</p>;
       }
       case "approval_required":
         return <Card card={event} access={access} anchored={anchor === `card-${event.card_id}`}
@@ -167,7 +238,8 @@ export function Conversation({ events, access, anchor, notice, decide }: Convers
         const minute = Math.floor(Date.parse(event.ts) / 60000);
         const showTime = minute !== lastMinute;
         lastMinute = minute;
-        return <div className="feed-row" key={event.seq}>
+        const key = event.type === "tool_call" && callKey(event);
+        return <div className="feed-row" key={key || event.seq}>
           <div className="feed-entry">{content}</div>
           {showTime && <time dateTime={event.ts}>{time(event.ts)}</time>}
         </div>;

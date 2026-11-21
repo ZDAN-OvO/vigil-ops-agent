@@ -15,11 +15,13 @@ from langgraph.checkpoint.base import (
 )
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+from aiops.contracts import SkillUsage
 from aiops.db import Store
 from aiops.sessions.models import Lease, LeaseLost, SessionInput, Turn
 from aiops.sessions.store import RunTransaction, SessionStore
 
 INPUT_IDS_CHANNEL = "vigil_input_ids"
+PUBLIC_EVENTS_CHANNEL = "vigil_public_events"
 TURN_ID_METADATA = "vigil_turn_id"
 
 
@@ -109,7 +111,29 @@ class SessionCheckpointer(BaseCheckpointSaver):
             if root:
                 claimed_ids = checkpoint["channel_values"].get(INPUT_IDS_CHANNEL)
                 await self._deliver(tx, saver, saved_config, claimed_ids, metadata)
+                # 新版本与根 checkpoint 一起提交，重存同一 checkpoint 不会重复发布。
+                if PUBLIC_EVENTS_CHANNEL in new_versions:
+                    await self._publish(tx, checkpoint["channel_values"][PUBLIC_EVENTS_CHANNEL])
             return saved_config
+
+    @staticmethod
+    async def _publish(tx: RunTransaction, events: list[tuple[str, dict[str, Any]]]) -> None:
+        signal_skills = []
+        for kind, fields in events:
+            await tx.append_event(kind, {**fields, "lane": tx.turn.lane})
+            if kind == "skill":
+                signal_skills.append(
+                    SkillUsage(
+                        name=fields["name"],
+                        trigger=fields["trigger"],
+                        content_hash=fields["content_hash"],
+                    )
+                )
+        if signal_skills:
+            investigation_id = await tx.ledger.get_investigation_id_for_turn(tx.turn.id)
+            if investigation_id is None:
+                raise LookupError("自动加载 Skill 的轮次缺少调查")
+            await tx.ledger.set_investigation_skills(investigation_id, signal_skills)
 
     def _check_turn(self, tx: RunTransaction) -> None:
         if tx.turn.checkpoint_thread_id != self._turn.checkpoint_thread_id:
