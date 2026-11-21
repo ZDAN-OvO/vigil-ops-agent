@@ -706,8 +706,12 @@ async def _run(args: argparse.Namespace, terminal: bool, output: OnceOutput | No
     logging.captureWarnings(True)
     if args.command == "serve":
         from aiops.serve import run_serve
+        from aiops.web_assets import WebAssetsUnavailable
 
-        await run_serve(settings, interactive=terminal)
+        try:
+            await run_serve(settings, interactive=terminal)
+        except WebAssetsUnavailable as exc:
+            raise CLIError(str(exc)) from None
         return 0
     if not settings.database_url:
         raise CLIError("未配置 VIGIL_DATABASE_URL")

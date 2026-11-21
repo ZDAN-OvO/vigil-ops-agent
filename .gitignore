@@ -31,3 +31,6 @@ logs/
 
 # 本地证据产物：截图只贴在 PR 评论里，不提交
 .evidence/
+
+# 网页构建依赖，构建产物由 dist/ 规则忽略
+/web/node_modules/

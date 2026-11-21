@@ -51,6 +51,18 @@ class BrowserCases(unittest.TestCase):
         )
         self.page = self.context.new_page()
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
+        self.page.on(
+            "console",
+            lambda message: (
+                self.errors.append(message.text)
+                if message.type == "error"
+                and (
+                    "Content Security Policy" in message.text
+                    or "Encountered two children" in message.text
+                )
+                else None
+            ),
+        )
         self.card = self.page.locator(f"#card-{CARD}")
         self.popup = self.page.locator(".event-popover")
 
@@ -342,6 +354,35 @@ class BrowserCases(unittest.TestCase):
         self.assertNotIn(0, self.fixture.query_cursors)
         expect(self.page.locator("body")).not_to_contain_text(SECRET)
         expect(self.page.locator("body")).not_to_contain_text(LOCAL_PATH)
+        self.assert_no_errors()
+
+    def test_ledger_popup_aligns_at_viewport_edge_and_tabs_to_next_cell(self):
+        self.open_card()
+        page = self.page
+        page.get_by_role("button", name="收起值班面板").click()
+        current = page.locator(".ledger-cell[aria-current=true]")
+        current.hover()
+        expect(self.popup).to_be_visible()
+        page.wait_for_function("""() => {
+          const popup = document.querySelector('.event-popover')?.getBoundingClientRect();
+          const trigger = document.querySelector('.ledger-cell[aria-current=true]');
+          return popup && Math.abs(popup.right - trigger.getBoundingClientRect().right) <= 1;
+        }""")
+        page.keyboard.press("Escape")
+        expect(current).to_be_focused()
+        expect(self.popup).to_be_hidden()
+        page.keyboard.press("Enter")
+        expect(self.popup).to_be_focused()
+        page.keyboard.press("Escape")
+        expect(current).to_be_focused()
+
+        page.locator("#session-title").hover()
+        cells = page.locator(".ledger-cell[data-seq]")
+        cells.first.focus()
+        page.keyboard.press("Tab")
+        expect(self.popup).to_be_focused()
+        page.keyboard.press("Tab")
+        expect(cells.nth(1)).to_be_focused()
         self.assert_no_errors()
 
     def test_monitoring_questions_links_and_missing_values(self):

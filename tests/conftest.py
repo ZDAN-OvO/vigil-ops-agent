@@ -1,11 +1,15 @@
 """真实库测试的共享 fixture：每次运行登记 ID，结束后只清理本用例创建的行。"""
 
+import shutil
+import subprocess
 from datetime import UTC, datetime
 from uuid import uuid4
 
 import psycopg
 import pytest
 from db_env import DSN, TEST_REASON
+
+from aiops.config import PROJECT_ROOT
 
 
 class ActionCleanup(list[str]):
@@ -161,3 +165,23 @@ def isolated_serve_dsn():
             yield make_conninfo(DSN, options=f"-csearch_path={schema}")
         finally:
             administer.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+@pytest.fixture(scope="session")
+def built_wheel(tmp_path_factory):
+    """消费门禁已构建的前端产物，共用一次普通 wheel 构建。"""
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("未安装 uv，跳过 wheel 验证")
+    directory = tmp_path_factory.mktemp("wheel")
+    result = subprocess.run(
+        [uv, "build", "--wheel", "--out-dir", str(directory)],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        timeout=45,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    (wheel,) = directory.glob("*.whl")
+    return wheel

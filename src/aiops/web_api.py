@@ -23,19 +23,37 @@ from starlette.types import ASGIApp
 
 from aiops.actions.rollout_undo import ActionError
 from aiops.actions.safety import ActionSafety
-from aiops.config import Settings
+from aiops.config import PROJECT_ROOT, SOURCE_CHECKOUT, Settings
 from aiops.contracts import ApprovalDecision
 from aiops.http_api import APIError, http_error, read_body, read_json
 from aiops.sessions.models import Session, SessionClosed
 from aiops.sessions.projection import project_payload, project_text
 from aiops.sessions.store import SessionStore
+from aiops.web_assets import STATIC_PREFIX, WebAssetsUnavailable, check_web_assets
 
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _COOKIE = "vigil_browser"
 _API_LIMIT = 64 * 1024
 _MONITORING_BLOCKS = ("alerts", "probes", "changes", "services", "warnings", "nodes")
 MonitoringSnapshot = Callable[[], Awaitable[dict[str, Any]]]
-STATIC_DIR = Path(__file__).with_name("static")
+STATIC_DIR = PROJECT_ROOT / "web/dist" if SOURCE_CHECKOUT else Path(__file__).with_name("static")
+PAGE_CSP = (
+    "default-src 'self'; object-src 'none'; base-uri 'none'; "
+    "frame-ancestors 'none'; form-action 'self'"
+)
+
+
+def _missing_assets_message() -> str:
+    if SOURCE_CHECKOUT:
+        return "网页产物缺失或不完整，请在仓库运行 make web-build"
+    return "网页产物缺失或不完整，请重新安装 wheel，或运行 make web-build 后重新打包"
+
+
+def require_web_assets() -> None:
+    try:
+        check_web_assets(STATIC_DIR)
+    except (OSError, ValueError):
+        raise WebAssetsUnavailable(_missing_assets_message()) from None
 
 
 class BrowserAuth:
@@ -182,15 +200,10 @@ def build_web_app(
     async def page(request: Request) -> FileResponse:
         if "session_id" in request.path_params:
             _id(request, "session_id")
-        return FileResponse(
-            STATIC_DIR / "index.html",
-            headers={
-                "Content-Security-Policy": (
-                    "default-src 'self'; object-src 'none'; base-uri 'none'; "
-                    "frame-ancestors 'none'; form-action 'self'"
-                ),
-            },
-        )
+        index = STATIC_DIR / "index.html"
+        if not index.is_file():
+            raise APIError(503, "web_assets_missing", _missing_assets_message())
+        return FileResponse(index, headers={"Content-Security-Policy": PAGE_CSP})
 
     async def require_session(request: Request, *, open_only: bool = False) -> Session:
         session = await sessions.get_session(_id(request, "session_id"))
@@ -371,11 +384,16 @@ if (token) {{
             }
         return JSONResponse(project_payload(snapshot))
 
+    static_routes = (
+        [Mount(STATIC_PREFIX.rstrip("/"), app=StaticFiles(directory=STATIC_DIR))]
+        if STATIC_DIR.is_dir()
+        else []
+    )
     app = Starlette(
         routes=[
             Route("/", page),
             Route("/sessions/{session_id}", page),
-            Mount("/static", app=StaticFiles(directory=STATIC_DIR)),
+            *static_routes,
             Route("/login", login_page, methods=["GET"]),
             Route("/login", login, methods=["POST"]),
             Route("/api/sessions", list_sessions),

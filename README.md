@@ -19,7 +19,7 @@ uv run --frozen vigil admin doctor
 uv run --frozen vigil "checkoutservice 现在健康吗？"
 ```
 
-在交互终端启动 `uv run --frozen vigil serve`，打开它打印的一次性链接即可在网页提问和审批。命令行参数、安装版配置和旧库切换见操作手册。
+使用 Node.js 26 和 npm 运行 `make web-build` 构建源码版网页。随后在交互终端启动 `uv run --frozen vigil serve`，打开它打印的一次性链接即可在网页提问和审批。命令行参数、安装版配置和旧库切换见操作手册。
 
 - [操作手册](docs/USAGE.md)
 - [实验环境](env/README.md)

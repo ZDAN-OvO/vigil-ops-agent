@@ -77,8 +77,6 @@ Python 3.12.14。浏览器用 Chrome 157.0.8103.78，调用方用 Claude Code 2.
 ```bash
 uv sync --frozen --group dev
 LANGGRAPH_STRICT_MSGPACK=true make check-all
-uv run --frozen --with tinycss2==1.5.1 python tests/web/check_styles.py
-uv run --frozen --with playwright==1.61.0 python tests/web/browser_cases.py
 ```
 
 | 边界 | 回归位置 |

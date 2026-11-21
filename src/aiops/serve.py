@@ -17,7 +17,7 @@ from aiops.db import Store
 from aiops.monitoring.snapshot import Monitoring
 from aiops.sessions.checkpoint import setup_checkpoints
 from aiops.sessions.models import LeaseLost, SessionClosed, TurnLane
-from aiops.web_api import BrowserAuth, build_web_app
+from aiops.web_api import BrowserAuth, build_web_app, require_web_assets
 from aiops.webhook import build_app
 
 _LOG = logging.getLogger(__name__)
@@ -178,6 +178,7 @@ async def _listen(
 
 async def run_serve(settings: Settings, *, interactive: bool) -> None:
     """CLI 提供终端判定。启动前完成两个数据库账本的迁移。"""
+    require_web_assets()
     settings.validate_webhook_listener()
     if not settings.database_url:
         raise ValueError("未配置 VIGIL_DATABASE_URL")
