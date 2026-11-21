@@ -7,7 +7,9 @@ import httpx
 import pytest
 from actions_support import FakeAdapter, FakePrometheus, build_executor, rollout_plan
 from conftest import ActionCleanup
+from fastapi import FastAPI
 
+from aiops import web_api
 from aiops.actions.rollout_undo import ActionError
 from aiops.actions.safety import ActionSafety
 from aiops.agent.conversation import ConversationDriver, ConversationResult, ConversationRun
@@ -27,6 +29,7 @@ def _client(settings, store, auth, **kwargs):
         auth=auth,
         **kwargs,
     )
+    assert isinstance(app, FastAPI)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=settings.web_origin)
 
 
@@ -72,6 +75,62 @@ async def _card(store, tmp_path, settings):
     return executor, proposal, card, adapter
 
 
+def test_web_host_preserves_explicit_routes_methods_and_headers(monkeypatch, tmp_path):
+    (tmp_path / "index.html").write_text("<title>Vigil</title>", encoding="utf-8")
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets/app.css").write_text("body {}", encoding="utf-8")
+    monkeypatch.setattr(web_api, "STATIC_DIR", tmp_path)
+
+    async def run():
+        settings = Settings(_env_file=None)
+        async with _client(settings, None, BrowserAuth(interactive=True)) as client:
+            for path in ("/", "/sessions/valid_session-1", "/static/assets/app.css", "/login"):
+                response = await client.get(path)
+                head = await client.head(path)
+                assert response.status_code == head.status_code == 200
+                assert head.content == b""
+                assert head.headers["content-type"] == response.headers["content-type"]
+                assert response.headers["cache-control"] == "no-store"
+                assert response.headers["x-frame-options"] == "DENY"
+                assert response.headers["x-content-type-options"] == "nosniff"
+                if path in ("/", "/sessions/valid_session-1"):
+                    assert response.headers["content-security-policy"] == web_api.PAGE_CSP
+                    assert head.headers["content-security-policy"] == web_api.PAGE_CSP
+
+            for path in (
+                "/docs",
+                "/docs/oauth2-redirect",
+                "/redoc",
+                "/openapi.json",
+                "/login/",
+                "/sessions/valid_session-1/",
+                "/sessions/invalid.id",
+                "/api/sessions/",
+                "/api/missing",
+                "/static",
+                "/static/assets/missing.js",
+                "/missing",
+            ):
+                response = await client.get(path)
+                assert response.status_code == 404
+                assert response.json()["error"] == "not_found"
+                assert "location" not in response.headers
+
+            for path in ("/", "/login", "/api/sessions", "/api/monitoring"):
+                response = await client.put(path)
+                assert response.status_code == 405
+                assert response.json() == {
+                    "error": "method_not_allowed",
+                    "message": "Method Not Allowed",
+                }
+                assert set(response.headers["allow"].split(", ")) == {"GET", "HEAD"}
+            static = await client.put("/static/assets/app.css")
+            assert static.status_code == 405
+            assert static.json()["error"] == "method_not_allowed"
+
+    asyncio.run(run())
+
+
 def test_create_session_requires_browser_login_and_can_accept_first_message(isolated_serve_dsn):
     async def run():
         async with Store.open(isolated_serve_dsn) as store:
@@ -88,10 +147,19 @@ def test_create_session_requires_browser_login_and_can_accept_first_message(isol
                 assert created.status_code == 201
                 session = created.json()["session"]
                 assert session["source"] == "user" and session["state"] == "idle"
+                path = f"/api/sessions/{session['id']}/messages"
+                for media_type, body, status, code, message in (
+                    ("text/plain", b"{}", 415, "invalid_content_type", "请求类型错误"),
+                    ("application/json", b"{" * 65537, 413, "body_too_large", "请求过大"),
+                    ("application/json", b"{", 400, "invalid_body", "请求字段或格式错误"),
+                ):
+                    invalid = await client.post(
+                        path, headers={**headers, "Content-Type": media_type}, content=body
+                    )
+                    assert invalid.status_code == status
+                    assert invalid.json() == {"error": code, "message": message}
                 response = await client.post(
-                    f"/api/sessions/{session['id']}/messages",
-                    headers=headers,
-                    json={"text": "checkout 健康吗"},
+                    path, headers=headers, json={"text": "checkout 健康吗"}
                 )
                 assert response.status_code == 202
                 assert response.json()["queued_seq"] == 2

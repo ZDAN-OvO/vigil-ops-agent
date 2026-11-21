@@ -9,9 +9,9 @@ from secrets import token_urlsafe
 from typing import Annotated, Any
 from urllib.parse import parse_qs
 
+from fastapi import FastAPI
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel, StringConstraints, field_validator
-from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -196,7 +196,7 @@ def build_web_app(
     safety: ActionSafety,
     auth: BrowserAuth,
     monitoring: MonitoringSnapshot | None = None,
-) -> Starlette:
+) -> FastAPI:
     async def page(request: Request) -> FileResponse:
         if "session_id" in request.path_params:
             _id(request, "session_id")
@@ -389,7 +389,12 @@ if (token) {{
         if STATIC_DIR.is_dir()
         else []
     )
-    app = Starlette(
+    # 沿用原路由的 GET/HEAD、Allow 和原始 Request 分发语义。
+    return FastAPI(
+        openapi_url=None,
+        docs_url=None,
+        redoc_url=None,
+        redirect_slashes=False,
         routes=[
             Route("/", page),
             Route("/sessions/{session_id}", page),
@@ -409,5 +414,3 @@ if (token) {{
         exception_handlers={HTTPException: http_error},
         middleware=[Middleware(_LocalBrowser, settings=settings)],
     )
-    app.router.redirect_slashes = False
-    return app
