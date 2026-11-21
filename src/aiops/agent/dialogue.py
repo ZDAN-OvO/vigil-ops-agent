@@ -1,6 +1,7 @@
 """在模型边界提交队列消息及已完成的旁路线索。"""
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain_core.messages import HumanMessage
@@ -15,6 +16,7 @@ class DialogueState(AgentState):
     # 普通 channel，和消息一起由根 checkpoint 提交。
     vigil_input_ids: list[str]
     vigil_side_seq: int
+    vigil_public_events: list[tuple[str, dict[str, Any]]]
 
 
 async def events(

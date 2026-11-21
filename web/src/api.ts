@@ -62,10 +62,14 @@ export type CardUpdate = EventOf<"card_decision", {
 }>;
 
 export type ObservationEvent = EventOf<"tool_call", {
+  id?: string | null;
+  lane?: "main" | "side";
+  delegated?: boolean;
+  status?: "running" | "ok" | "empty" | "error" | "rejected";
   tool?: string;
   summary?: string;
-  collected_at?: string;
-  observation_id?: string;
+  collected_at?: string | null;
+  observation_id?: string | null;
   observation?: unknown;
 }>;
 
@@ -74,9 +78,19 @@ export type DeliveryEvent = EventOf<"input_delivered", { input_id: string; step?
 export type SessionEvent =
   | CardEvent | CardUpdate | ObservationEvent | DeliveryEvent
   | EventOf<"session" | "session_closed">
-  | EventOf<"message", { source?: string; role: string; text: string; input_id?: string }>
+  | EventOf<"message", {
+      source?: string; role: string; text: string; input_id?: string; interim?: boolean; lane?: string;
+    }>
+  | EventOf<"skill", {
+      name: string; description?: string; content_hash?: string;
+      trigger: "signal" | "description"; status: "loaded" | "failed";
+      lane: string; delegated?: boolean;
+    }>
   | EventOf<"hypothesis", { id: string; statement: string; status: string }>
-  | EventOf<"evidence", { evidence_id?: string; id?: string; observation_id?: string }>
+  | EventOf<"evidence", {
+      evidence_id?: string; id?: string; observation_id?: string;
+      hypothesis_id?: string; relation?: "supporting" | "refuting" | "neutral"; rationale?: string;
+    }>
   | EventOf<"result", { status: string; summary?: string }>;
 
 export interface EventPage {

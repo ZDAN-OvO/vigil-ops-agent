@@ -186,8 +186,16 @@ def _text_event(event: SessionEvent) -> str | None:
         case "tool_call":
             summary = fields.get("summary") or ""
             return f"查询 {fields['tool']}  {fields['status']}  {summary}".rstrip()
+        case "skill":
+            trigger = "信号触发" if fields["trigger"] == "signal" else "主动读取"
+            status = "已加载" if fields["status"] == "loaded" else "读取失败"
+            lane = " · 旁路" if fields["lane"] == "side" else ""
+            delegated = " · 只读委派" if fields.get("delegated") else ""
+            return f"Skill  {fields['name']}（{status} · {trigger}{lane}{delegated}）"
         case "hypothesis":
             return f"假设  {fields['statement']}（{fields['status']}）"
+        case "evidence" if fields.get("rationale"):
+            return f"证据  {fields['hypothesis_id']}（{fields['relation']}）  {fields['rationale']}"
         case "input_delivered":
             lane = "旁路" if fields.get("lane") == "side" else "主线"
             return f"线索已送达{lane}轮次 {event.turn_id} 的第 {fields['step']} 步"

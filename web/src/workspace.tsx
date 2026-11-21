@@ -4,7 +4,6 @@ import { Link, Outlet, useLocation, useMatch, useNavigate, useOutletContext, use
 import type { CardEvent, Decision, Session, SessionsResponse } from "./api";
 import { errorMessage, request, sessionPath } from "./api";
 import { Conversation } from "./conversation";
-import { Ledger } from "./ledger";
 import { Monitoring } from "./monitoring";
 import { usePolling } from "./polling";
 import { useSessionLedger } from "./session-ledger";
@@ -277,7 +276,6 @@ function ActiveSession({ id, connection, sessionControls, attempts, decisions, r
         {session && !access.approval_enabled && <Stamp>{access.approval_disabled_reason || "只读"}</Stamp>}
       </div>
     </header>
-    <Ledger events={events} state={session?.state} />
     <Conversation events={events} access={access} anchor={anchor} decide={decide}
       notice={state.error || (anchorMissing ? "此会话中找不到链接指向的卡片" : "")} />
     <form id="composer" className="composer" onSubmit={(event) => void send(event)}>

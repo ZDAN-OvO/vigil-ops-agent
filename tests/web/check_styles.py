@@ -19,7 +19,6 @@ TOKENS = {
     "--line": "rgba(236,232,225,.13)",
     "--line-soft": "rgba(236,232,225,.07)",
     "--line-hi": "rgba(236,232,225,.26)",
-    "--glass": "rgba(8,9,10,.72)",
     "--gold": "#cca460",
     "--gold-hi": "#e2c891",
     "--gold-deep": "#7f6238",
@@ -144,7 +143,7 @@ def check_property(name, value, selector="", *, svg=False):
     elif name.startswith(("transition-", "animation-")):
         raise AssertionError(f"请用可检查的完整声明 {name}")
     elif name == "backdrop-filter":
-        assert selector == ".event-popover" and actual == "blur(12px)saturate(120%)"
+        raise AssertionError(f"会话界面不使用毛玻璃样式：{selector}")
 
 
 def check_declarations(source, selector=""):

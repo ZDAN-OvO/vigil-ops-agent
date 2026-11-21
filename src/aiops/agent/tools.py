@@ -193,6 +193,8 @@ async def _prepare_request(
                 {
                     "id": _public_call_id(call_id),
                     "tool": tool_name,
+                    "lane": tx.turn.lane,
+                    "delegated": CURRENT_DELEGATION.get() is not None,
                     "summary": "正在查询",
                     "status": "running",
                     "observation_id": None,
@@ -299,6 +301,8 @@ async def _finish_request(
                 {
                     "id": _public_call_id(call_id),
                     "tool": query["tool"],
+                    "lane": tx.turn.lane,
+                    "delegated": CURRENT_DELEGATION.get() is not None,
                     "summary": {
                         "ok": "已取得观测",
                         "empty": "未查询到数据",
@@ -967,8 +971,10 @@ async def _assess_evidence(
     )
     await _finish_request(ctx, call_id, state=ToolRequestState.OBSERVED, message=message)
     if ctx.active_transaction is not None:
-        for link in applied:
-            await ctx.active_transaction.append_event("evidence", link)
+        for link, assessed in zip(applied, args.links, strict=True):
+            public = project_payload({**link, "rationale": assessed.rationale})
+            public["rationale"] = public["rationale"][:500]
+            await ctx.active_transaction.append_event("evidence", public)
     for item in updated_hypotheses:
         await _record_hypothesis(ctx, item)
     return message

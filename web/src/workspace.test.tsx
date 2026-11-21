@@ -154,5 +154,4 @@ test("审批提交用完整卡片 ID 与指纹，回执入账前保持待审批�
   await waitFor(() => expect(document.querySelector(".card-state")?.textContent).toBe("已批准 · 待执行"),
     { timeout: 2500 });
   expect(document.querySelector("#session-meta")?.getAttribute("data-state")).toBe("awaiting_approval");
-  expect(document.querySelector(".ledger-cell[aria-current=true]")?.getAttribute("data-seq")).toBe("2");
 });
