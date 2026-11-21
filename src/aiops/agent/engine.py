@@ -129,6 +129,15 @@ class TaskNotResumable(RuntimeError):
     pass
 
 
+class _ConversationChatOpenAI(ChatOpenAI):
+    """允许会话直接回答，同时暴露 ToolStrategy 的报告工具。"""
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):
+        return super().bind_tools(
+            tools, tool_choice="auto" if tool_choice == "any" else tool_choice, **kwargs
+        )
+
+
 class LangChainInvestigation:
     def __init__(
         self,
@@ -168,7 +177,12 @@ class LangChainInvestigation:
             if settings.model_api_key is not None
             else ""
         )
-        return ChatOpenAI(
+        model = (
+            _ConversationChatOpenAI
+            if self._scope is not None and self._incident.trigger != "alert"
+            else ChatOpenAI
+        )
+        return model(
             model=settings.model_name or "",
             base_url=settings.model_base_url,
             # 本地网关不校验密钥；OpenAI SDK 仍要求非空字符串。
@@ -746,6 +760,12 @@ class LangChainInvestigation:
                     conclusion=None,
                     model_summary_completed=False,
                     detail="模型收尾未完成：连续三个轮次没有新进展",
+                )
+            if self._scope is not None:
+                return await self._abort(
+                    context,
+                    TerminationCode.NO_PROGRESS,
+                    "本轮未能生成回答。模型连续三轮未取得新进展。",
                 )
             return await self._complete(
                 context,

@@ -112,6 +112,33 @@ def test_queries_again_next_turn_and_projects_only_public_fields(tmp_path):
     asyncio.run(run())
 
 
+def test_skill_read_loop_reports_failure_without_assistant_message(tmp_path):
+    async def run():
+        responses = [
+            call(
+                "read_file",
+                {"file_path": "/hypothesis-driven-investigation/SKILL.md"},
+                f"read-skill-{index}",
+            )
+            for index in range(4)
+        ]
+        async with case(tmp_path, responses=responses) as (driver, session_id):
+            await enqueue(driver, session_id, "我要怎么使用？你提供了哪些能力？")
+            async with driver.claim(session_id) as main:
+                turn = await main.drive()
+            assert turn.exit_code == 1
+            assert turn.result.payload["status"] == "failed"
+            assert turn.result.payload["termination_code"] == "no_progress"
+            assert "本轮未能生成回答" in turn.result.payload["summary"]
+            events = await driver.sessions.list_events(session_id)
+            assert not any(
+                event.type == "message" and event.payload.get("role") == "assistant"
+                for event in events
+            )
+
+    asyncio.run(run())
+
+
 def test_partial_hypothesis_batch_keeps_applied_change_in_event_log(tmp_path):
     async def run():
         batch = call(

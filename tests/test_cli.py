@@ -780,6 +780,9 @@ def test_wheel_cli_uses_packaged_skills_from_outside_source(child_env, tmp_path)
             endpoint.shutdown()
             server.join(timeout=5)
     assert result["summary"] == "已读内置 Skill"
+    for request in _ModelGateway.requests:
+        assert request["tool_choice"] == "auto"
+        assert any(tool["function"]["name"] == "ReportDraft" for tool in request["tools"])
     tool_result = next(
         message["content"]
         for message in _ModelGateway.requests[-1]["messages"]
