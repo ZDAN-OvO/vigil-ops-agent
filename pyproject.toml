@@ -42,6 +42,9 @@ packages = ["src/aiops"]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 
+[tool.hatch.build.targets.sdist.force-include]
+"web/dist" = "web/dist"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"

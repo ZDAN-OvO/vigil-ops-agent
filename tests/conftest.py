@@ -169,13 +169,13 @@ def isolated_serve_dsn():
 
 @pytest.fixture(scope="session")
 def built_wheel(tmp_path_factory):
-    """消费门禁已构建的前端产物，共用一次普通 wheel 构建。"""
+    """消费已构建的前端产物，经 sdist 共用一次普通 wheel 构建。"""
     uv = shutil.which("uv")
     if uv is None:
         pytest.skip("未安装 uv，跳过 wheel 验证")
     directory = tmp_path_factory.mktemp("wheel")
     result = subprocess.run(
-        [uv, "build", "--wheel", "--out-dir", str(directory)],
+        [uv, "build", "--out-dir", str(directory)],
         cwd=PROJECT_ROOT,
         capture_output=True,
         timeout=45,
