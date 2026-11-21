@@ -8,10 +8,11 @@
 
 ```bash
 make web-build
-uv build --wheel
+uv build
 ```
 
-把 wheel 安装到独立的 Python 环境后，可以直接运行终端和网页。运行环境只需 Python：
+把 wheel 安装到独立的 Python 3.12 或 3.13 环境后，可以直接运行终端和网页。
+wheel 自带网页资源，运行环境只需 Python：
 
 ```bash
 uv venv --python 3.12 /path/to/vigil-env
@@ -59,6 +60,10 @@ vigil admin doctor
 调查正在运行时可以追加线索。看到“已送入”后，线索已保存进本轮 checkpoint。
 会话等待审批时，另一个进程用 `vigil -p "现在几个副本？" --resume SESSION_ID`
 可以走独立旁路。会话和事件支持在 CLI 与网页互相接手。
+
+`vigil serve` 通过 FastAPI 在 `127.0.0.1` 同源提供页面和会话 API。可以打开并
+刷新 `/sessions/SESSION_ID`，卡片链接会定位到对应审批卡。在浏览器访问时请使用
+`http://127.0.0.1` 和启动端口。后台启动时网页只读，告警从单独配置的监听接收。
 
 `--output text` 是默认输出。供脚本读取时用 `--output json` 获取本次结果与卡片，
 或用 `--output stream-json` 获取逐行 JSON。最后一行始终是 `result`。数据库事件的

@@ -1,5 +1,86 @@
 # Vigil 安装与切换验收
 
+## FastAPI 网页宿主验收
+
+| 产物 | 构建提交 | wheel SHA-256 | 证据来源 |
+| --- | --- | --- | --- |
+| React + FastAPI | `aa6effdcb5e3ff9464dcc641cac0c03222c4d1b4` | `5b16b58d714e22c27c71077b8c5bbfa52ae326e1ceccae3872e4657cf0716881` | 本次构建、安装和实测 |
+| React + Starlette 回退包 | `96ba75025e6336e90f7774ef03277886df7fc500` | `6b3c323893c1ca81157b4b19f9b640c6ba7a74207cb55479fa6521f5523b35bd` | 前置交付验收，本次复核文件摘要 |
+
+新宿主基于 React 合并提交 `a1d612f85de65ab0b463fd7aa1aa6f2f4f90353c`。
+运行时锁定 FastAPI 0.165.0、Starlette 1.10.0、Uvicorn 0.54.0、HTTPX 0.28.1、
+AnyIO 4.16.0 和 Pydantic 2.14.2。在 CPython 3.12.14 和 3.13.15 分别从冻结锁解析并
+安装同一 wheel。发布构建用 Node.js 26.13.0、npm 11.20.0 和 `uv build`，由 sdist
+生成含生产 HTML、脚本、样式、内置 Skill 和迁移的 wheel。安装环境使用无 Node.js 的
+`PATH`，在仓库外启动正式 `vigil serve`。
+
+### HTTP、浏览器和双监听
+
+- 干净源码解包后，在缺少 `web/dist` 时可编辑安装和一次性终端均成功；网页启动及普通
+  wheel 构建报告 `make web-build`。
+- 在独占 PostgreSQL 17.11 上以严格 msgpack 模式运行 `make check-all`。Python 372 项、
+  Vitest 4 项、Chrome 夹具 10 项通过，零跳过。门禁内只构建一次前端，类型、样式与
+  lint 同时通过。网页 API 和告警 TCP 快测 21 项通过。
+- 使用正式 wheel 和 Chrome 157.0.8103.78 在两版 Python 上验证生产 CSP、同源静态资源、
+  卡片深链接和刷新、一次性兑换和复放拒绝、Cookie 的 `HttpOnly`、`SameSite=Strict`
+  和 `Path=/api`、只读拒绝及会话恢复。受控后端的批准、拒绝、关闭、消息响应丢失后同
+  `input_id` 仅入账一次，以及 CLI 脱敏投影逐字段一致。交互和非交互服务收到 SIGTERM
+  均以 0 退出。
+- HTTP 回归覆盖 GET、HEAD、405 的 `Allow`、未知 API 和静态资源的 404、关闭默认文档
+  和末尾斜杠跳转，以及对无效 JSON、过大请求、错媒体类型的共享错误响应。
+
+### 真实处置与告警投递
+
+新 k3d 节点启动时触达宿主 inotify 实例上限。本轮使用已核实的实验集群
+`k3d-vigil-af-iybt7uz6`（k3d 5.9.0、Kubernetes 1.35.5+k3s1）及已有
+`vigil-experiment` 命名空间，仅创建本任务唯一标签和名称的对象。数据库、受控模型和
+AlertManager 0.30.0 均独立。Vigil 使用临时 ServiceAccount，具备所需的命名空间级读权限，
+Deployment PATCH 按 `resourceNames` 限定唯一对象。现场用 `kubectl auth can-i`
+验证目标 PATCH 允许、其他 Deployment 和命名空间拒绝，以及创建和删除拒绝。所有临时
+对象都有 UID 记录，按 UID 前置条件清理。沿用实验集群的审计策略。
+
+| 路径 | 实测口径 |
+| --- | --- |
+| 自然触发和恢复 | 在新 Deployment 注入故障让实际入口从 HTTP 200 变为 500。Blackbox Exporter 0.28.0 和 Prometheus 3.15.1 读到 500，规则经真实 AlertManager 向 Starlette 独立端口投递，创建会话。Chrome 从卡片链接登录并批准，正式执行器发出 1 次 dry-run 和 1 次实际 PATCH，均为 200。目标修订 2 → 3，故障配置被移除，HTTP 恢复 200。网页显示“已验证”，CLI 在同会话读取相同回执。Prometheus 规则恢复后，AlertManager 发送整组 resolved 并关闭原会话。 |
+| 合成分组通知 | 经真实 AlertManager 的 `POST /api/v2/alerts` 注入同告警名的两个实例。两个实例进入同一会话，重发仍归入原会话，部分恢复保持打开，整组恢复关闭。 |
+| 固定 TCP 夹具 | 快测通过真实 TCP 分别访问 FastAPI 和 Starlette，以固定 payload 覆盖并发归并、重启、部分和整组恢复及监听隔离。模型和集群写入使用替身。 |
+| 正式进程重启 | 真实运行中网页端口拒绝告警路由，告警端口拒绝网页路由，未授权告警返回 401。交互式进程经 SIGTERM 退出后，在相同端口重启为非交互模式，两监听可达，网页只读，再次 SIGTERM 退出为 0。 |
+
+最终验收的目标是 `vigil-experiment/Deployment/fastapi-5a0c0e2b55-web`。审计将
+验收人注入故障的 PATCH 与 Vigil ServiceAccount 的两次请求分别记录。验证基线
+7 个样本中 6 个失败，恢复后 7 个样本均通过，1 个 Ready Pod 且零重启。
+`vigil --resume` 退出码为 0，18 条持久化事件与网页 API 逐字段相同。
+AlertManager 记录 10 次 webhook 通知，零失败。
+
+### 复跑与证据
+
+在受测源码上，通过环境变量 `VIGIL_DATABASE_URL` 指定独占 PostgreSQL，再运行：
+
+```bash
+uv sync --frozen --group dev
+LANGGRAPH_STRICT_MSGPACK=true uv run --frozen pytest -q tests/test_web_api.py tests/test_webhook.py
+LANGGRAPH_STRICT_MSGPACK=true make check-all
+uv build
+uv export --frozen --no-dev --no-emit-project --no-hashes --output-file /tmp/vigil-requirements.txt
+sha256sum dist/*.whl
+```
+
+本地脱敏验收目录附 `rerun.sh REPO all`，也可用 `gate`、`browser` 或 `cluster`。
+脚本从固定提交解包，创建独占 PostgreSQL，锁定版本构建 wheel 并从仓库外启动。
+`cluster` 核对实验集群、命名空间 UID 与审计策略后才创建资源，使用单独监听及按 UID
+前置条件的清理。脚本需要本机 Chrome、Docker、kubectl、k3d 和该实验集群访问。
+
+| 核对项 | 脱敏证据文件 |
+| --- | --- |
+| HTTP 与完整门禁 | `http.log`、`check-all.log` |
+| Python 两版与安装包 | `sync312.log`、`sync313.log`、`wheel-install.log`、`wheel-sha256.txt`、`browser12/browser.log`、`browser13/browser.log` |
+| 干净源码终端与构建边界 | `clean-once.txt`、`clean-missing-serve.txt`、`clean-missing-wheel.txt` |
+| 实验目标、RBAC 和双监听 | `cluster-final/acceptance.log`、`cluster-final/objects.jsonl` |
+| 实际写入与业务验证 | `cluster-final/audit-*.json`、`cluster-final/card-verified.png`、`cluster-final/web-events.json`、`cluster-final/cli-resume.jsonl` |
+| 告警恢复和分组 | `cluster-final/natural-recovery.json`、`cluster-final/synthetic-group-events.json`、`cluster-final/am-metrics.txt` |
+
+## 会话与旧库切换的历史验收
+
 验证环境为独立 PostgreSQL 17.11、k3d v5.9.0 / Kubernetes v1.35.5+k3s1、
 Python 3.12.14。浏览器用 Chrome 157.0.8103.78，调用方用 Claude Code 2.1.329。
 验收库、浏览器和实验集群均使用本次独立配置。
@@ -91,7 +172,7 @@ LANGGRAPH_STRICT_MSGPACK=true make check-all
 
 305 秒持租约由真实 PostgreSQL 验证。动作锁续期覆盖长于首个租期的验证，测试缩短了时钟
 以验证接手竞争。界面矩阵使用夹具驱动各态，真实网页验收使用安装版服务与真实集群。
-本次以严格 msgpack 模式运行 `make check-all`，367 项通过，零跳过。Chrome 夹具 9 组通过，
+会话切换交付以严格 msgpack 模式运行 `make check-all`，367 项通过，零跳过。Chrome 夹具 9 组通过，
 包含 11 条卡片状态路径。
 
 ## 旧库切换预演
