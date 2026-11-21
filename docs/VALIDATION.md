@@ -65,7 +65,9 @@ uv export --frozen --no-dev --no-emit-project --no-hashes --output-file /tmp/vig
 sha256sum dist/*.whl
 ```
 
-本地脱敏验收目录附 `rerun.sh REPO all`，也可用 `gate`、`browser` 或 `cluster`。
+本机脱敏验收资料保存在 `/home/zdan/.local/state/vigil/validation/fastapi-20261121/`，
+包含两份 wheel、下表证据和复跑脚本，独立于 `/tmp` 保留，未纳入 Git。
+在该目录执行 `bash rerun.sh REPO all`，也可用 `gate`、`browser` 或 `cluster`。
 脚本从固定提交解包，创建独占 PostgreSQL，锁定版本构建 wheel 并从仓库外启动。
 `cluster` 核对实验集群、命名空间 UID 与审计策略后才创建资源，使用单独监听及按 UID
 前置条件的清理。脚本需要本机 Chrome、Docker、kubectl、k3d 和该实验集群访问。
