@@ -54,9 +54,16 @@ from aiops.contracts import (
     ToolRequest,
     ToolRequestState,
 )
-from aiops.investigation.toolbox import QueryRequest, observation
+from aiops.investigation.toolbox import (
+    MAX_LOOKBACK_SECONDS,
+    MAX_STEP_SECONDS,
+    MIN_LOOKBACK_SECONDS,
+    MIN_STEP_SECONDS,
+    QueryRequest,
+    observation,
+)
 from aiops.sessions.models import LeaseLost
-from aiops.sessions.projection import project_action_result, project_payload
+from aiops.sessions.projection import project_action_result, project_payload, public_resource_name
 from aiops.tools.base import ToolContext
 
 READ_TOOLS = (
@@ -97,6 +104,63 @@ def _error(code: str, message: str, *, retryable: bool = False) -> str:
             "error": {"code": code, "message": message, "retryable": retryable},
         }
     )
+
+
+def _query_scope(ctx: AgentContext, request: QueryRequest) -> dict[str, Any]:
+    scope: dict[str, Any] = {}
+    for key, value in (("cluster", ctx.cluster), ("namespace", ctx.namespace)):
+        if public := public_resource_name(value):
+            scope[key] = public
+    if request.tool == "prometheus.query_range":
+        if MIN_LOOKBACK_SECONDS <= request.lookback_seconds <= MAX_LOOKBACK_SECONDS:
+            scope["lookback_seconds"] = request.lookback_seconds
+        if MIN_STEP_SECONDS <= request.step_seconds <= MAX_STEP_SECONDS:
+            scope["step_seconds"] = request.step_seconds
+        if request.expression:
+            scope["criteria_withheld"] = True
+    elif request.tool == "knowledge.list_runbooks":
+        if service := public_resource_name(request.selector):
+            scope["service"] = service
+        if request.expression or (request.selector and "service" not in scope):
+            scope["criteria_withheld"] = True
+    elif request.tool == "knowledge.get_runbook":
+        if runbook_id := public_resource_name(request.involved_name.strip()):
+            scope["runbook_id"] = runbook_id
+        elif request.involved_name:
+            scope["criteria_withheld"] = True
+    else:
+        if name := public_resource_name(request.involved_name):
+            scope["resource_name"] = name
+        if request.selector or (request.involved_name and "resource_name" not in scope):
+            scope["criteria_withheld"] = True
+    return scope
+
+
+def _result_summary(tool_name: str, data: Any) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    series = data.get("series")
+    if isinstance(series, list):
+        samples = sum(
+            len(item["points"])
+            for item in series
+            if isinstance(item, dict) and isinstance(item.get("points"), list)
+        )
+        return f"返回 {len(series)} 条时间序列、{samples} 个采样点"
+    items = data.get("items")
+    if isinstance(items, list):
+        units = {
+            "kubernetes.list_deployments": "个 Deployment",
+            "kubernetes.list_pods": "个 Pod",
+            "kubernetes.list_services": "个 Service",
+            "kubernetes.list_events": "条事件",
+            "kubernetes.list_logs": "个 Pod 的日志",
+            "knowledge.list_runbooks": "份 Runbook",
+        }
+        return f"返回 {len(items)} {units.get(tool_name, '条记录')}"
+    if tool_name == "knowledge.get_runbook" and isinstance(data.get("id"), str):
+        return "已读取 Runbook"
+    return None
 
 
 def _is_empty(data: Any) -> bool:
@@ -196,6 +260,7 @@ async def _prepare_request(
                     "lane": tx.turn.lane,
                     "delegated": CURRENT_DELEGATION.get() is not None,
                     "summary": "正在查询",
+                    "query_scope": _query_scope(ctx, QueryRequest.model_validate(arguments)),
                     "status": "running",
                     "observation_id": None,
                 },
@@ -303,7 +368,8 @@ async def _finish_request(
                     "tool": query["tool"],
                     "lane": tx.turn.lane,
                     "delegated": CURRENT_DELEGATION.get() is not None,
-                    "summary": {
+                    "summary": query.get("result_summary")
+                    or {
                         "ok": "已取得观测",
                         "empty": "未查询到数据",
                         "error": "查询失败",
@@ -314,6 +380,7 @@ async def _finish_request(
                     "observation": query.get("public_observation"),
                     "collected_at": query.get("collected_at"),
                     "time_range": query.get("time_range"),
+                    **{key: query[key] for key in ("query_scope", "truncated") if key in query},
                 },
             )
 
@@ -348,6 +415,7 @@ async def _run_read(
     if cached is not None:
         return cached
     await ctx.ensure_active()
+    query_scope = _query_scope(ctx, request)
     try:
         result = await ctx.toolbox.run(_tool_context(ctx), ctx.window, request)
     except LeaseLost:
@@ -361,7 +429,7 @@ async def _run_read(
             state=ToolRequestState.FAILED,
             message=message,
             error_code="tool_exception",
-            query={"tool": tool_name, "status": "error"},
+            query={"tool": tool_name, "status": "error", "query_scope": query_scope},
         )
         return message
     status = (
@@ -410,14 +478,21 @@ async def _run_read(
     message = _dump(payload)
     public_query = payload
     if ctx.scope is not None:
-        detail = (
-            ctx.scope.project_text(result.error.message)
-            if result.error is not None
-            else _dump(project_payload(result.data))
-        )
-        if len(detail) > ctx.max_observation_chars:
+        data = project_payload(result.data)
+        # 上游错误正文可能回显查询表达式或选择器，公开事件只显示固定错误说明。
+        detail = "工具返回错误，未取得观测。" if result.error is not None else _dump(data)
+        truncated = len(detail) > ctx.max_observation_chars
+        if truncated:
             detail = detail[: ctx.max_observation_chars] + "…（已截断）"
-        public_query = {**payload, "public_observation": detail}
+        public_query = {
+            **payload,
+            "public_observation": detail,
+            "query_scope": query_scope,
+            "result_summary": _result_summary(tool_name, data)
+            if status is ObservationStatus.OK
+            else None,
+            "truncated": truncated or result.truncated,
+        }
     if result.error is not None:
         await _finish_request(
             ctx,
@@ -610,15 +685,16 @@ def _hypothesis_payload(hypothesis: Hypothesis, *, temp_id: str = "") -> dict[st
     }
 
 
-async def _record_hypothesis(ctx: AgentContext, item: dict[str, Any]) -> None:
+async def _record_hypothesis(ctx: AgentContext, hypothesis: Hypothesis) -> None:
     if ctx.active_transaction is not None:
         await ctx.active_transaction.append_event(
             "hypothesis",
             {
-                "id": item["id"],
-                "statement": ctx.scope.project_text(item["statement"]),
-                "status": item["status"],
-                "parent_id": item["parent_id"],
+                "id": hypothesis.id,
+                "statement": ctx.scope.project_text(hypothesis.statement),
+                "status": hypothesis.status.value,
+                "parent_id": hypothesis.parent_id,
+                "update_reason": ctx.scope.project_text(hypothesis.update_reason or "")[:500],
             },
         )
     ctx.progress.record("hypothesis")
@@ -734,7 +810,7 @@ async def _manage_hypotheses(
                 temp_map[operation.temp_id.strip()] = hypothesis.id
             item = _hypothesis_payload(hypothesis, temp_id=operation.temp_id)
             results.append(item)
-            await _record_hypothesis(ctx, item)
+            await _record_hypothesis(ctx, hypothesis)
             continue
 
         target_id = operation.hypothesis_id.strip() or temp_map.get(operation.temp_id.strip(), "")
@@ -796,7 +872,7 @@ async def _manage_hypotheses(
         hypotheses[updated.id] = updated
         item = _hypothesis_payload(updated)
         results.append(item)
-        await _record_hypothesis(ctx, item)
+        await _record_hypothesis(ctx, updated)
 
     message = _dump(
         {
@@ -950,7 +1026,7 @@ async def _assess_evidence(
         )
         ctx.progress.record("evidence")
 
-    updated_hypotheses: list[dict[str, Any]] = []
+    updated_hypotheses: list[Hypothesis] = []
     for update in args.hypothesis_updates:
         current = hypotheses[update.hypothesis_id]
         updated = await ctx.store.update_hypothesis(
@@ -960,13 +1036,13 @@ async def _assess_evidence(
             update_reason=update.reason,
         )
         hypotheses[updated.id] = updated
-        updated_hypotheses.append(_hypothesis_payload(updated))
+        updated_hypotheses.append(updated)
 
     message = _dump(
         {
             "status": "ok",
             "links": applied,
-            "hypotheses": updated_hypotheses,
+            "hypotheses": [_hypothesis_payload(item) for item in updated_hypotheses],
         }
     )
     await _finish_request(ctx, call_id, state=ToolRequestState.OBSERVED, message=message)

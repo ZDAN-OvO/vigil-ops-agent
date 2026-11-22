@@ -17,10 +17,11 @@ from typing import Any
 import yaml
 
 from aiops.contracts import Incident, SkillTrigger, SkillUsage
-from aiops.sessions.projection import project_payload
+from aiops.sessions.projection import project_payload, project_skill_lines
 
 FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 MAX_SKILL_BYTES = 1024 * 1024
+MAX_SKILL_SNAPSHOT_CHARS = 12000
 
 
 class SkillLoadError(RuntimeError):
@@ -46,6 +47,8 @@ class SkillSpec:
         *,
         status: str = "loaded",
         version_known: bool = True,
+        line_range: tuple[int, int] | None = None,
+        verified_content: str | None = None,
     ) -> dict[str, Any]:
         payload = {
             "name": self.name,
@@ -55,6 +58,21 @@ class SkillSpec:
         }
         if version_known:
             payload["content_hash"] = self.content_hash
+        if status == "loaded":
+            if trigger is SkillTrigger.SIGNAL:
+                verified_content = self.content
+                line_range = (1, len(self.content.splitlines()))
+            if line_range is not None and verified_content is not None:
+                start, end = line_range
+                lines = project_skill_lines(verified_content)
+                if lines is not None and 1 <= start <= end <= len(lines):
+                    text = "\n".join(lines[start - 1 : end])
+                    payload["snapshot"] = {
+                        "text": text[:MAX_SKILL_SNAPSHOT_CHARS],
+                        "start_line": start,
+                        "end_line": end,
+                        "truncated": len(text) > MAX_SKILL_SNAPSHOT_CHARS,
+                    }
         return project_payload(payload)
 
 

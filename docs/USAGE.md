@@ -39,7 +39,7 @@ uv pip install --python /path/to/vigil-env/bin/python dist/vigil_aiops-0.1.0-py3
 `VIGIL_WEBHOOK_TOKEN`。监听主机填实验 k3d 的具体网关地址，令牌和 AlertManager 的
 Bearer 文件使用同一值。部署方式见[实验环境](../env/README.md#8-告警入口)。
 
-在新库初始化后检查配置、迁移和内置 Skill：
+新装或升级后，先执行迁移，再启动新版 `vigil serve`。0014 及更早的库会添加标题来源，已有的人工和告警标题会保留。迁移后用 `vigil sessions` 和网页会话列表核对旧标题。用 `vigil admin doctor` 检查配置和内置 Skill。
 
 ```bash
 vigil admin migrate
@@ -64,6 +64,15 @@ vigil admin doctor
 `vigil serve` 通过 FastAPI 在 `127.0.0.1` 同源提供页面和会话 API。可以打开并
 刷新 `/sessions/SESSION_ID`，卡片链接会定位到对应审批卡。在浏览器访问时请使用
 `http://127.0.0.1` 和启动端口。后台启动时网页只读，告警从单独配置的监听接收。
+
+### 在网页调查
+
+- 在运行中继续发送线索。消息先显示已排队，送达后显示实际领取它的主线或旁路以及步骤。
+- 在假设下看关联依据。点 **查看观测** 跳到采集时间、查询范围和脱敏结果。展开 **判断历史** 查看之前的状态和依据。展开 **调查过程** 查看查询和 Skill。展开一条 Skill 记录可查看该次保存的正文。
+- 点会话标题或 **改名**，再点 **保存** 或 **取消**。新网页会话从首条问题取名，保存人工名称后以人工名称为准。
+- 拖动两条分割线，或聚焦后用方向键调整。点 **恢复默认分栏** 重置宽度和收起状态。窄屏从 **会话** 和 **值班面板** 打开侧栏，按 Escape 可关闭。
+
+### 读取命令行结果
 
 `--output text` 是默认输出。供脚本读取时用 `--output json` 获取本次结果与卡片，
 或用 `--output stream-json` 获取逐行 JSON。最后一行始终是 `result`。数据库事件的

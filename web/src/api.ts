@@ -8,6 +8,7 @@ export type SessionState = "idle" | "working" | "awaiting_approval" | "interrupt
 export interface Session {
   id: string;
   title: string;
+  title_origin?: "pending" | "auto" | "user" | "alert";
   source: "user" | "alert";
   state: SessionState;
   last_seq: number;
@@ -71,13 +72,20 @@ export type ObservationEvent = EventOf<"tool_call", {
   collected_at?: string | null;
   observation_id?: string | null;
   observation?: unknown;
+  time_range?: { start: string; end: string } | null;
+  query_scope?: {
+    cluster?: string; namespace?: string; resource_name?: string; service?: string;
+    runbook_id?: string; lookback_seconds?: number; step_seconds?: number; criteria_withheld?: boolean;
+  };
+  truncated?: boolean;
 }>;
 
 export type DeliveryEvent = EventOf<"input_delivered", { input_id: string; step?: number; lane: string }>;
 
 export type SessionEvent =
   | CardEvent | CardUpdate | ObservationEvent | DeliveryEvent
-  | EventOf<"session" | "session_closed">
+  | EventOf<"session", { title?: string; source?: Session["source"]; resumed?: boolean; renamed?: boolean }>
+  | EventOf<"session_closed">
   | EventOf<"message", {
       source?: string; role: string; text: string; input_id?: string; interim?: boolean; lane?: string;
     }>
@@ -85,8 +93,9 @@ export type SessionEvent =
       name: string; description?: string; content_hash?: string;
       trigger: "signal" | "description"; status: "loaded" | "failed";
       lane: string; delegated?: boolean;
+      snapshot?: { text: string; start_line: number; end_line: number; truncated: boolean };
     }>
-  | EventOf<"hypothesis", { id: string; statement: string; status: string }>
+  | EventOf<"hypothesis", { id: string; statement: string; status: string; update_reason?: string }>
   | EventOf<"evidence", {
       evidence_id?: string; id?: string; observation_id?: string;
       hypothesis_id?: string; relation?: "supporting" | "refuting" | "neutral"; rationale?: string;

@@ -317,7 +317,7 @@ async def _find_session(sessions: SessionStore, args: argparse.Namespace) -> Ses
             raise CLIError("没有可恢复的会话")
         return recent[0]
     title = project_text(args.message or "终端会话")[:120]
-    return await sessions.create_session(title=title)
+    return await sessions.create_session(title=title, title_origin="user")
 
 
 async def _enqueue(sessions: SessionStore, session_id: str, message: str) -> None:

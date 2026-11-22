@@ -97,6 +97,14 @@ def test_queries_again_next_turn_and_projects_only_public_fields(tmp_path):
             assert "demo-secret" not in str(events)
             assert "/home/demo/credentials" not in str(events)
             assert "raw_ref" not in str(events)
+            successful = [
+                event
+                for event in events
+                if event["type"] == "tool_call" and event["status"] == "ok"
+            ]
+            assert all(event["summary"] == "返回 1 个 Deployment" for event in successful)
+            assert all(event["query_scope"]["criteria_withheld"] for event in successful)
+            assert "app=checkout" not in repr(events)
             assert any(
                 '"replicas": 3' in (event.get("observation") or "")
                 for event in events
@@ -177,6 +185,7 @@ def test_partial_hypothesis_batch_keeps_applied_change_in_event_log(tmp_path):
             ]
             assert event.payload["id"] == hypothesis.id
             assert event.payload["statement"] == hypothesis.statement == "首条假设"
+            assert event.payload["update_reason"] == "模型创建假设"
 
     asyncio.run(run())
 
@@ -328,6 +337,10 @@ def test_skill_events_follow_actual_reads_and_survive_pending_write_failure(tmp_
                 ("signal", "signal"),
                 ("by-description", "description"),
             ]
+            actual = root / "by-description" / "SKILL.md"
+            actual.write_text(
+                actual.read_text().replace("私有 Skill 正文标记", "文件已变化"), encoding="utf-8"
+            )
             async with driver.claim(sid) as resumed:
                 result = await resumed.drive()
             assert result.exit_code == 0
@@ -342,7 +355,13 @@ def test_skill_events_follow_actual_reads_and_survive_pending_write_failure(tmp_
             assert all(e.payload["lane"] == "main" for e in events)
             assert all(len(e.payload["content_hash"]) == 64 for e in events[:2])
             assert "content_hash" not in events[2].payload
-            for marker in ("私有 Skill 正文标记", "demo-skill", "/home/demo", "/by-description"):
+            assert "snapshot" not in events[2].payload
+            for event in events[:2]:
+                snapshot = event.payload["snapshot"]
+                assert snapshot["start_line"] == 1 and not snapshot["truncated"]
+                assert "私有 Skill 正文标记" in snapshot["text"]
+                assert "[已遮盖]" in snapshot["text"]
+            for marker in ("文件已变化", "demo-skill", "/home/demo", "/by-description"):
                 assert marker not in repr(events)
             report = await driver.store.get_investigation(result.result.payload["investigation_id"])
             assert {skill.name for skill in report.skills} == {"signal", "by-description"}

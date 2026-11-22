@@ -102,8 +102,8 @@ interface CardProps {
   access: Access;
   anchored: boolean;
   decide: (card: CardEvent, decision: Decision) => Promise<void>;
-  observationFor: (id: string) => number | undefined;
-  reveal: (seq: number) => void;
+  observationFor: (id: string) => string | undefined;
+  reveal: (key: string) => void;
 }
 
 const titles: Record<string, string> = { rollout_undo: "回滚 ", restart_pod: "重建 Pod ", scale_replicas: "调整副本数 " };

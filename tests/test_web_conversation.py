@@ -1,14 +1,15 @@
 """用生产 Web 入口、真实会话账本与受控模型验收浏览器里的线性对话。"""
 
 import asyncio
+import json
 import shutil
 import socket
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import uvicorn
-from investigation_support import ScriptedChatModel, call, settings
-from langchain_core.messages import AIMessage
+from investigation_support import ScriptedChatModel, call, report_call, settings
+from langchain_core.messages import ToolMessage
 from playwright.async_api import async_playwright, expect
 from test_agent_conversation import BlockingToolbox, deploys
 
@@ -54,6 +55,37 @@ def test_live_conversation_updates_tool_card_renders_markdown_and_projects_csp(
     isolated_serve_dsn, tmp_path
 ):
     async def run():
+        def assess(messages):
+            outputs = {
+                message.name: json.loads(message.content)
+                for message in messages
+                if isinstance(message, ToolMessage)
+                and message.name in {"manage_hypotheses", "kubernetes_list_deployments"}
+            }
+            hypothesis_id = outputs["manage_hypotheses"]["hypotheses"][0]["id"]
+            observation_id = outputs["kubernetes_list_deployments"]["observation_id"]
+            return call(
+                "assess_evidence",
+                {
+                    "links": [
+                        {
+                            "observation_id": observation_id,
+                            "hypothesis_id": hypothesis_id,
+                            "relation": "refuting",
+                            "rationale": "观测到两个就绪副本",
+                        }
+                    ],
+                    "hypothesis_updates": [
+                        {
+                            "hypothesis_id": hypothesis_id,
+                            "status": "refuted",
+                            "reason": "副本已核对",
+                        }
+                    ],
+                },
+                "assessment",
+            )
+
         tool = BlockingToolbox()
         tool.responses["kubernetes.list_deployments"] = {"data": {"items": [{"replicas": 2}]}}
         read = call("read_file", {"file_path": "/pod-rebuild/SKILL.md"}, "read-skill")
@@ -68,8 +100,16 @@ def test_live_conversation_updates_tool_card_renders_markdown_and_projects_csp(
                         "additional_kwargs": {"reasoning_content": PRIVATE},
                     }
                 ),
+                call(
+                    "manage_hypotheses",
+                    {
+                        "operations": [{"op": "create", "statement": "副本数量不足"}],
+                    },
+                    "hypothesis",
+                ),
                 deploys(),
-                AIMessage(content=ANSWER),
+                assess,
+                report_call(confirmed=False, conclusion=ANSWER, boundary="仅覆盖本次副本查询"),
             ]
         )
         async with Store.open(isolated_serve_dsn) as store:
@@ -137,12 +177,22 @@ async def verify_browser(origin, auth, tool):
         await page.get_by_role("button", name="发送").click()
         await asyncio.wait_for(tool.called.wait(), 12)
         await expect(page.locator(".assistant-markdown strong")).to_have_text("排查方法")
-        await expect(page.get_by_text("pod-rebuild · 已加载 · 主动读取")).to_be_visible()
+        skill = page.locator(".skill-details").filter(
+            has=page.locator("summary").filter(has_text="pod-rebuild")
+        )
+        await expect(skill).to_have_count(1)
+        skill_process = page.locator(".process-fold").filter(has=skill)
+        await skill_process.locator(":scope > summary").click()
+        await skill.locator("summary").click()
+        await expect(skill.locator("pre")).to_contain_text("name: pod-rebuild")
+        await expect(page.locator("#session-title")).to_have_text("核对 checkout 副本")
 
         card = page.locator(".observation")
         await expect(card).to_have_count(1)
         await expect(card).to_have_attribute("data-status", "running")
         node = await card.element_handle()
+        query_process = page.locator(".process-fold").filter(has=card)
+        await query_process.locator(":scope > summary").click()
         disclosure = card.get_by_role("button", name="展开或收起观测")
         await disclosure.click()
         tool.reply.set()
@@ -152,9 +202,26 @@ async def verify_browser(origin, auth, tool):
         await expect(disclosure).to_have_attribute("aria-expanded", "true")
         await expect(card.locator("pre")).to_contain_text('"replicas": 2')
         await expect(card).not_to_contain_text("正在查询")
+        hypothesis = page.locator(".hypothesis")
+        await expect(hypothesis).to_have_attribute("data-status", "refuted")
+        await expect(hypothesis.locator(".hypothesis-basis")).to_contain_text("观测到两个就绪副本")
+        await disclosure.click()
+        await query_process.locator(":scope > summary").click()
+        await expect(card).to_be_hidden()
+        await hypothesis.get_by_role("button", name="查看观测").click()
+        await expect(query_process).to_have_js_property("open", True)
+        await expect(disclosure).to_be_focused()
+        await expect(card.locator("pre")).to_be_visible()
+
+        await page.locator("h1#session-title").get_by_role("button").click()
+        await page.get_by_role("textbox", name="会话名称").fill("  副本   值班  ")
+        await page.get_by_role("button", name="保存").click()
+        await expect(page.locator("#session-title")).to_have_text("副本 值班")
+        await expect(page.locator(".session-row.selected .session-name")).to_have_text("副本 值班")
 
         answer = page.locator(".assistant-markdown").last
         await expect(answer.get_by_role("heading", name="副本核对结果")).to_be_visible()
+        await expect(page.locator("#session-meta")).to_have_attribute("data-state", "idle")
         await expect(answer.get_by_role("listitem")).to_contain_text("副本就绪")
         await expect(answer.get_by_role("cell", name="2", exact=True)).to_be_visible()
         await expect(answer.locator("pre code")).to_have_text("a" * 160)
@@ -181,9 +248,18 @@ async def verify_browser(origin, auth, tool):
         assert [e["status"] for e in tool_events] == ["running", "ok"]
         assert tool_events[0]["id"] == tool_events[1]["id"]
         assert tool_events[0]["seq"] < tool_events[1]["seq"]
+        assert tool_events[1]["query_scope"]["criteria_withheld"]
+        assert tool_events[1]["summary"] == "返回 1 个 Deployment"
+        assert [e["update_reason"] for e in events if e["type"] == "hypothesis"] == [
+            "模型创建假设",
+            "副本已核对",
+        ]
+        assert [e["status"] for e in events if e["type"] == "result"] == ["completed"]
         public = await response.text()
         assert all(marker not in public for marker in (SECRET, PATH, PRIVATE))
         await page.reload()
+        await expect(page.locator("#session-title")).to_have_text("副本 值班")
+        await expect(hypothesis).to_have_attribute("data-status", "refuted")
         await expect(card).to_have_count(1)
         await expect(card).to_have_attribute("data-status", "ok")
         assert errors == []

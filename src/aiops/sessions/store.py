@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import fields
+from dataclasses import fields, replace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -21,17 +21,19 @@ from aiops.sessions.models import (
     SessionClosed,
     SessionEvent,
     SessionInput,
+    TitleOrigin,
     Turn,
     TurnLane,
     TurnState,
 )
+from aiops.sessions.projection import project_text
 
 if TYPE_CHECKING:
     from aiops.db import Store
 
 # 等待行锁期间可能过期，租约必须在取得行锁后按数据库时钟核对。
 SESSION_COLUMNS = """
-    id, source, title, group_key, last_seq, created_at, updated_at, closed_at,
+    id, source, title, title_origin, group_key, last_seq, created_at, updated_at, closed_at,
     CASE WHEN state = 'working'
          AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
          THEN 'interrupted' ELSE state END AS state
@@ -50,24 +52,32 @@ class SessionStore:
     def __init__(self, store: Store) -> None:
         self._store = store
 
-    async def create_session(self, *, title: str) -> Session:
+    async def create_session(self, *, title: str, title_origin: TitleOrigin = "user") -> Session:
         async with self._store.transaction() as conn:
-            session = await self._insert_session(conn, title=title, group_key=None)
+            session = await self._insert_session(
+                conn, title=title, title_origin=title_origin, group_key=None
+            )
             assert session is not None
             return session
 
     async def _insert_session(
-        self, conn: AsyncConnection, *, title: str, group_key: str | None
+        self, conn: AsyncConnection, *, title: str, title_origin: TitleOrigin, group_key: str | None
     ) -> Session | None:
         row = await _one(
             conn,
             f"""
-            INSERT INTO sessions (id, source, title, group_key)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO sessions (id, source, title, title_origin, group_key)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (group_key) WHERE group_key IS NOT NULL AND closed_at IS NULL DO NOTHING
             RETURNING {SESSION_COLUMNS}
             """,
-            (uuid4().hex, "alert" if group_key is not None else "user", title, group_key),
+            (
+                uuid4().hex,
+                "alert" if group_key is not None else "user",
+                title,
+                title_origin,
+                group_key,
+            ),
         )
         if row is None:
             return None
@@ -79,6 +89,34 @@ class SessionStore:
             {"source": session.source, "title": title, "resumed": False},
         )
         return Session(**{**row, "last_seq": event.seq, "updated_at": event.ts})
+
+    async def rename_session(self, session_id: str, title: str) -> Session:
+        async with self._store.transaction() as conn:
+            session = await self.lock_session(conn, session_id)
+            return await self._set_title(conn, session, title, "user")
+
+    async def _set_title(
+        self, conn: AsyncConnection, session: Session, title: str, origin: TitleOrigin
+    ) -> Session:
+        await conn.execute(
+            "UPDATE sessions SET title = %s, title_origin = %s WHERE id = %s",
+            (title, origin, session.id),
+        )
+        event = await self.append_event(
+            conn,
+            session.id,
+            "session",
+            {
+                "source": session.source,
+                "title": project_text(title),
+                "resumed": False,
+                "renamed": True,
+            },
+            allow_closed=True,
+        )
+        return replace(
+            session, title=title, title_origin=origin, last_seq=event.seq, updated_at=event.ts
+        )
 
     async def get_session(self, session_id: str) -> Session | None:
         async with self._store.transaction() as conn:
@@ -210,7 +248,8 @@ class SessionStore:
         alert_names: tuple[str, ...] = (),
         alert_origin: bool = False,
     ) -> SessionInput:
-        if (await self.lock_session(conn, session_id)).state == "closed":
+        session = await self.lock_session(conn, session_id)
+        if session.state == "closed":
             raise SessionClosed(session_id)
         input_id = input_id or uuid4().hex
         row = await _one(conn, "SELECT * FROM session_inputs WHERE id = %s", (input_id,))
@@ -230,6 +269,11 @@ class SessionStore:
             """,
             (input_id, session_id, event.seq, text, list(alert_names)),
         )
+        if session.title_origin == "pending" and not alert_origin:
+            title = " ".join(project_text(display_text).split()) or session.title
+            if len(title) > 120:
+                title = title[:119] + "…"
+            await self._set_title(conn, session, title, "auto")
         return SessionInput(**row)
 
     @asynccontextmanager
@@ -267,7 +311,9 @@ class SessionStore:
         """在 alert_transaction 中归并 firing，首轮与首次输入同事务持久化。"""
         session = await self.get_open_alert_session(conn, group_key)
         if session is None:
-            session = await self._insert_session(conn, title=title, group_key=group_key)
+            session = await self._insert_session(
+                conn, title=title, title_origin="alert", group_key=group_key
+            )
             if session is not None:
                 incoming = await self._enqueue_input(
                     conn, session.id, text, display_text, alert_names=alert_names, alert_origin=True

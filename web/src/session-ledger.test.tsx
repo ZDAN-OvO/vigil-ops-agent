@@ -48,3 +48,28 @@ test("分页失败后从服务端游标续读，按会话与 seq 去重并按顺
   expect(result.current.state.cursor).toBe(106);
   expect(result.current.state.events.map(({ seq }) => seq)).toEqual([3, 4, 100, 106]);
 });
+
+test("标题事件与保存回执都能防止迟到快照回滚标题", async () => {
+  const late = Promise.withResolvers<Response>();
+  const session = {
+    id: "alpha", title: "原名", source: "user", state: "idle", last_seq: 1, pending_approval: false,
+  } as const;
+  let reads = 0;
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (!url.includes("/events?")) {
+      reads += 1;
+      return reads === 2 ? late.promise : json({ session, approval_enabled: true });
+    }
+    return json({ next_after_seq: 2, has_more: false, events: [{
+      ...message("alpha", 2), type: "session", renamed: true, title: "首条问题",
+    }] });
+  }));
+  const { result } = renderHook(() => useSessionLedger("alpha"));
+  await waitFor(() => expect(result.current.state.session?.title).toBe("首条问题"));
+  act(() => result.current.refresh());
+  await waitFor(() => expect(reads).toBe(2));
+  act(() => result.current.dispatch({ type: "snapshot", session: { ...session, title: "人工名称", last_seq: 3 } }));
+  await act(async () => late.resolve(json({ session, approval_enabled: true })));
+  expect(result.current.state.session?.title).toBe("人工名称");
+  expect(result.current.state.session?.last_seq).toBe(3);
+});

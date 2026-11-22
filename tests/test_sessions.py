@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+from argparse import Namespace
 from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 from uuid import uuid4
@@ -16,7 +17,8 @@ from langgraph.graph import END, START, StateGraph
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
-from aiops import db
+from aiops import cli, db
+from aiops.config import Settings
 from aiops.contracts import (
     ActionKind,
     ActionOrigin,
@@ -106,9 +108,11 @@ def _checkpoint(saver, turn, ids, *, parent=None):
     return config, snapshot, {"source": "input", "step": -1}, new_versions
 
 
-def test_upgrade_preserves_legacy_lease_checkpoint_and_action(session_dsn, monkeypatch):
-    baseline = [path for path in db.migration_files() if path.stem < "0012_sessions"]
-    through_sessions = [path for path in db.migration_files() if path.stem <= "0012_sessions"]
+def test_upgrade_preserves_legacy_lease_checkpoint_and_action(session_dsn, monkeypatch, capsys):
+    migrations = db.migration_files()
+    baseline = [path for path in migrations if path.stem < "0012_sessions"]
+    through_sessions = [path for path in migrations if path.stem <= "0012_sessions"]
+    through_alert_inputs = [path for path in migrations if path.stem <= "0014_alert_input_names"]
 
     async def scenario():
         async with Store.open(session_dsn) as store, Store.open(session_dsn) as other:
@@ -198,11 +202,37 @@ def test_upgrade_preserves_legacy_lease_checkpoint_and_action(session_dsn, monke
             assert (await store.get_investigation(investigation.id)).id == investigation.id
             assert (await store.get_proposal(proposal.id)).status == ProposalStatus.APPROVED
             assert await store.target_is_locked("legacy-key")
-            assert await SessionStore(store).list_sessions() == []
+            async with store.transaction() as conn:
+                assert (await (await conn.execute("SELECT id FROM sessions")).fetchall()) == []
             async with AsyncPostgresSaver.from_conn_string(session_dsn) as legacy:
                 assert (await legacy.aget_tuple(old_checkpoint)).config == old_checkpoint
 
+            monkeypatch.setattr(db, "migration_files", lambda: through_alert_inputs)
+            assert (await store.migrate())[-1] == "0014_alert_input_names"
+            async with store.transaction() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO sessions (id, source, title, group_key) VALUES
+                        ('legacy-user', 'user', '历史手工名称', NULL),
+                        ('legacy-alert', 'alert', '历史告警名称', 'legacy-group')
+                    """
+                )
+            monkeypatch.setattr(db, "migration_files", lambda: migrations)
+            assert (await store.migrate())[0] == "0015_session_title"
+            assert await store.migrate() == []
+            sessions = await SessionStore(store).list_sessions()
+            assert {row.id: (row.title, row.title_origin, row.last_seq) for row in sessions} == {
+                "legacy-user": ("历史手工名称", "user", 0),
+                "legacy-alert": ("历史告警名称", "alert", 0),
+            }
+            monkeypatch.setattr(
+                cli, "Settings", lambda: Settings(_env_file=None, database_url=session_dsn)
+            )
+            assert await cli._run(Namespace(command="sessions", limit=50), False, None) == 0
+
     asyncio.run(scenario())
+    output = capsys.readouterr().out
+    assert "历史手工名称" in output and "历史告警名称" in output
 
 
 def test_alert_group_serializes_first_delivery_and_close(session_dsn):
@@ -665,5 +695,54 @@ def test_side_turn_owns_its_input_and_checkpoint_across_main_resume(session_dsn)
                 await tx.set_turn_state("completed")
             assert (await sessions.start_main_turn(main)).first_input_id == follow_up.id
             assert (await sessions.get_input(side_input.id)).turn_id == side_turn.id
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("manual_first", [False, True])
+def test_title_transaction_serializes_rename_and_first_message(session_dsn, manual_first):
+    async def scenario():
+        async with Store.open(session_dsn) as store, Store.open(session_dsn) as other:
+            await store.migrate()
+            sessions, concurrent = SessionStore(store), SessionStore(other)
+            initial = await sessions.create_session(title="新会话", title_origin="pending")
+            secret = "sk-fixture-example-key"
+            question = f"  核对 token={secret}   " + "字" * 125
+
+            async def send():
+                return await concurrent.enqueue_input(
+                    initial.id, question, display_text=question, input_id="first-title-input"
+                )
+
+            async with store.transaction() as conn:
+                locked = await sessions.lock_session(conn, initial.id)
+                if manual_first:
+                    pending = asyncio.create_task(send())
+                    await sessions._set_title(conn, locked, "人工选择", "user")
+                else:
+                    pending = asyncio.create_task(concurrent.rename_session(initial.id, "人工选择"))
+                    original = await sessions._enqueue_input(
+                        conn, initial.id, question, question, "first-title-input"
+                    )
+            result = await pending
+            events = await sessions.list_events(initial.id)
+            titles = [event.payload["title"] for event in events if event.payload.get("renamed")]
+            if manual_first:
+                assert titles == ["人工选择"]
+                original = result
+            else:
+                automatic, manual = titles
+                assert len(automatic) == 120 and automatic.endswith("…")
+                assert automatic.startswith("核对 token=[已遮盖] ")
+                assert secret not in automatic and manual == "人工选择"
+            # 重试仍只得到同一输入，标题事件和消息序号都稳定。
+            assert await send() == original
+            assert await sessions.list_events(initial.id) == events
+            final = await sessions.get_session(initial.id)
+            assert (final.title, final.title_origin, final.last_seq) == (
+                "人工选择",
+                "user",
+                events[-1].seq,
+            )
 
     asyncio.run(scenario())

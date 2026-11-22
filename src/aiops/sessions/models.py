@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
+TitleOrigin = Literal["pending", "auto", "user", "alert"]
 SessionSource = Literal["user", "alert"]
 SessionState = Literal["idle", "working", "awaiting_approval", "interrupted", "closed"]
 TurnLane = Literal["main", "side"]
@@ -32,6 +33,7 @@ class Session:
     created_at: datetime
     updated_at: datetime
     closed_at: datetime | None
+    title_origin: TitleOrigin = "user"
 
 
 @dataclass(frozen=True)

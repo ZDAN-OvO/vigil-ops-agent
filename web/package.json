@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@assistant-ui/react": "0.15.37",
     "@base-ui/react": "^1.0.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",

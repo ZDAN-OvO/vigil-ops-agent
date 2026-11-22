@@ -112,6 +112,32 @@ def project_text(value: str) -> str:
     )
 
 
+def project_skill_lines(value: str) -> list[str] | None:
+    """仅当完整上下文可以安全脱敏且行号不变时，才允许截取 Skill 展示片段。"""
+    for line in value.splitlines():
+        for match in _ASSIGNMENT_KEY.finditer(line):
+            tail = line[match.end() :].strip()
+            # 块标量、跨行引号和续行没有可靠的逐行遮盖边界。
+            multiline = (
+                not tail
+                or tail.startswith(("|", ">", '"' * 3, "'" * 3))
+                or tail.endswith("\\")
+                or (tail[0] in ('"', "'") and tail.count(tail[0]) == 1)
+            )
+            if multiline and _SENSITIVE.search(match["key"]):
+                return None
+    projected = project_text(value).splitlines()
+    return projected if len(projected) == len(value.splitlines()) else None
+
+
+def public_resource_name(value: str) -> str | None:
+    """查询说明只接受可公开的 DNS 子域名形式资源标识。"""
+    if _SENSITIVE.search(value) or project_text(value) != value:
+        return None
+    label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    return value if len(value) <= 253 and re.fullmatch(rf"{label}(?:\.{label})*", value) else None
+
+
 def project_payload(value: Any) -> Any:
     """递归投影 JSON 载荷，调用方应先挑出入口需要的字段。"""
     if isinstance(value, Mapping):

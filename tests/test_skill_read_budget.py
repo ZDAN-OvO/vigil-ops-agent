@@ -203,3 +203,67 @@ def test_cancel_before_skill_read_never_opens_file(tmp_path, delegated):
             assert rows[0].status.value == "failed"
 
     asyncio.run(run())
+
+
+def test_partial_snapshot_uses_actual_read_and_full_redaction_context(tmp_path):
+    from aiops.agent.skill_reader import (
+        SkillFilesystemBackend,
+        _skill_event,
+        _skill_read,
+        _SkillRead,
+    )
+    from aiops.skills import parse_skill
+
+    path = tmp_path / "snapshot" / "SKILL.md"
+    path.parent.mkdir()
+    header = "---\nname: snapshot\ndescription: 核对上下文\n---\n"
+    path.write_text(header + "复核旧版\n", encoding="utf-8")
+    spec = parse_skill(path)
+    backend = SkillFilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    virtual = "/snapshot/SKILL.md"
+
+    async def capture(offset, limit):
+        read = _SkillRead(virtual)
+        token = _skill_read.set(read)
+        try:
+            result = await backend.aread(virtual, offset, limit)
+        finally:
+            _skill_read.reset(token)
+        assert not result.error
+        text = result.file_data["content"].removesuffix("\n")
+        window = f"{result.start_line}-{result.end_line} of {result.total_lines}"
+        return _skill_event(
+            spec,
+            ToolMessage(
+                tool_call_id="read",
+                content=f"@@ lines {window} @@\n{text}",
+            ),
+            read.content,
+        )
+
+    path.write_text(header + "复核新版 /home/fixture/private.md\n", encoding="utf-8")
+    changed = asyncio.run(capture(4, 1))
+    assert "content_hash" not in changed
+    assert changed["snapshot"] == {
+        "text": "复核新版 [已遮盖]",
+        "start_line": 5,
+        "end_line": 5,
+        "truncated": False,
+    }
+
+    marker = "multi-line-fixture-only"
+    path.write_text(
+        header
+        + "-----BEGIN "
+        + "PRIVATE KEY-----\n"
+        + marker
+        + "\n-----END "
+        + "PRIVATE KEY-----\n",
+        encoding="utf-8",
+    )
+    within_key = asyncio.run(capture(5, 1))
+    assert "snapshot" not in within_key and marker not in repr(within_key)
+
+    path.write_text(header + f"access_token: |\n  {marker}\n", encoding="utf-8")
+    within_yaml = asyncio.run(capture(5, 1))
+    assert "snapshot" not in within_yaml and marker not in repr(within_yaml)

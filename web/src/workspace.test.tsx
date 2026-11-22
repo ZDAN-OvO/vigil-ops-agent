@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { CardEvent, Session, SessionEvent } from "./api";
@@ -11,9 +11,12 @@ const beta = { ...alpha, id: "beta", title: "乙会话" };
 const sessions = [alpha, beta];
 const json = (value: unknown) => Response.json(value);
 
-function setup(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {
+function setup(
+  handler: (url: string, init: RequestInit) => Response | Promise<Response>,
+  list: () => Response | Promise<Response> = () => json({ sessions, ...access }),
+) {
   vi.stubGlobal("fetch", (url: string, init: RequestInit) => {
-    if (url === "/api/sessions") return Promise.resolve(json({ sessions, ...access }));
+    if (url === "/api/sessions") return Promise.resolve(list());
     if (url === "/api/monitoring") return Promise.resolve(json(Object.fromEntries(
       ["alerts", "probes", "changes", "services", "warnings", "nodes"].map((key) => [key, { status: "missing", data: null }]),
     )));
@@ -154,4 +157,43 @@ test("审批提交用完整卡片 ID 与指纹，回执入账前保持待审批�
   await waitFor(() => expect(document.querySelector(".card-state")?.textContent).toBe("已批准 · 待执行"),
     { timeout: 2500 });
   expect(document.querySelector("#session-meta")?.getAttribute("data-state")).toBe("awaiting_approval");
+});
+
+test("改名保留编辑中的草稿，回执同步详情和会话列表并抵抗晚到读取", async () => {
+  const save = Promise.withResolvers<Response>();
+  const lateList = Promise.withResolvers<Response>();
+  const requestSave = vi.fn(() => save.promise);
+  let renders = 0;
+  let detail = { ...alpha, title: "甲会话", last_seq: 1 };
+  setup((url, init) => {
+    if (url === "/api/sessions/alpha") return json({ session: detail, ...access });
+    if (url.includes("/events?")) {
+      return json({ next_after_seq: 1, has_more: false, events: [] });
+    }
+    expect(url).toBe("/api/sessions/alpha/title");
+    expect(JSON.parse(String(init.body))).toEqual({ title: "人工草稿" });
+    return requestSave();
+  }, () => {
+    renders += 1;
+    return renders === 1 ? json({ sessions, ...access }) : lateList.promise;
+  });
+
+  const heading = await screen.findByRole("heading", { name: "甲会话" });
+  fireEvent.click(within(heading).getByRole("button", { name: "甲会话" }));
+  const title = screen.getByRole<HTMLInputElement>("textbox", { name: "会话名称" });
+  fireEvent.change(title, { target: { value: "人工草稿" } });
+
+  detail = { ...alpha, title: "轮询新名称", last_seq: 2 };
+  await screen.findByRole("link", { name: /轮询新名称/ }, { timeout: 2000 });
+  expect(title.value).toBe("人工草稿");
+  fireEvent.click(screen.getByRole("button", { name: "保存" }));
+  expect(requestSave).toHaveBeenCalledTimes(1);
+  await act(async () => save.resolve(json({ session: { ...detail, title: "人工名称", last_seq: 3 } })));
+  await screen.findByRole("heading", { name: "人工名称" });
+  await screen.findByRole("link", { name: /人工名称/ });
+  await waitFor(() => expect(renders).toBeGreaterThan(1));
+  await act(async () => lateList.resolve(json({ sessions, ...access })));
+  expect(screen.getByRole("heading", { name: "人工名称" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: /人工名称/ })).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "人工名称" }));
 });
