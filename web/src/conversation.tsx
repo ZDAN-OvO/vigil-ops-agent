@@ -8,7 +8,7 @@ import remarkGfm from "remark-gfm";
 import type { Access, CardEvent, Decision, DeliveryEvent, SessionEvent } from "./api";
 import { Card } from "./card";
 import { type ConversationRow, type MessageEvent, projectConversation } from "./conversation-projection";
-import { Evidence, HypothesisDetails, ProcessDetails } from "./investigation-details";
+import { Evidence, HypothesisDetails, type ObservationJump, ProcessDetails } from "./investigation-details";
 import { Stamp, time } from "./ui";
 
 function linkUrl(value: string): string {
@@ -94,8 +94,7 @@ export function Conversation({ events, access, anchor, notice, decide }: Convers
   const runtime = useExternalStoreRuntime({
     messages: projection.rows, convertMessage, onNew, isSendDisabled: true,
   });
-  const [revealed, setRevealed] = useState<{ key: string }>();
-  const reveal = (key: string) => setRevealed({ key });
+  const [jump, setJump] = useState<ObservationJump>();
   const scroll = useRef<HTMLDivElement>(null);
   const stream = useRef<HTMLDivElement>(null);
 
@@ -122,7 +121,10 @@ export function Conversation({ events, access, anchor, notice, decide }: Convers
   }, [anchor, events]);
 
   function renderRow(entry: ConversationRow) {
-    if ("process" in entry) return <ProcessDetails process={entry.process} reveal={revealed} />;
+    if ("process" in entry) {
+      const target = jump && entry.process.items.some((item) => item.key === jump.key) ? jump : undefined;
+      return <ProcessDetails process={entry.process} jump={target} dismissJump={() => setJump(undefined)} />;
+    }
     const { row } = entry;
     const { event } = row;
     switch (event.type) {
@@ -130,13 +132,13 @@ export function Conversation({ events, access, anchor, notice, decide }: Convers
         return <Message event={event} delivery={row.delivery} />;
       case "hypothesis":
         return row.hypothesis && <HypothesisDetails hypothesis={row.hypothesis}
-          observationFor={projection.observationFor} reveal={reveal} />;
+          observationFor={projection.observationFor} reveal={setJump} />;
       case "evidence":
-        return <Evidence event={event} observationFor={projection.observationFor} reveal={reveal} />;
+        return <Evidence event={event} observationFor={projection.observationFor} reveal={setJump} />;
       case "approval_required":
         return <Card card={event} access={access} anchored={anchor === `card-${event.card_id}`}
           {...projection.cardUpdates.get(event.card_id)} decide={decide}
-          observationFor={(id) => projection.cardObservationFor(event, id)} reveal={reveal} />;
+          observationFor={(id) => projection.cardObservationFor(event, id)} reveal={setJump} />;
       case "session_closed":
         return <p className="stamp">会话已关闭</p>;
       case "result": {

@@ -318,10 +318,14 @@ class BrowserCases(unittest.TestCase):
 
         process = page.locator(".process-fold").first
         expect(first).to_be_hidden()
-        self.card.get_by_role("button", name="E1", exact=True).click()
+        reference = self.card.get_by_role("button", name="E1", exact=True)
+        reference.click()
         expect(process).to_have_js_property("open", True)
         expect(first.locator(".fold-body.open")).to_be_visible()
-        expect(first.get_by_role("button")).to_be_focused()
+        expect(first.get_by_role("button", name="展开或收起观测")).to_be_focused()
+        first.get_by_role("button", name="返回卡片引用").click()
+        expect(reference).to_be_focused()
+        expect(first.locator(".observation-reference")).to_have_count(0)
         expect(first.locator("pre")).to_contain_text('"rows": 2')
         expect(first.locator("pre")).to_contain_text("[已遮盖]")
         expect(page.locator("body")).not_to_contain_text(SECRET)
@@ -606,13 +610,40 @@ class BrowserCases(unittest.TestCase):
         node = hypothesis.element_handle()
         basis = hypothesis.locator(".hypothesis-basis")
         expect(basis).to_contain_text("新版本发布后入口未就绪")
-        basis.get_by_role("button", name="查看观测").click()
+        expect(hypothesis.locator(".hypothesis-state")).to_have_css("font-size", "13px")
+        expect(hypothesis.locator(".hypothesis-state > span")).to_have_css(
+            "color", "rgb(236, 232, 225)"
+        )
+        expect(page.locator("#session-meta .warn")).to_have_text("待审批")
+        expect(page.locator("#session-meta .warn")).to_have_css("color", COLORS["warn"])
+        reference = basis.get_by_role("button", name="查看观测")
         observation = page.locator(".observation").first
+        original_observation = observation.element_handle()
+        disclosure = observation.get_by_role("button", name="展开或收起观测")
+        page.locator(".process-fold > summary").first.click()
+        disclosure.click()
+        expect(observation.locator(".observation-reference")).to_have_count(0)
+        page.locator(".process-fold > summary").first.click()
+
+        reference.click()
         expect(observation.locator(".fold-body.open")).to_be_visible()
+        context = observation.locator(".observation-reference")
+        expect(context).to_be_in_viewport()
+        expect(context).to_contain_text("坏发布导致首页探测失败")
+        expect(context).to_contain_text("支持 新版本发布后入口未就绪")
         expect(observation.get_by_text("demo / public-fixture")).to_be_visible()
         expect(observation.get_by_text("未公开")).to_be_visible()
         expect(observation.get_by_text("时间范围")).to_be_visible()
-        expect(observation.get_by_role("button")).to_be_focused()
+        expect(disclosure).to_be_focused()
+        context.get_by_role("button", name="返回依据").click()
+        expect(reference).to_be_focused()
+        expect(reference).to_be_in_viewport()
+        expect(context).to_have_count(0)
+        self.assertTrue(
+            original_observation.evaluate(
+                "(node) => node === document.querySelector('.observation')"
+            )
+        )
 
         skill = page.locator(".skill-details")
         expect(skill).to_be_hidden()

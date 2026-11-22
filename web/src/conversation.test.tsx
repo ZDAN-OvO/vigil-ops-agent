@@ -149,7 +149,7 @@ test("假设原位更新，历史依据按 seq 取当时最新关系，原始观
   ];
   const { container, rerender } = render(<Conversation {...options} events={initial} />);
   const original = container.querySelector<HTMLElement>(".hypothesis")!;
-  expect(within(original).getByText("有依据支持", { selector: ".hypothesis-head .stamp" })).toBeTruthy();
+  expect(within(original).getByText("有依据支持", { selector: ".hypothesis-state > span" })).toBeTruthy();
   const initialBasis = within(original.querySelector<HTMLElement>(".hypothesis-basis")!);
   expect(initialBasis.getByText("首批采样支持")).toBeTruthy();
   fireEvent.click(initialBasis.getByRole("button", { name: "查看观测" }));

@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from test_runtime_boundaries import runtime_case
 
-from aiops.contracts import TerminationCode, ToolRequest, ToolRequestState
+from aiops.contracts import SkillTrigger, TerminationCode, ToolRequest, ToolRequestState
 
 
 def responses_for(reads, delegated):
@@ -267,3 +267,32 @@ def test_partial_snapshot_uses_actual_read_and_full_redaction_context(tmp_path):
     path.write_text(header + f"access_token: |\n  {marker}\n", encoding="utf-8")
     within_yaml = asyncio.run(capture(5, 1))
     assert "snapshot" not in within_yaml and marker not in repr(within_yaml)
+
+    for field in (
+        f"password: first-part\n  {marker}\n",
+        f"password: first-part\n\n  {marker}\n",
+        f"api_key: [\n  {marker},\n]\n",
+        f"access_token: {{\n  value: {marker}\n}}\n",
+    ):
+        path.write_text(header + field, encoding="utf-8")
+        signal = parse_skill(path).public_event(SkillTrigger.SIGNAL)
+        assert signal["status"] == "loaded"
+        assert "snapshot" not in signal and marker not in repr(signal)
+        window = next(
+            index for index, line in enumerate((header + field).splitlines()) if marker in line
+        )
+        partial = asyncio.run(capture(window, 1))
+        assert partial["status"] == "loaded"
+        assert "snapshot" not in partial and marker not in repr(partial)
+
+    path.write_text(header + f"password: {marker}\n普通排查步骤\n", encoding="utf-8")
+    signal = parse_skill(path).public_event(SkillTrigger.SIGNAL)
+    assert signal["snapshot"]["text"].endswith("password: [已遮盖]\n普通排查步骤")
+    assert marker not in repr(signal)
+    partial = asyncio.run(capture(4, 2))
+    assert partial["snapshot"] == {
+        "text": "password: [已遮盖]\n普通排查步骤",
+        "start_line": 5,
+        "end_line": 6,
+        "truncated": False,
+    }

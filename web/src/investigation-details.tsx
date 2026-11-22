@@ -2,7 +2,7 @@ import { Collapsible } from "@base-ui/react/collapsible";
 import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { ObservationEvent } from "./api";
 import type {
-  EvidenceEvent, Hypothesis, InvestigationProcess, ObservationLookup, RevealObservation, SkillEvent,
+  EvidenceEvent, Hypothesis, InvestigationProcess, ObservationLookup, SkillEvent,
 } from "./conversation-projection";
 import { Stamp, time } from "./ui";
 
@@ -37,20 +37,43 @@ function describeObservation(event: ObservationEvent, finished?: boolean) {
   };
 }
 
-function Observation({ event, reveal, finished, openProcess }: {
-  event: ObservationEvent; reveal?: object; finished?: boolean; openProcess: () => void;
+export interface ObservationJump {
+  key: string;
+  origin: HTMLButtonElement;
+  evidence?: { statement?: string; relation?: EvidenceEvent["relation"]; rationale: string };
+}
+
+type RevealObservation = (jump: ObservationJump) => void;
+
+interface JumpProps {
+  jump?: ObservationJump;
+  dismissJump: () => void;
+}
+
+function Observation({ event, jump, dismissJump, finished, openProcess }: JumpProps & {
+  event: ObservationEvent; finished?: boolean; openProcess: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const node = useRef<HTMLElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
 
   useLayoutEffect(() => {
-    if (!reveal) return;
+    if (!jump) return;
     openProcess();
     setOpen(true);
-    node.current?.scrollIntoView?.({ block: "nearest" });
+  }, [jump, openProcess]);
+
+  useLayoutEffect(() => {
+    if (!jump || !open) return;
+    node.current?.scrollIntoView?.({ block: "start" });
     trigger.current?.focus({ preventScroll: true });
-  }, [openProcess, reveal]);
+  }, [jump, open]);
+
+  function returnToReference() {
+    dismissJump();
+    jump?.origin.scrollIntoView?.({ block: "nearest" });
+    jump?.origin.focus({ preventScroll: true });
+  }
 
   const { tool, status, state, color, summary } = describeObservation(event, finished);
   const details = event.observation;
@@ -58,8 +81,10 @@ function Observation({ event, reveal, finished, openProcess }: {
   const range = event.time_range;
   const scopeParts = [scope?.cluster, scope?.namespace, scope?.resource_name, scope?.service, scope?.runbook_id]
     .filter(Boolean);
-  return <Collapsible.Root render={<section ref={node} />} open={open} onOpenChange={setOpen}
-    className="observation" data-status={status}>
+  return <Collapsible.Root render={<section ref={node} />} open={open} onOpenChange={(next) => {
+    setOpen(next);
+    if (!next && jump) dismissJump();
+  }} className="observation" data-status={status}>
     <header className="observation-head">
       <div>
         <span>{tool}</span>{" · "}<Stamp className={color}>{state}</Stamp>
@@ -74,6 +99,15 @@ function Observation({ event, reveal, finished, openProcess }: {
     {summary && <p className="observation-summary">{summary}</p>}
     <Collapsible.Panel keepMounted className={open ? "fold-body open" : "fold-body"} inert={!open}>
       <div>
+        {jump && <div className="observation-reference">
+          {jump.evidence && <div>
+            {jump.evidence.statement && <p className="observation-reference-title">{jump.evidence.statement}</p>}
+            <p><RelationStamp relation={jump.evidence.relation} /> {jump.evidence.rationale}</p>
+          </div>}
+          <button type="button" className="source-link" onClick={returnToReference}>
+            {jump.evidence ? "返回依据" : "返回卡片引用"}
+          </button>
+        </div>}
         <dl className="investigation-fields">
           <Detail label="工具">{event.tool || "未记录"}</Detail>
           <Detail label="查询对象">{scopeParts.length ? scopeParts.join(" / ") : "未记录"}</Detail>
@@ -119,9 +153,8 @@ function SkillDetails({ event }: { event: SkillEvent }) {
   </details>;
 }
 
-export function ProcessDetails({ process, reveal }: {
+export function ProcessDetails({ process, jump, dismissJump }: JumpProps & {
   process: InvestigationProcess;
-  reveal?: { key: string };
 }) {
   const details = useRef<HTMLDetailsElement>(null);
   const openProcess = useCallback(() => {
@@ -153,12 +186,14 @@ export function ProcessDetails({ process, reveal }: {
   ].filter(Boolean).join(" · ");
 
   return <section className="investigation-process">
-    <details className="process-fold" ref={details}>
+    <details className="process-fold" ref={details} onToggle={(event) => {
+      if (jump && event.target === event.currentTarget && !event.currentTarget.open) dismissJump();
+    }}>
       <summary>调查过程 <Stamp>{summary}</Stamp></summary>
       <div className="process-items">
         {process.items.map(({ key, event, finished }) => event.type === "tool_call"
           ? <Observation key={key} event={event} finished={finished}
-            openProcess={openProcess} reveal={reveal?.key === key ? reveal : undefined} />
+            openProcess={openProcess} jump={jump?.key === key ? jump : undefined} dismissJump={dismissJump} />
           : <SkillDetails key={key} event={event} />)}
       </div>
     </details>
@@ -175,35 +210,45 @@ const relations = {
   supporting: ["支持", "ok"], refuting: ["反驳", "danger"], neutral: ["中性", "dim"],
 };
 
+function RelationStamp({ relation }: { relation?: EvidenceEvent["relation"] }) {
+  const [label, color] = relation ? relations[relation] ?? ["依据", "dim"] : ["依据", "dim"];
+  return <Stamp className={color}>{label}</Stamp>;
+}
+
 interface EvidenceProps {
   observationFor: ObservationLookup;
   reveal: RevealObservation;
 }
 
-export function Evidence({ event, observationFor, reveal }: EvidenceProps & { event: EvidenceEvent }) {
-  const [label, color] = event.relation ? relations[event.relation] ?? ["依据", "dim"] : ["依据", "dim"];
+export function Evidence({ event, statement, observationFor, reveal }: EvidenceProps & {
+  event: EvidenceEvent; statement?: string;
+}) {
+  const rationale = event.rationale || "理由未记录";
   const reference = event.observation_id ? observationFor(event, event.observation_id) : undefined;
   return <div className="hypothesis-evidence">
-    <Stamp className={color}>{label}</Stamp>
-    <span>{event.rationale || "理由未记录"}</span>
+    <RelationStamp relation={event.relation} />
+    <span>{rationale}</span>
     {reference === undefined ? <Stamp>观测不可回查</Stamp>
-      : <button type="button" className="source-link" onClick={() => reveal(reference)}>查看观测</button>}
+      : <button type="button" className="source-link" onClick={(click) => reveal({
+        key: reference, origin: click.currentTarget, evidence: { statement, relation: event.relation, rationale },
+      })}>查看观测</button>}
   </div>;
 }
 
 export function HypothesisDetails({ hypothesis, observationFor, reveal }: EvidenceProps & { hypothesis: Hypothesis }) {
   const { latest, evidence, history } = hypothesis;
   const [state, color] = hypothesisStates[latest.status] ?? ["状态未记录", "dim"];
-  const links = (items: Iterable<EvidenceEvent>) => Array.from(items, (event) =>
-    <Evidence key={event.seq} event={event} observationFor={observationFor} reveal={reveal} />);
+  const links = (items: Iterable<EvidenceEvent>, statement: string) => Array.from(items, (event) =>
+    <Evidence key={event.observation_id ?? event.evidence_id ?? event.seq} event={event}
+      statement={statement} observationFor={observationFor} reveal={reveal} />);
   return <section className="hypothesis" data-hypothesis={latest.id} data-status={latest.status}>
     <header className="hypothesis-head">
-      <Stamp>假设</Stamp><Stamp className={color}>{state}</Stamp>
+      <Stamp>假设</Stamp><Stamp className={`hypothesis-state ${color}`}><span>{state}</span></Stamp>
       <h2>{latest.statement}</h2>
     </header>
     <div className="hypothesis-basis">
       {latest.update_reason && <p className="ink-2">{latest.update_reason}</p>}
-      {evidence.size ? links(evidence.values()) : <p className="muted">暂无关联依据</p>}
+      {evidence.size ? links(evidence.values(), latest.statement) : <p className="muted">暂无关联依据</p>}
     </div>
     <details className="hypothesis-history">
       <summary>判断历史 <span className="mono">{history.length}</span></summary>
@@ -217,7 +262,7 @@ export function HypothesisDetails({ hypothesis, observationFor, reveal }: Eviden
             </div>
             <p>{change.statement}</p>
             <p className="muted">{change.update_reason || "变化理由未记录"}</p>
-            {links(previous)}
+            {links(previous, change.statement)}
           </li>;
         })}
       </ol>

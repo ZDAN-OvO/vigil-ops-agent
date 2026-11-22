@@ -209,4 +209,3 @@ export function projectConversation(events: readonly SessionEvent[]) {
 }
 
 export type ObservationLookup = ReturnType<typeof projectConversation>["observationFor"];
-export type RevealObservation = (key: string) => void;

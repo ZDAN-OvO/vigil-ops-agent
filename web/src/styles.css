@@ -312,6 +312,19 @@ textarea::placeholder { color: var(--dim); }
 .observation-head .ok { color: var(--ok); }
 .observation-head .warn { color: var(--warn); }
 .observation-head .danger { color: var(--danger); }
+.observation-reference {
+  display: flex;
+  align-items: start;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 10px;
+  padding: 6px 10px;
+  border-block: 1px solid var(--line);
+  background-color: var(--surface);
+  font-size: 13px;
+}
+.observation-reference > div { flex: 1 1 180px; min-width: 0; }
+.observation-reference-title { color: var(--chalk); }
 .investigation-fields {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -337,7 +350,16 @@ textarea::placeholder { color: var(--dim); }
 }
 .hypothesis { background-color: var(--surface); }
 .hypothesis-head { padding: 10px 12px 4px; }
-.hypothesis-head > .stamp + .stamp { margin-inline-start: 8px; }
+.hypothesis-state { margin-inline-start: 8px; font-size: 13px; }
+.hypothesis-state > span { color: var(--chalk); }
+.hypothesis-state::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-inline-end: 4px;
+  background-color: currentColor;
+}
 .hypothesis-head h2 { font-size: 14px; font-weight: 400; }
 .hypothesis-basis { padding: 0 12px 10px; font-size: 13px; }
 .hypothesis-evidence {

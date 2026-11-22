@@ -294,9 +294,12 @@ function ActiveSession({ id, connection, sessionControls, attempts, decisions, r
     {connection && createPortal(state.disconnected ? "连接中断 · 正在重试" : "", connection)}
     <header className="conversation-head">
       <div className="session-heading">
-        <p id="session-meta" className="stamp" data-state={session?.state}>{session &&
-          `SESSION ${session.id} · ${session.source === "alert" ? "告警" : "人工"} · ${sessionStates[session.state] ?? "状态未取到"}`}
-        </p>
+        <p id="session-meta" className="stamp" data-state={session?.state}>{session && <>
+          {`SESSION ${session.id} · ${session.source === "alert" ? "告警" : "人工"} · `}
+          <span className={session.state === "awaiting_approval" ? "warn" : undefined}>
+            {sessionStates[session.state] ?? "状态未取到"}
+          </span>
+        </>}</p>
         <SessionTitle session={session} canWrite={access.approval_enabled} save={saveTitle} />
       </div>
       <div id="session-actions">

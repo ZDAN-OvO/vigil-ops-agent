@@ -114,20 +114,31 @@ def project_text(value: str) -> str:
 
 def project_skill_lines(value: str) -> list[str] | None:
     """仅当完整上下文可以安全脱敏且行号不变时，才允许截取 Skill 展示片段。"""
-    for line in value.splitlines():
+    lines = value.splitlines()
+    sensitive_indent = None
+    for line in lines:
+        content = line.lstrip()
+        if not content:
+            continue
+        indent = len(line) - len(content)
+        if sensitive_indent is not None and indent > sensitive_indent:
+            return None
+        sensitive_indent = None
         for match in _ASSIGNMENT_KEY.finditer(line):
+            if not _SENSITIVE.search(match["key"]):
+                continue
+            sensitive_indent = indent
             tail = line[match.end() :].strip()
-            # 块标量、跨行引号和续行没有可靠的逐行遮盖边界。
-            multiline = (
+            # 单值脱敏无法确定块、容器、跨行引号和续行的遮盖边界。
+            if (
                 not tail
-                or tail.startswith(("|", ">", '"' * 3, "'" * 3))
+                or tail.startswith(("|", ">", "[", "{", '"' * 3, "'" * 3))
                 or tail.endswith("\\")
                 or (tail[0] in ('"', "'") and tail.count(tail[0]) == 1)
-            )
-            if multiline and _SENSITIVE.search(match["key"]):
+            ):
                 return None
     projected = project_text(value).splitlines()
-    return projected if len(projected) == len(value.splitlines()) else None
+    return projected if len(projected) == len(lines) else None
 
 
 def public_resource_name(value: str) -> str | None:
