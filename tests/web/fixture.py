@@ -167,6 +167,7 @@ class Fixture:
         self.sessions = SESSIONS.copy()
         self.events = {key: [] for key in SESSIONS}
         self.states = {key: state for key, (_, _, state) in SESSIONS.items()}
+        self.title_origins = {key: source for key, (source, _, _) in SESSIONS.items()}
         self.approval_enabled = True
         self.snapshot = monitoring()
         self.query_cursors = []
@@ -180,19 +181,60 @@ class Fixture:
         for n in range(6):
             self.push(
                 "tool_call",
-                tool="k8s_pod_status",
+                tool="kubernetes.list_pods",
                 summary=f"确认 Pod 就绪情况 {n}",
                 status="ok",
                 collected_at=WHEN.isoformat(),
+                time_range={
+                    "start": (WHEN - timedelta(minutes=5)).isoformat(),
+                    "end": WHEN.isoformat(),
+                },
+                query_scope={
+                    "cluster": "demo",
+                    "namespace": "public-fixture",
+                    "criteria_withheld": True,
+                },
                 observation_id=f"obs-{n}",
                 observation={"excerpt": "观测明细" * 110, "source": LOCAL_PATH, "token": SECRET},
             )
-        self.push("hypothesis", id="h1", statement="坏发布导致首页探测失败", status="supported")
-        self.push("evidence", evidence_id="e-1", observation_id="obs-0", hypothesis_id="h1")
+        self.push("hypothesis", id="h1", statement="坏发布导致首页探测失败", status="pending")
+        self.push(
+            "evidence",
+            evidence_id="e-1",
+            observation_id="obs-0",
+            hypothesis_id="h1",
+            relation="supporting",
+            rationale="新版本发布后入口未就绪",
+        )
+        self.push(
+            "hypothesis",
+            id="h1",
+            statement="坏发布导致首页探测失败",
+            status="supported",
+            update_reason="对比上一版确认差异",
+        )
+        self.push(
+            "skill",
+            name="bad-release",
+            status="loaded",
+            trigger="description",
+            lane="main",
+            snapshot={
+                "text": "核对副本和发布版本",
+                "start_line": 9,
+                "end_line": 9,
+                "truncated": False,
+            },
+        )
         self.push("message", role="user", input_id="hint-main", text="检查上一版镜像")
         self.push("input_delivered", input_id="hint-main", step=6, lane="main")
         self.push("message", role="user", input_id="hint-side", text="现在几个副本？")
-        self.push("input_delivered", input_id="hint-side", step=2, lane="side")
+        self.push("input_delivered", input_id="hint-side", step=2, lane="side", turn_id="side-demo")
+        self.push(
+            "message", role="assistant", text="旁路回复：两个副本", lane="side", turn_id="side-demo"
+        )
+        self.push("message", source="alert", role="user", text="告警再次触发")
+        self.push("message", role="assistant", text="主线回复：已核对发布差异", lane="main")
         self.push(
             "approval_required",
             card_id=CARD,
@@ -224,12 +266,12 @@ class Fixture:
             ],
         )
 
-    def push(self, kind, sid=None, **payload):
+    def push(self, kind, sid=None, *, turn_id="turn-demo", **payload):
         sid = sid or self.session_id
         log = self.events[sid]
         seq = len(log) + 1
         event = SessionEvent(
-            kind, sid, seq, WHEN + timedelta(seconds=seq), "turn-demo", project_payload(payload)
+            kind, sid, seq, WHEN + timedelta(seconds=seq), turn_id, project_payload(payload)
         ).as_dict()
         log.append(event)
         return event
@@ -267,6 +309,7 @@ class Fixture:
             "id": sid,
             "source": source,
             "title": title,
+            "title_origin": self.title_origins[sid],
             "state": state,
             "last_seq": len(self.events[sid]),
             "created_at": WHEN.isoformat(),
@@ -277,6 +320,12 @@ class Fixture:
                 event["type"] in {"card_decision", "action_result"} for event in self.events[sid]
             ),
         }
+
+    def rename(self, sid, title, origin):
+        source, _, state = self.sessions[sid]
+        self.sessions[sid] = (source, title, state)
+        self.title_origins[sid] = origin
+        self.push("session", sid=sid, title=title, source=source, renamed=True, resumed=False)
 
     def access(self):
         return {
@@ -393,6 +442,8 @@ class Fixture:
                     fixture.events[sid] = []
                     fixture.states[sid] = "idle"
                     fixture.sessions[sid] = ("user", "新会话", "idle")
+                    fixture.title_origins[sid] = "pending"
+                    fixture.push("session", sid=sid, source="user", title="新会话", resumed=False)
                     self.send(201, {"session": fixture.session(sid)})
                     return
                 sid = unquote(parts[2])
@@ -409,7 +460,16 @@ class Fixture:
                     self.send(200, {"decision_id": "decision-demo", "status": body["decision"]})
                 elif action == "messages":
                     event = fixture.push("message", sid=sid, role="user", **body)
+                    if fixture.title_origins[sid] == "pending":
+                        fixture.rename(sid, " ".join(event["text"].split()), "auto")
                     self.send(202, {"input_id": event["input_id"], "queued_seq": event["seq"]})
+                elif action == "title":
+                    title = body.get("title", "")
+                    if "\0" in title or not 1 <= len(" ".join(title.split())) <= 120:
+                        self.error(400, "invalid_body", "请求字段或格式错误")
+                        return
+                    fixture.rename(sid, " ".join(title.split()), "user")
+                    self.send(200, {"session": fixture.session(sid)})
                 elif action == "resume":
                     fixture.states[sid] = "working"
                     self.send(202, {"session": fixture.session(sid)})

@@ -139,7 +139,7 @@ function Sparkline({ points, down }: { points?: Samples | null; down: boolean })
   </span>;
 }
 
-function alertRows({ groups }: PanelData<"alerts">) {
+function alertRows({ groups }: PanelData<"alerts">, openSession: () => void) {
   return groups.map((group) => <div className="monitor-subgroup" key={group.group_key || group.name}>
     {group.alerts.map((alert) => <p className="monitor-row monitor-alert" key={alert.fingerprint}>
       {!alert.suppressed && <span className="flag" />}
@@ -151,7 +151,7 @@ function alertRows({ groups }: PanelData<"alerts">) {
       {alert.suppressed && <Stamp className="stamp-small">已抑制</Stamp>}
     </p>)}
     {group.session && <Row className="monitor-known">
-      <Link to={sessionPath(group.session.session_id)}>
+      <Link to={sessionPath(group.session.session_id)} onClick={openSession}>
         处理会话 {group.session.session_id}{group.session.pending_approval && " · 待审批"}
       </Link>
     </Row>}
@@ -282,9 +282,12 @@ function grafanaUrl(value?: string) {
   }
 }
 
-function panelRows(snapshot: Snapshot | undefined, ask: Ask, folds: Record<"services" | "nodes", FoldState>) {
+function panelRows(
+  snapshot: Snapshot | undefined, ask: Ask, openSession: () => void,
+  folds: Record<"services" | "nodes", FoldState>,
+) {
   return {
-    alerts: snapshot?.alerts.data && alertRows(snapshot.alerts.data),
+    alerts: snapshot?.alerts.data && alertRows(snapshot.alerts.data, openSession),
     probes: snapshot?.probes.data && probeRows(snapshot.probes.data, ask),
     changes: snapshot?.changes.data && changeRows(snapshot.changes.data, ask),
     services: snapshot?.services.data && serviceRows(snapshot.services.data, ask, folds.services),
@@ -293,7 +296,9 @@ function panelRows(snapshot: Snapshot | undefined, ask: Ask, folds: Record<"serv
   };
 }
 
-export function Monitoring({ ask, collapsed, toggle }: { ask: Ask; collapsed: boolean; toggle: () => void }) {
+export function Monitoring({ ask, collapsed, toggle, openSession }: {
+  ask: Ask; collapsed: boolean; toggle: () => void; openSession: () => void;
+}) {
   const [{ snapshot, failed }, setData] = useState<{ snapshot?: Snapshot; failed?: boolean }>({});
   const [servicesOpen, setServicesOpen] = useState(false);
   const [nodesOpen, setNodesOpen] = useState(false);
@@ -310,7 +315,7 @@ export function Monitoring({ ask, collapsed, toggle }: { ask: Ask; collapsed: bo
   const count = snapshot?.abnormal_service_count;
   const color = count == null ? "dim" : count === 0 ? "ok" : "danger";
   const label = count == null ? "异常服务数未取到" : count === 0 ? "全部服务正常" : "个异常服务";
-  const rows = panelRows(snapshot, ask, {
+  const rows = panelRows(snapshot, ask, openSession, {
     services: { open: servicesOpen, setOpen: setServicesOpen },
     nodes: { open: nodesOpen, setOpen: setNodesOpen },
   });

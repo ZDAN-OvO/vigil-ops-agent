@@ -6,9 +6,12 @@ import asyncio
 import json
 import re
 from collections.abc import Sequence
-from dataclasses import replace
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 
-from deepagents.backends.utils import validate_path
+from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.protocol import ReadResult
+from deepagents.backends.utils import file_data_to_string, slice_read_response, validate_path
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
@@ -17,28 +20,58 @@ from aiops.agent.middleware import RunCancelled, cancel_requested
 from aiops.agent.tools import _finish_request, _prepare_request
 from aiops.contracts import SkillTrigger, ToolRequestState
 from aiops.sessions.models import LeaseLost
-from aiops.skills import SkillSpec
+from aiops.skills import MAX_SKILL_BYTES, SkillSpec
 
 _READ_WINDOW = re.compile(r"^@@ lines (\d+)-(\d+) of (\d+)(?: \| [^\n]+)? @@\n", re.M)
 
 
-def _skill_event(spec: SkillSpec, result: ToolMessage) -> dict | None:
+@dataclass
+class _SkillRead:
+    path: str
+    content: str | None = None
+
+
+_skill_read: ContextVar[_SkillRead | None] = ContextVar("skill_read", default=None)
+
+
+class SkillFilesystemBackend(FilesystemBackend):
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+        capture = _skill_read.get()
+        if capture is None or capture.path != file_path:
+            return super().read(file_path, offset, limit)
+
+        # 同一次文件打开取得上下文，再用与文件工具相同的规则生成实际行窗。
+        full = super().read(file_path, 0, MAX_SKILL_BYTES + 1)
+        if full.file_data is None or full.start_line is None:
+            return full
+        content = file_data_to_string(full.file_data)
+        if full.next_offset is None and len(content.encode("utf-8")) <= MAX_SKILL_BYTES:
+            capture.content = content
+        return slice_read_response(full.file_data, offset, limit)
+
+
+def _skill_event(
+    spec: SkillSpec, result: ToolMessage, verified_content: str | None = None
+) -> dict | None:
     if result.status == "error":
         return spec.public_event(SkillTrigger.DESCRIPTION, status="failed", version_known=False)
-    # 文件工具也会把空窗口返回为 success。核对实际返回的正文和 catalog 中的区间。
+    # 文件工具也会把空窗口返回为 success。核对返回的正文和同次打开取得的行窗。
     text = result.text
     window = _READ_WINDOW.search(text)
     if window is None:
         return None
     start, end, total = map(int, window.groups())
-    source = spec.content.splitlines()
     body = text[window.end() :]
     if not 1 <= start <= end <= total or not body.strip():
         return None
-    if body != "\n".join(source[start - 1 : end]):
-        return None
+    lines = verified_content.splitlines() if verified_content is not None else []
+    if total != len(lines) or body != "\n".join(lines[start - 1 : end]):
+        return spec.public_event(SkillTrigger.DESCRIPTION, version_known=False)
     return spec.public_event(
-        SkillTrigger.DESCRIPTION, version_known=start == 1 and end == total == len(source)
+        SkillTrigger.DESCRIPTION,
+        version_known=verified_content == spec.content,
+        line_range=(start, end),
+        verified_content=verified_content,
     )
 
 
@@ -75,6 +108,9 @@ class SkillReadMiddleware(AgentMiddleware):
                 return ToolMessage(
                     content=cached, name="read_file", tool_call_id=call_id, status="error"
                 )
+            spec = self._match(args.get("file_path")) if ctx.scope is not None else None
+            capture = _SkillRead(validate_path(args["file_path"])) if spec is not None else None
+            token = _skill_read.set(capture)
             try:
                 await ctx.ensure_active()
                 async with asyncio.timeout(
@@ -92,8 +128,9 @@ class SkillReadMiddleware(AgentMiddleware):
                     tool_call_id=call_id,
                     status="error",
                 )
-            spec = self._match(args.get("file_path")) if ctx.scope is not None else None
-            public = _skill_event(spec, result) if spec is not None else None
+            finally:
+                _skill_read.reset(token)
+            public = _skill_event(spec, result, capture.content) if capture is not None else None
             async with ctx.ledger() as (ledger, tx):
                 await _finish_request(
                     replace(ctx, store=ledger, active_transaction=tx),
@@ -111,7 +148,15 @@ class SkillReadMiddleware(AgentMiddleware):
                     await tx.append_event(
                         "skill", {**public, "lane": tx.turn.lane, "delegated": delegated}
                     )
-                    if "content_hash" in public and not delegated:
+                    # 整份已知版本计入调查用法，分段读取仍保留公开事件。
+                    window = _READ_WINDOW.search(result.text)
+                    if (
+                        "content_hash" in public
+                        and window is not None
+                        and window[1] == "1"
+                        and window[2] == window[3]
+                        and not delegated
+                    ):
                         saved = await ledger.get_investigation(ctx.investigation_id)
                         if saved is not None and all(
                             item.name != spec.name for item in saved.skills

@@ -1,4 +1,4 @@
-import { useCallback, useReducer, useRef } from "react";
+import { useCallback, useLayoutEffect, useReducer, useRef } from "react";
 import {
   type Access, type EventPage, type Session, type SessionEvent, type SessionResponse,
   errorMessage, isMissing, request, sessionPath,
@@ -26,11 +26,14 @@ const initial: LedgerState = {
   session: null, access: readonlyAccess, events: [], cursor: 0, hasMore: false, error: "", disconnected: false,
 };
 
+export function mergeSession(current: Session | null | undefined, incoming: Session): Session {
+  return current?.id === incoming.id && current.last_seq > incoming.last_seq ? current : incoming;
+}
+
 function reduce(state: LedgerState, update: Update): LedgerState {
   switch (update.type) {
     case "snapshot": {
-      const session = state.session && state.session.last_seq > update.session.last_seq
-        ? state.session : update.session;
+      const session = mergeSession(state.session, update.session);
       return { ...state, session, access: update.access ?? state.access };
     }
     case "page": {
@@ -44,7 +47,16 @@ function reduce(state: LedgerState, update: Update): LedgerState {
       const events = added.length
         ? [...state.events, ...added].sort((a, b) => a.seq - b.seq)
         : state.events;
-      return { ...state, cursor: page.next_after_seq, hasMore: page.has_more, events };
+      let session = state.session;
+      if (session?.id === id) {
+        for (const event of added) {
+          if (event.type === "session" && event.renamed && typeof event.title === "string" &&
+            event.seq > session.last_seq) {
+            session = { ...session, title: event.title, last_seq: event.seq };
+          }
+        }
+      }
+      return { ...state, session, cursor: page.next_after_seq, hasMore: page.has_more, events };
     }
     case "status":
       return { ...state, error: update.error, disconnected: update.disconnected };
@@ -52,8 +64,13 @@ function reduce(state: LedgerState, update: Update): LedgerState {
 }
 
 // 调用方以会话 ID 作为组件 key。续读位置和在途请求随该会话视图销毁。
-export function useSessionLedger(id: string | undefined) {
-  const [state, dispatch] = useReducer(reduce, initial);
+export function useSessionLedger(id: string | undefined, known?: Session) {
+  const [state, dispatch] = useReducer(reduce, { ...initial, session: known ?? null });
+  useLayoutEffect(() => {
+    if (known && known.last_seq > (state.session?.last_seq ?? -1)) {
+      dispatch({ type: "snapshot", session: known });
+    }
+  }, [known, state.session]);
   const cursor = useRef(0);
   const api = id ? `/api${sessionPath(id)}` : null;
   const poll = useCallback(async (signal: AbortSignal) => {

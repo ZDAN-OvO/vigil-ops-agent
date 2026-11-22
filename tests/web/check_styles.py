@@ -186,9 +186,26 @@ class PageStyles(HTMLParser):
             check_rules(tinycss2.parse_stylesheet(data, skip_comments=True, skip_whitespace=True))
 
 
-def check_script(source):
+LAYOUT_WRITES = (
+    'element.style.setProperty("--sessions-width", pixelWidth(left));',
+    'element.style.setProperty("--monitor-width", pixelWidth(right));',
+)
+PIXEL_WIDTH = (
+    "function pixelWidth(n: number) {\n  return `${Number.isFinite(n) ? Math.max(0, n) : 0}px`;\n}"
+)
+
+
+def check_script(source, *, layout=False):
+    if layout:
+        # 只允许独立布局组件写入两个已校验的有限非负像素值。
+        assert source.count("pixelWidth(") == 3 and source.count(PIXEL_WIDTH) == 1
+        for declaration in LAYOUT_WRITES:
+            assert source.count(declaration) == 1
+            source = source.replace(declaration, "", 1)
     # 应用布局和样式令牌由样式表管理。SVG 样式属性使用可静态检查的值。
-    assert not re.search(r"\.style\b|\.insertRule\(|\bstyle\s*=", source)
+    assert not re.search(
+        r"""\.style\b|\[\s*["']style["']\s*\]|\.insertRule\(|\bstyle\s*=""", source
+    )
     assert not re.search(r"<style\b", source)
     for match in re.finditer(r"""\b(fill|stroke|strokeWidth)\s*=\s*("[^"]*"|'[^']*'|\{)""", source):
         name, literal = match.groups()
@@ -200,10 +217,8 @@ def check_script(source):
     ):
         name, literal = match.groups()
         assert literal[0] in {"'", '"'} and literal[-1] == literal[0], literal
-        if name == "style":
-            check_declarations(literal[1:-1], "JS 内联样式")
-        else:
-            check_property(name, tinycss2.parse_component_value_list(literal[1:-1]), svg=True)
+        assert name != "style", "脚本内联样式需要通过布局变量设置"
+        check_property(name, tinycss2.parse_component_value_list(literal[1:-1]), svg=True)
 
 
 def main():
@@ -216,7 +231,7 @@ def main():
         PageStyles().feed(path.read_text())
     for suffix in ("*.ts", "*.tsx"):
         for path in (STATIC / "src").rglob(suffix):
-            check_script(path.read_text())
+            check_script(path.read_text(), layout=path == STATIC / "src/workspace-layout.tsx")
     print("网页样式静态检查通过")
 
 

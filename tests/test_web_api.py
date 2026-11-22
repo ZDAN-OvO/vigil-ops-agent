@@ -147,6 +147,7 @@ def test_create_session_requires_browser_login_and_can_accept_first_message(isol
                 assert created.status_code == 201
                 session = created.json()["session"]
                 assert session["source"] == "user" and session["state"] == "idle"
+                assert session["title_origin"] == "pending"
                 path = f"/api/sessions/{session['id']}/messages"
                 for media_type, body, status, code, message in (
                     ("text/plain", b"{}", 415, "invalid_content_type", "请求类型错误"),
@@ -164,8 +165,68 @@ def test_create_session_requires_browser_login_and_can_accept_first_message(isol
                 assert response.status_code == 202
                 assert response.json()["queued_seq"] == 2
                 listing = await client.get("/api/sessions")
-                assert listing.json()["sessions"][0]["id"] == session["id"]
+                [listed] = listing.json()["sessions"]
+                assert listed["id"] == session["id"]
+                assert listed["title"] == "checkout 健康吗" and listed["title_origin"] == "auto"
+                assert listed["last_seq"] == 3
                 assert listing.json()["approval_enabled"] is True
+
+    asyncio.run(run())
+
+
+def test_rename_session_is_authenticated_and_preserves_manual_titles(isolated_serve_dsn):
+    async def run():
+        async with Store.open(isolated_serve_dsn) as store:
+            await store.migrate()
+            settings = Settings(_env_file=None)
+            origin = settings.web_origin
+            headers = {"Origin": origin}
+            auth = BrowserAuth(interactive=True)
+            async with _client(settings, store, auth) as client:
+                sessions = SessionStore(store)
+                created = await sessions.create_session(title="新会话", title_origin="pending")
+                path = f"/api/sessions/{created.id}"
+                title = f"{path}/title"
+                assert (
+                    await client.post(title, headers=headers, json={"title": "名称"})
+                ).status_code == 403
+                await _login(client, auth, origin)
+                assert (await client.post(title, json={"title": "名称"})).status_code == 403
+                cross = await client.post(
+                    title,
+                    headers={**headers, "Sec-Fetch-Site": "cross-site"},
+                    json={"title": "被拒"},
+                )
+                assert cross.status_code == 403
+                for invalid in ("", "  \t", "无效\0标题", "字" * 121):
+                    rejected = await client.post(title, headers=headers, json={"title": invalid})
+                    assert rejected.status_code == 400
+                # 保存相同文字也确认人工命名。
+                same = await client.post(title, headers=headers, json={"title": "新会话"})
+                assert same.status_code == 200
+                assert same.json()["session"]["title_origin"] == "user"
+                assert same.json()["session"]["last_seq"] == 2
+                question = {"text": "首条查询", "input_id": "first-input"}
+                sent = await client.post(f"{path}/messages", headers=headers, json=question)
+                retry = await client.post(f"{path}/messages", headers=headers, json=question)
+                assert sent.json() == retry.json()
+                assert (await client.get(path)).json()["session"]["title"] == "新会话"
+                renamed = await client.post(
+                    title, headers=headers, json={"title": "  新的  名称\n 第二行  "}
+                )
+                assert renamed.status_code == 200
+                saved = renamed.json()["session"]
+                assert saved["title"] == "新的 名称 第二行"
+                assert saved["last_seq"] == 4
+                assert saved["state"] == "idle" and not saved["pending_approval"]
+                events = (await client.get(f"{path}/events?after_seq=3")).json()
+                [change] = events["events"]
+                assert (change["type"], change["seq"], change["title"]) == (
+                    "session",
+                    saved["last_seq"],
+                    saved["title"],
+                )
+                assert change["renamed"] and not change["resumed"] and change["source"] == "user"
 
     asyncio.run(run())
 

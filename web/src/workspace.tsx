@@ -6,7 +6,9 @@ import { errorMessage, request, sessionPath } from "./api";
 import { Conversation } from "./conversation";
 import { Monitoring } from "./monitoring";
 import { usePolling } from "./polling";
-import { useSessionLedger } from "./session-ledger";
+import { mergeSession, useSessionLedger } from "./session-ledger";
+import { SessionTitle } from "./session-title";
+import { WorkspaceLayout } from "./workspace-layout";
 import { sessionStates, Spinner, Stamp } from "./ui";
 
 interface SessionControls {
@@ -25,6 +27,8 @@ interface WorkspaceContext {
   attempts: Map<string, Map<string, MessageAttempt>>;
   decisions: Map<string, Promise<unknown>>;
   refreshList: () => void;
+  rememberSession: (session: Session) => void;
+  known?: Session;
 }
 
 export function Workspace() {
@@ -39,7 +43,7 @@ export function Workspace() {
   const [listNotice, setListNotice] = useState("");
   const [pending, setPending] = useState<{ type: "create" } | { type: "resume"; id: string }>();
   const pendingRef = useRef(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const knownSessions = useRef(new Map<string, Session>());
   const sessionControls = useRef<SessionControls>(null);
   const [connection, setConnection] = useState<HTMLSpanElement | null>(null);
   const attempts = useRef<WorkspaceContext["attempts"]>(new Map());
@@ -48,7 +52,12 @@ export function Workspace() {
     try {
       const result = await request<SessionsResponse>("/api/sessions", { signal });
       if (!signal.aborted) {
-        setList(result);
+        const sessions = result.sessions.map((item) => {
+          const latest = mergeSession(knownSessions.current.get(item.id), item);
+          knownSessions.current.set(item.id, latest);
+          return latest;
+        });
+        setList({ ...result, sessions });
         setListError("");
       }
     } catch (error) {
@@ -56,6 +65,14 @@ export function Workspace() {
     }
   }, []);
   const refreshList = usePolling(poll, 3000);
+  const rememberSession = useCallback((session: Session) => {
+    if ((knownSessions.current.get(session.id)?.last_seq ?? -1) >= session.last_seq) return;
+    knownSessions.current.set(session.id, session);
+    setList((current) => current && {
+      ...current,
+      sessions: current.sessions.map((item) => item.id === session.id ? mergeSession(item, session) : item),
+    });
+  }, []);
 
   async function changeSession(id?: string) {
     if (pendingRef.current || !list?.approval_enabled) return;
@@ -67,6 +84,7 @@ export function Workspace() {
       const path = id ? `/api${sessionPath(id)}/resume` : "/api/sessions";
       const response = await request<{ session: Session }>(path, { method: "POST" });
       setListNotice("");
+      rememberSession(response.session);
       refreshList();
       if (startedAt !== locationKey.current) return;
       if (id === activeId && id) sessionControls.current?.resumed(response.session);
@@ -84,13 +102,12 @@ export function Workspace() {
       <Link className="brand" to="/">Vigil</Link>
       <span id="connection" className="stamp" role="status" ref={setConnection} />
     </header>
-    <main className={collapsed ? "workspace monitor-collapsed" : "workspace"}>
-      <aside className="sessions" aria-labelledby="sessions-title">
+    <WorkspaceLayout sessions={(closeOverlay) => <aside className="sessions" aria-labelledby="sessions-title">
         <header className="sessions-head">
           <h2 id="sessions-title" className="stamp">会话</h2>
           <button className="session-control" id="new-session" type="button"
             disabled={!list?.approval_enabled || pending?.type === "create"}
-            onClick={() => void changeSession()}>新会话</button>
+            onClick={() => { closeOverlay(); void changeSession(); }}>新会话</button>
         </header>
         <p id="sessions-access" className="notice">
           {list && !list.approval_enabled && `只读 · ${list.approval_disabled_reason || "当前无法创建会话"}`}
@@ -103,7 +120,8 @@ export function Workspace() {
             const selected = item.id === activeId;
             return <div className={selected ? "session-row selected" : "session-row"} key={item.id}>
               {item.pending_approval && <span className="flag" aria-label="有待审批卡片" />}
-              <Link className="session-link" to={sessionPath(item.id)} aria-current={selected ? "page" : undefined}>
+              <Link className="session-link" to={sessionPath(item.id)} aria-current={selected ? "page" : undefined}
+                onClick={closeOverlay}>
                 <span className="session-name">{item.title || item.id}</span>
                 <Stamp className="stamp-small">{item.source === "alert" ? "告警" : "人工"}</Stamp>
                 <Stamp className={item.state === "working" ? "stamp-small gold" : "stamp-small"}>
@@ -112,18 +130,18 @@ export function Workspace() {
               </Link>
               {item.state === "interrupted" && <button type="button" className="stamp stamp-small session-resume"
                 disabled={!list.approval_enabled || (pending?.type === "resume" && pending.id === item.id)}
-                onClick={() => void changeSession(item.id)}>接手恢复</button>}
+                onClick={() => { closeOverlay(); void changeSession(item.id); }}>接手恢复</button>}
               {item.state === "working" && <Spinner />}
             </div>;
           })}
         </nav>
-      </aside>
+      </aside>} monitoring={(collapsed, toggle, closeOverlay) => <Monitoring collapsed={collapsed} toggle={toggle} openSession={closeOverlay}
+        ask={(text) => { closeOverlay(); sessionControls.current?.ask(text); }} />}>
       <Outlet context={{
         connection, sessionControls, attempts: attempts.current, decisions: decisions.current, refreshList,
+        rememberSession, known: activeId ? knownSessions.current.get(activeId) : undefined,
       } satisfies WorkspaceContext} />
-      <Monitoring collapsed={collapsed} toggle={() => setCollapsed(!collapsed)}
-        ask={(text) => sessionControls.current?.ask(text)} />
-    </main>
+    </WorkspaceLayout>
   </>;
 }
 
@@ -139,7 +157,8 @@ function cardAnchor(hash: string) {
   return fragment.startsWith("card-") ? fragment : "";
 }
 
-function ActiveSession({ id, connection, sessionControls, attempts, decisions, refreshList }: WorkspaceContext & { id?: string }) {
+function ActiveSession({ id, connection, sessionControls, attempts, decisions, refreshList, rememberSession, known }:
+  WorkspaceContext & { id?: string }) {
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState("");
   const [sending, setSending] = useState(false);
@@ -149,8 +168,9 @@ function ActiveSession({ id, connection, sessionControls, attempts, decisions, r
   const question = useRef<HTMLTextAreaElement>(null);
   const { hash } = useLocation();
   const anchor = cardAnchor(hash);
-  const { state, refresh, dispatch } = useSessionLedger(id);
+  const { state, refresh, dispatch } = useSessionLedger(id, known);
   const { session, access, events } = state;
+  useEffect(() => { if (session) rememberSession(session); }, [session, rememberSession]);
   const closed = session?.state === "closed";
   const api = id ? `/api${sessionPath(id)}` : null;
   const ready = !!session && !state.hasMore && state.cursor >= session.last_seq;
@@ -228,6 +248,15 @@ function ActiveSession({ id, connection, sessionControls, attempts, decisions, r
     }
   }
 
+  async function saveTitle(title: string) {
+    const { session } = await request<{ session: Session }>(`${api}/title`, { method: "POST", body: { title } });
+    if (session.id !== id) throw new Error("会话响应与当前会话不符");
+    dispatch({ type: "snapshot", session });
+    rememberSession(session);
+    refresh();
+    refreshList();
+  }
+
   function decisionPath(cardId: string) {
     return `${api}/cards/${encodeURIComponent(cardId)}/decision`;
   }
@@ -265,10 +294,13 @@ function ActiveSession({ id, connection, sessionControls, attempts, decisions, r
     {connection && createPortal(state.disconnected ? "连接中断 · 正在重试" : "", connection)}
     <header className="conversation-head">
       <div className="session-heading">
-        <p id="session-meta" className="stamp" data-state={session?.state}>{session &&
-          `SESSION ${session.id} · ${session.source === "alert" ? "告警" : "人工"} · ${sessionStates[session.state] ?? "状态未取到"}`}
-        </p>
-        <h1 id="session-title">{session ? session.title || session.id : "选择会话"}</h1>
+        <p id="session-meta" className="stamp" data-state={session?.state}>{session && <>
+          {`SESSION ${session.id} · ${session.source === "alert" ? "告警" : "人工"} · `}
+          <span className={session.state === "awaiting_approval" ? "warn" : undefined}>
+            {sessionStates[session.state] ?? "状态未取到"}
+          </span>
+        </>}</p>
+        <SessionTitle session={session} canWrite={access.approval_enabled} save={saveTitle} />
       </div>
       <div id="session-actions">
         {session?.source === "alert" && !closed && <button className="session-control" type="button"

@@ -235,6 +235,7 @@ class BrowserCases(unittest.TestCase):
                 self.assertEqual(measured[:2], [60, 16])
                 self.assertLessEqual(measured[2], 1.5)
                 self.assert_no_overflow()
+                page.locator(".process-fold > summary").first.click()
                 for control in page.locator(".observation button").all():
                     control.click()
                 expect(page.locator(".observation .fold-body.open")).to_have_count(6)
@@ -275,15 +276,20 @@ class BrowserCases(unittest.TestCase):
         self.open_card()
         page = self.page
         expect(page.locator("#ledger, .event-popover")).to_have_count(0)
-        expect(page.get_by_text("已送入 · 第 6 步")).to_be_visible()
-        expect(page.get_by_text("旁路 · 未送入主线")).to_be_visible()
-        expect(page.get_by_text("观测不可回查").filter(visible=True)).to_have_count(2)
+        expect(page.get_by_text("主线 · 已送入 · 第 6 步")).to_be_visible()
+        expect(page.get_by_text("旁路 · 已送入 · 第 2 步")).to_be_visible()
+        expect(page.locator(".message[data-lane=side]").first).to_have_attribute(
+            "data-turn", "side-demo"
+        )
+        expect(self.card.get_by_text("观测不可回查")).to_have_count(2)
+        expect(page.locator(".hypothesis-basis").get_by_text("观测不可回查")).to_be_visible()
         cards = page.locator(".observation")
         expect(cards).to_have_count(6)
         first = cards.first
         expect(first).to_have_attribute("data-status", "running")
         node = first.element_handle()
         self.fixture.query_cursors.clear()
+        before = len(self.fixture.events["alert-demo"])
 
         self.fixture.reject_reads = True
         expect(page.locator("#connection")).to_have_text("连接中断 · 正在重试")
@@ -306,13 +312,20 @@ class BrowserCases(unittest.TestCase):
         expect(first).to_have_attribute("data-status", "ok")
         expect(cards).to_have_count(6)
         self.assertTrue(node.evaluate("(node) => node === document.querySelector('.observation')"))
-        self.assertIn(15, self.fixture.query_cursors)
-        self.assertIn(115, self.fixture.query_cursors)
+        self.assertIn(before, self.fixture.query_cursors)
+        self.assertIn(before + 100, self.fixture.query_cursors)
         self.assertNotIn(0, self.fixture.query_cursors)
 
-        self.card.get_by_role("button", name="E1", exact=True).click()
+        process = page.locator(".process-fold").first
+        expect(first).to_be_hidden()
+        reference = self.card.get_by_role("button", name="E1", exact=True)
+        reference.click()
+        expect(process).to_have_js_property("open", True)
         expect(first.locator(".fold-body.open")).to_be_visible()
-        expect(first.get_by_role("button")).to_be_focused()
+        expect(first.get_by_role("button", name="展开或收起观测")).to_be_focused()
+        first.get_by_role("button", name="返回卡片引用").click()
+        expect(reference).to_be_focused()
+        expect(first.locator(".observation-reference")).to_have_count(0)
         expect(first.locator("pre")).to_contain_text('"rows": 2')
         expect(first.locator("pre")).to_contain_text("[已遮盖]")
         expect(page.locator("body")).not_to_contain_text(SECRET)
@@ -324,9 +337,9 @@ class BrowserCases(unittest.TestCase):
         response = page.request.get(
             self.fixture.url
             + PATH.replace("/sessions", "/api/sessions")
-            + "/events?after_seq=115&limit=100"
+            + f"/events?after_seq={before + 100}&limit=100"
         )
-        self.assertEqual(response.json()["events"][-1]["seq"], 122)
+        self.assertEqual(response.json()["events"][-1]["seq"], before + 107)
         self.assertNotIn(SECRET, response.text())
         self.assertNotIn(LOCAL_PATH, response.text())
         self.assert_no_errors()
@@ -415,6 +428,11 @@ class BrowserCases(unittest.TestCase):
         expect(self.card.get_by_role("button", name="拒绝")).to_be_disabled()
         expect(self.page.get_by_role("button", name="关闭告警会话")).to_be_disabled()
         expect(self.page.get_by_role("button", name="接手恢复")).to_be_disabled()
+        heading = self.page.locator("h1#session-title")
+        expect(heading).to_have_text("首页探测失败")
+        expect(heading.get_by_role("button")).to_have_count(0)
+        heading.click()
+        expect(self.page.get_by_role("textbox", name="会话名称")).to_have_count(0)
         expect(self.card.get_by_text("只读 · 浏览器缺少批准凭证")).to_be_visible()
         self.page.locator("#question").fill("网页只读时的问题")
         expect(self.page.get_by_role("button", name="发送")).to_be_disabled()
@@ -438,7 +456,7 @@ class BrowserCases(unittest.TestCase):
         expect(page.locator("#session-list .session-row")).to_have_count(5)
         page.get_by_role("link", name="处理会话 alert-demo · 待审批").click()
         expect(page).to_have_url(self.fixture.url + PATH)
-        expect(page.locator(".message").first.locator(".stamp").first).to_have_text("ALERT")
+        expect(page.locator(".message").first.locator(".stamp").first).to_have_text("告警")
         expect(page.locator("#question")).to_have_value("")
         page.get_by_role("button", name="关闭告警会话").click()
         expect(page.locator("#session-meta")).to_have_attribute("data-state", "closed")
@@ -497,8 +515,257 @@ class BrowserCases(unittest.TestCase):
         expect(self.page.locator("#session-meta")).to_have_attribute("data-state", "idle")
         self.page.locator("#question").fill("查一下当前运行状态")
         self.page.get_by_role("button", name="发送").click()
-        expect(self.page.locator(".message")).to_have_text("你查一下当前运行状态")
+        expect(self.page.locator(".message")).to_contain_text("查一下当前运行状态")
+        expect(self.page.get_by_text("已排队 · 等待送达")).to_be_visible()
+        expect(self.page.locator("#session-title")).to_have_text("查一下当前运行状态")
         self.assertEqual([action for action, _ in self.fixture.posts], ["create", "messages"])
+        self.assert_no_errors()
+
+    def test_process_groups_keep_messages_and_approval_in_order_on_replay(self):
+        fixture = self.fixture
+        fixture.push(
+            "tool_call",
+            tool="kubernetes.list_pods",
+            id="pending-query",
+            lane="main",
+            status="running",
+        )
+        fixture.push(
+            "skill", name="check-pods", trigger="description", status="failed", lane="main"
+        )
+        fixture.push(
+            "tool_call",
+            tool="kubernetes.list_pods",
+            lane="main",
+            status="empty",
+            summary="此查询范围内没有匹配 Pod",
+        )
+        fixture.push("message", role="user", text="需要先对比另一个服务", input_id="extra-question")
+        fixture.push(
+            "tool_call",
+            tool="kubernetes.list_pods",
+            lane="main",
+            status="rejected",
+            summary="查询预算不足",
+        )
+        fixture.push("message", role="assistant", text="已记录补充线索", lane="main")
+        fixture.push(
+            "tool_call",
+            tool="kubernetes.list_events",
+            lane="side",
+            turn_id="side-demo",
+            status="error",
+            summary="时限内未返回事件",
+        )
+        fixture.push("result", status="completed")
+        self.open_card()
+        page = self.page
+        process = page.locator(".investigation-process")
+        expect(process).to_have_count(5)
+        expect(process.first.locator("summary")).to_have_text("调查过程 6 次查询")
+        expect(self.card.get_by_role("button", name="批准")).to_be_visible()
+        expect(process.nth(2).locator(".process-notices li")).to_contain_text(
+            [
+                "查询未完成",
+                "Skill 读取失败",
+                "此查询范围内没有匹配 Pod",
+            ]
+        )
+        expect(
+            process.nth(3).locator(".process-notices").get_by_text("查询预算不足", exact=False)
+        ).to_be_visible()
+        expect(
+            process.nth(4).locator(".process-notices").get_by_text("时限内未返回事件", exact=False)
+        ).to_be_visible()
+        expect(process.nth(2).locator(".observation").first).to_be_hidden()
+
+        survey = page.locator("#event-stream .feed-entry")
+        position = survey.count() - 6
+        items = survey.all_text_contents()[position:]
+        for text, item in zip(
+            (
+                "待审批",
+                "2 次查询",
+                "需要先对比另一个服务",
+                "查询预算不足",
+                "已记录补充线索",
+                "旁路",
+            ),
+            items,
+            strict=True,
+        ):
+            self.assertIn(text, item)
+
+        page.reload()
+        expect(process).to_have_count(5)
+        self.assertEqual(survey.all_text_contents()[position:], items)
+        expect(self.card.get_by_role("button", name="批准")).to_be_visible()
+        self.assert_no_errors()
+
+    def test_hypothesis_history_observation_and_skill(self):
+        self.open_card()
+        page = self.page
+        hypothesis = page.locator(".hypothesis")
+        expect(hypothesis).to_have_count(1)
+        node = hypothesis.element_handle()
+        basis = hypothesis.locator(".hypothesis-basis")
+        expect(basis).to_contain_text("新版本发布后入口未就绪")
+        expect(hypothesis.locator(".hypothesis-state")).to_have_css("font-size", "13px")
+        expect(hypothesis.locator(".hypothesis-state > span")).to_have_css(
+            "color", "rgb(236, 232, 225)"
+        )
+        expect(page.locator("#session-meta .warn")).to_have_text("待审批")
+        expect(page.locator("#session-meta .warn")).to_have_css("color", COLORS["warn"])
+        reference = basis.get_by_role("button", name="查看观测")
+        observation = page.locator(".observation").first
+        original_observation = observation.element_handle()
+        disclosure = observation.get_by_role("button", name="展开或收起观测")
+        page.locator(".process-fold > summary").first.click()
+        disclosure.click()
+        expect(observation.locator(".observation-reference")).to_have_count(0)
+        page.locator(".process-fold > summary").first.click()
+
+        reference.click()
+        expect(observation.locator(".fold-body.open")).to_be_visible()
+        context = observation.locator(".observation-reference")
+        expect(context).to_be_in_viewport()
+        expect(context).to_contain_text("坏发布导致首页探测失败")
+        expect(context).to_contain_text("支持 新版本发布后入口未就绪")
+        expect(observation.get_by_text("demo / public-fixture")).to_be_visible()
+        expect(observation.get_by_text("未公开")).to_be_visible()
+        expect(observation.get_by_text("时间范围")).to_be_visible()
+        expect(disclosure).to_be_focused()
+        context.get_by_role("button", name="返回依据").click()
+        expect(reference).to_be_focused()
+        expect(reference).to_be_in_viewport()
+        expect(context).to_have_count(0)
+        self.assertTrue(
+            original_observation.evaluate(
+                "(node) => node === document.querySelector('.observation')"
+            )
+        )
+
+        skill = page.locator(".skill-details")
+        expect(skill).to_be_hidden()
+        page.locator(".process-fold > summary").filter(has_text="1 项 Skill").click()
+        expect(skill.locator("pre")).not_to_be_visible()
+        skill.locator("summary").click()
+        expect(skill.locator("pre")).to_have_text("核对副本和发布版本")
+        self.fixture.push(
+            "evidence",
+            evidence_id="e-1",
+            observation_id="obs-0",
+            hypothesis_id="h1",
+            relation="refuting",
+            rationale="扩大时间范围后证据转向",
+        )
+        self.fixture.push(
+            "hypothesis",
+            id="h1",
+            statement="坏发布导致首页探测失败",
+            status="refuted",
+            update_reason="排除了发布时序巧合",
+        )
+        expect(hypothesis).to_have_attribute("data-status", "refuted")
+        self.assertTrue(node.evaluate("(node) => node === document.querySelector('.hypothesis')"))
+        expect(basis).to_contain_text("扩大时间范围后证据转向")
+        expect(basis).not_to_contain_text("新版本发布后入口未就绪")
+        hypothesis.locator("summary").click()
+        history = hypothesis.locator(".hypothesis-history li")
+        expect(history).to_have_count(3)
+        expect(history.nth(1)).to_contain_text("新版本发布后入口未就绪")
+        expect(history.nth(1)).not_to_contain_text("扩大时间范围后证据转向")
+        expect(history.last).to_contain_text("排除了发布时序巧合")
+        messages = page.locator(".message[data-message-id]").all_text_contents()
+        self.assertLess(
+            next(i for i, text in enumerate(messages) if "旁路回复" in text),
+            next(i for i, text in enumerate(messages) if "主线回复" in text),
+        )
+        self.assert_no_errors()
+
+    def test_resize_persist_reset_and_open_narrow_panels(self):
+        self.open_card()
+        page = self.page
+        left = page.get_by_role("separator", name="调整会话栏宽度")
+        right = page.get_by_role("separator", name="调整值班面板宽度")
+        left.focus()
+        left.press("ArrowRight")
+        expect(left).to_have_attribute("aria-valuenow", "256")
+        left.press("Home")
+        expect(left).to_have_attribute("aria-valuenow", "180")
+        left.press("End")
+        expect(left).to_have_attribute("aria-valuenow", "360")
+        bounds = right.bounding_box()
+        x, y = bounds["x"] + bounds["width"] / 2, bounds["y"] + 40
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.move(x - 40, y, steps=4)
+        page.mouse.up()
+        expect(right).to_have_attribute("aria-valuenow", "400")
+        page.get_by_role("button", name="收起值班面板").click()
+        page.reload()
+        expect(left).to_have_attribute("aria-valuenow", "360")
+        expect(page.locator(".monitoring")).to_have_css("width", "42px")
+        page.get_by_role("button", name="展开值班面板").click()
+        expect(right).to_have_attribute("aria-valuenow", "400")
+        page.get_by_role("button", name="恢复默认分栏").click()
+        expect(left).to_have_attribute("aria-valuenow", "240")
+        expect(right).to_have_attribute("aria-valuenow", "360")
+        page.set_viewport_size({"width": 1050, "height": 800})
+        expect(page.locator(".conversation")).to_have_css("width", "480px")
+        self.assert_no_overflow()
+        page.set_viewport_size({"width": 850, "height": 800})
+        expect(page.locator(".monitoring")).to_have_css("width", "42px")
+        page.get_by_role("button", name="展开值班面板").click()
+        expect(page.locator("#monitor-panel")).to_be_visible()
+        expect(page.locator("#monitoring-content")).to_be_visible()
+        page.keyboard.press("Escape")
+        expect(page.locator("#monitoring-content")).to_be_hidden()
+
+        page.set_viewport_size({"width": 390, "height": 800})
+        expect(page.get_by_role("separator")).to_have_count(0)
+        expect(page.locator("#sessions-panel")).to_be_hidden()
+        expect(page.locator("#monitor-panel")).to_be_hidden()
+        self.assert_no_overflow()
+        sessions = page.get_by_role("button", name="会话", exact=True)
+        sessions.click()
+        expect(page.get_by_role("button", name="关闭会话栏")).to_be_focused()
+        self.assert_no_overflow()
+        page.keyboard.press("Escape")
+        expect(sessions).to_be_focused()
+        monitor = page.get_by_role("button", name="值班面板", exact=True)
+        monitor.click()
+        expect(page.get_by_role("button", name="收起值班面板")).to_be_focused()
+        self.assert_no_overflow()
+        page.get_by_role("button", name="收起值班面板").click()
+        expect(monitor).to_be_focused()
+        self.assert_no_errors()
+
+    def test_rename_session_stays_after_reload(self):
+        self.open_card()
+        page = self.page
+        title = page.locator("h1#session-title").get_by_role("button", name="首页探测失败")
+        title.focus()
+        title.press("Enter")
+        name = page.get_by_role("textbox", name="会话名称")
+        expect(name).to_be_focused()
+        name.fill("临时草稿")
+        name.press("Escape")
+        expect(title).to_be_focused()
+        expect(page.locator("#session-title")).to_have_text("首页探测失败")
+
+        page.get_by_role("button", name="改名").click()
+        name.fill("字" * 121)
+        page.get_by_role("button", name="保存").click()
+        expect(page.locator(".title-form .notice")).to_have_text("请求字段或格式错误")
+        expect(name).to_have_value("字" * 121)
+        name.fill(" 值班   排查 ")
+        page.get_by_role("button", name="保存").click()
+        expect(page.locator("#session-title")).to_have_text("值班 排查")
+        expect(page.locator(".session-row.selected .session-name")).to_have_text("值班 排查")
+        page.reload()
+        expect(page.locator("#session-title")).to_have_text("值班 排查")
+        expect(self.card).to_be_visible()
         self.assert_no_errors()
 
 

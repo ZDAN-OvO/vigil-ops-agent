@@ -132,6 +132,20 @@ class MessageBody(BaseModel):
         return value
 
 
+class TitleBody(BaseModel):
+    title: str
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        if "\0" in value:
+            raise ValueError("标题含无效字符")
+        if not 1 <= len(" ".join(value.split())) <= 120:
+            raise ValueError("标题需要 1 至 120 个字符")
+        title = " ".join(project_text(value).split())
+        return title if len(title) <= 120 else title[:119] + "…"
+
+
 class DecisionBody(BaseModel):
     decision: ApprovalDecision
     fingerprint: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -168,6 +182,7 @@ def _summary(session: Session, pending: set[str]) -> dict[str, Any]:
         "id": session.id,
         "source": session.source,
         "title": project_text(session.title),
+        "title_origin": session.title_origin,
         "state": session.state,
         "last_seq": session.last_seq,
         "created_at": session.created_at.isoformat(),
@@ -280,7 +295,7 @@ if (token) {{
 
     async def create_session(request: Request) -> JSONResponse:
         require_write(request)
-        session = await sessions.create_session(title="新会话")
+        session = await sessions.create_session(title="新会话", title_origin="pending")
         return JSONResponse({"session": _summary(session, set())}, status_code=201)
 
     async def session_snapshot(request: Request) -> JSONResponse:
@@ -324,6 +339,17 @@ if (token) {{
         return JSONResponse(
             {"input_id": incoming.id, "queued_seq": incoming.queued_seq}, status_code=202
         )
+
+    async def rename_session(request: Request) -> JSONResponse:
+        require_write(request)
+        session_id = _id(request, "session_id")
+        body = await read_json(request, TitleBody, limit=_API_LIMIT)
+        try:
+            session = await sessions.rename_session(session_id, body.title)
+        except LookupError:
+            raise APIError(404, "not_found", "会话不存在") from None
+        pending = await safety.pending_card_sessions([session.id])
+        return JSONResponse({"session": _summary(session, pending)})
 
     async def resume(request: Request) -> JSONResponse:
         require_write(request)
@@ -406,6 +432,7 @@ if (token) {{
             Route("/api/sessions/{session_id}", session_snapshot),
             Route("/api/sessions/{session_id}/events", list_events),
             Route("/api/sessions/{session_id}/messages", send_message, methods=["POST"]),
+            Route("/api/sessions/{session_id}/title", rename_session, methods=["POST"]),
             Route("/api/sessions/{session_id}/resume", resume, methods=["POST"]),
             Route("/api/sessions/{session_id}/close", close, methods=["POST"]),
             Route("/api/sessions/{session_id}/cards/{card_id}/decision", decide, methods=["POST"]),

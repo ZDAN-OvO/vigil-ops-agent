@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Access, CardEvent, CardUpdate, Decision, Verification } from "./api";
 import { errorMessage } from "./api";
+import type { ObservationJump } from "./investigation-details";
 import { display, duration, Spinner, Stamp, time } from "./ui";
 
 const states: Record<string, [label: string, color: string, note?: string]> = {
@@ -102,8 +103,8 @@ interface CardProps {
   access: Access;
   anchored: boolean;
   decide: (card: CardEvent, decision: Decision) => Promise<void>;
-  observationFor: (id: string) => number | undefined;
-  reveal: (seq: number) => void;
+  observationFor: (id: string) => string | undefined;
+  reveal: (jump: ObservationJump) => void;
 }
 
 const titles: Record<string, string> = { rollout_undo: "回滚 ", restart_pod: "重建 Pod ", scale_replicas: "调整副本数 " };
@@ -194,7 +195,9 @@ export function Card({ card, update, expiresAt, access, anchored, decide, observ
           const observation = observationFor(id);
           return <div className="evidence-ref" key={id}>
             <button type="button" className="mono" title={id} disabled={observation === undefined}
-              onClick={() => { if (observation !== undefined) reveal(observation); }}>E{index + 1}</button>
+              onClick={(event) => {
+                if (observation !== undefined) reveal({ key: observation, origin: event.currentTarget });
+              }}>E{index + 1}</button>
             {observation === undefined && <Stamp>观测不可回查</Stamp>}
           </div>;
         })}

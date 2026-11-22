@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgentMiddleware
@@ -67,7 +66,7 @@ from aiops.agent.session_runtime import (
     RunScope,
     resume_token,
 )
-from aiops.agent.skill_reader import SkillReadMiddleware
+from aiops.agent.skill_reader import SkillFilesystemBackend, SkillReadMiddleware
 from aiops.config import Settings
 from aiops.contracts import (
     AGENT_RUNTIME_VERSION,
@@ -243,8 +242,8 @@ class LangChainInvestigation:
         )
         return task, context
 
-    def _skill_backend(self) -> FilesystemBackend:
-        return FilesystemBackend(root_dir=str(self._settings.skills_path), virtual_mode=True)
+    def _skill_backend(self) -> SkillFilesystemBackend:
+        return SkillFilesystemBackend(root_dir=str(self._settings.skills_path), virtual_mode=True)
 
     def _saver(self):
         """显式允许结构化报告类型；严格 msgpack 模式下也能恢复 checkpoint。"""
