@@ -191,6 +191,7 @@ class ActionExecutor:
         session_lease: Lease | None = None,
         session_turn_id: str | None = None,
         web_url: str | None = None,
+        remediation=None,
     ) -> None:
         self._store = store
         self._adapter = adapter
@@ -216,6 +217,18 @@ class ActionExecutor:
         self._probe_expression = probe_expression
         self._io_timeout = io_timeout_seconds
         self._min_samples = _min_samples_for(verify_seconds, sample_seconds)
+        self._remediation = remediation
+
+    async def prepare_remediation(self, **kwargs):
+        if self._remediation is None:
+            raise ActionError("policy_denied", "受控处置策略或专用写入凭据不可用")
+        lease, turn_id = self._scope()
+        try:
+            return await self._remediation.prepare_manual(lease=lease, turn_id=turn_id, **kwargs)
+        except (ValueError, RuntimeError) as exc:
+            if isinstance(exc, ActionError):
+                raise
+            raise ActionError("policy_denied", "无法核实登记目标和受控字段") from None
 
     async def propose_rollback(
         self,
@@ -648,6 +661,23 @@ class ActionExecutor:
         self, proposal_id: str, *, actor: str = "operator"
     ) -> ActionAttempt:
         """通过主线轮次领取处置；接手时只读原尝试的回执。"""
+        proposal = await self._store.get_proposal(proposal_id)
+        if proposal is not None and proposal.kind.value in {
+            "adjust_resources",
+            "scale_replicas",
+            "update_config",
+        }:
+            from aiops.agent.session_runtime import AwaitingActionReceipt
+
+            if self._remediation is None:
+                raise ActionError("policy_denied", "受控处置服务不可用")
+            attempt = await self._store.get_attempt(proposal_id)
+            if attempt is not None and attempt.status not in {
+                AttemptStatus.INTENT,
+                AttemptStatus.EXECUTING,
+            }:
+                return attempt
+            raise AwaitingActionReceipt(proposal_id)
         lease, turn_id = self._scope()
         while True:
             reservation, receipt = await self._safety.reserve(

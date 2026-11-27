@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from aiops.actions.executor import ActionExecutor
+from aiops.actions.remediation_runtime import RemediationRuntime
 from aiops.actions.restart_pod import PodRestartAdapter
 from aiops.actions.rollout_undo import RolloutUndoAdapter
 from aiops.agent.conversation import ConversationDriver
@@ -27,15 +28,16 @@ def build_executor(
     *,
     session_lease: Lease | None = None,
     session_turn_id: str | None = None,
+    remediation: RemediationRuntime | None = None,
 ) -> ActionExecutor:
     web_url = getattr(settings, "web_url", None)
     return ActionExecutor(
         store=store,
         adapter=RolloutUndoAdapter(
-            kubeconfig=settings.kubeconfig, context_name=settings.kube_context
+            kubeconfig=settings.action_kubeconfig, context_name=settings.action_kube_context
         ),
         restart_adapter=PodRestartAdapter(
-            kubeconfig=settings.kubeconfig, context_name=settings.kube_context
+            kubeconfig=settings.action_kubeconfig, context_name=settings.action_kube_context
         ),
         prometheus=prometheus,
         runtime_path=settings.runtime_path,
@@ -49,6 +51,7 @@ def build_executor(
         session_lease=session_lease,
         session_turn_id=session_turn_id,
         web_url=str(web_url) if web_url is not None else None,
+        remediation=remediation,
     )
 
 
@@ -78,7 +81,10 @@ async def _open_io(
 
 @asynccontextmanager
 async def open_conversation(
-    *, settings: Settings, store: Store
+    *,
+    settings: Settings,
+    store: Store,
+    remediation: RemediationRuntime | None = None,
 ) -> AsyncIterator[ConversationDriver]:
     """使用已初始化的数据库装配 CLI 与本地服务共用的会话驱动。"""
     async with _open_io(settings, store=store) as (toolbox, prometheus):
@@ -86,7 +92,12 @@ async def open_conversation(
         @asynccontextmanager
         async def executor_factory(*, lease: Lease, turn_id: str) -> AsyncIterator[ActionExecutor]:
             yield build_executor(
-                settings, store, prometheus, session_lease=lease, session_turn_id=turn_id
+                settings,
+                store,
+                prometheus,
+                session_lease=lease,
+                session_turn_id=turn_id,
+                remediation=remediation,
             )
 
         yield ConversationDriver(

@@ -2,8 +2,11 @@
 
 import asyncio
 import json
+import os
 import shutil
 import socket
+import sys
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -50,7 +53,17 @@ ANSWER = "\n".join(
 )
 
 
-@pytest.mark.skipif(shutil.which("google-chrome") is None, reason="未安装 Google Chrome")
+def chrome_available():
+    if sys.platform != "win32":
+        return shutil.which("google-chrome") is not None
+    return any(
+        (Path(root) / "Google/Chrome/Application/chrome.exe").is_file()
+        for name in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)")
+        if (root := os.environ.get(name))
+    )
+
+
+@pytest.mark.skipif(not chrome_available(), reason="未安装 Google Chrome")
 def test_live_conversation_updates_tool_card_renders_markdown_and_projects_csp(
     isolated_serve_dsn, tmp_path
 ):
@@ -132,7 +145,28 @@ def test_live_conversation_updates_tool_card_renders_markdown_and_projects_csp(
                                 await server_task
                                 raise RuntimeError("生产 Web 测试服务提前退出")
                             await asyncio.sleep(0.01)
-                    await verify_browser(config.web_origin, auth, tool)
+                    loop = asyncio.get_running_loop()
+                    query_started = asyncio.run_coroutine_threadsafe(tool.called.wait(), loop)
+
+                    def release_query():
+                        loop.call_soon_threadsafe(tool.reply.set)
+
+                    def run_browser():
+                        # Windows 的 psycopg 需要 Selector，Playwright 子进程需要 Proactor。
+                        loop_factory = (
+                            asyncio.ProactorEventLoop if sys.platform == "win32" else None
+                        )
+                        with asyncio.Runner(loop_factory=loop_factory) as runner:
+                            runner.run(
+                                verify_browser(
+                                    config.web_origin, auth, query_started, release_query
+                                )
+                            )
+
+                    try:
+                        await asyncio.to_thread(run_browser)
+                    finally:
+                        query_started.cancel()
                 finally:
                     tool.reply.set()
                     stop.set()
@@ -142,7 +176,7 @@ def test_live_conversation_updates_tool_card_renders_markdown_and_projects_csp(
     asyncio.run(run())
 
 
-async def verify_browser(origin, auth, tool):
+async def verify_browser(origin, auth, query_started, release_query):
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(channel="chrome")
         context = await browser.new_context(viewport={"width": 1280, "height": 800})
@@ -175,7 +209,7 @@ async def verify_browser(origin, auth, tool):
         await expect(page.locator("#session-meta")).to_have_attribute("data-state", "idle")
         await page.get_by_role("textbox", name="输入调查问题").fill("核对 checkout 副本")
         await page.get_by_role("button", name="发送").click()
-        await asyncio.wait_for(tool.called.wait(), 12)
+        await asyncio.wait_for(asyncio.wrap_future(query_started), 12)
         await expect(page.locator(".assistant-markdown strong")).to_have_text("排查方法")
         skill = page.locator(".skill-details").filter(
             has=page.locator("summary").filter(has_text="pod-rebuild")
@@ -195,7 +229,7 @@ async def verify_browser(origin, auth, tool):
         await query_process.locator(":scope > summary").click()
         disclosure = card.get_by_role("button", name="展开或收起观测")
         await disclosure.click()
-        tool.reply.set()
+        release_query()
         await expect(card).to_have_attribute("data-status", "ok")
         await expect(card).to_have_count(1)
         assert await node.evaluate("(node) => node === document.querySelector('.observation')")

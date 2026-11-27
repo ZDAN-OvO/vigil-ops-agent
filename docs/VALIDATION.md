@@ -1,5 +1,51 @@
 # Vigil 安装与切换验收
 
+## 受控自动修复验收
+
+在隔离 Kubernetes `v1.35.5+k3s1` 上运行 Vigil、Alertmanager、Prometheus 和真实业务探针。
+API Server 启用 Metadata 级别审计。注入与复位由实验操作者执行。Vigil 的写入使用
+`system:serviceaccount:vigil-monitoring:vigil-remediation`。
+
+Docker 宿主使用 cgroup v1，实验节点以 `native` snapshotter 运行。部分固定镜像由已核对摘要
+的本地副本导入，Prometheus 与 Alertmanager 分别使用 Debian 打包的 2.42.0 和 0.25.0。
+以下证据保留各次运行的动作、会话、目标 UID、样本及对应审计 ID。
+审计包含服务端预检，写入次数只计实际 PATCH。
+准入正反例、专用身份核验和 Prometheus 规则校验输出单独归档。
+[准入和监控证据](validation/controlled-remediation/admission-and-monitoring.txt)
+
+| 场景 | 实际结果 | 证据 |
+| --- | --- | --- |
+| OOM 自动修复 | 现行容器内存限额 `16Mi`、三次 OOM 重启，首页 HTTP 500。将采集的 Alertmanager 通知重放至真实 Webhook 后，Vigil 只写一次内存限额到 `128Mi`。工作负载就绪约 61 秒后首页恢复，随后十个时段全通过，独立 OOM 信号为 `clear`，会话关闭。 | [网页](validation/controlled-remediation/oom.png) · [账本与审计](validation/controlled-remediation/01-oom-window.json) |
+| CPU 限流自动修复 | 固定每秒一个真实首页请求。低限额 `5m` 下首页失败，限流周期占比超过 0.5。Vigil 只写一次 CPU limit 到 `200m`。首页恢复后十个时段全通过，窗内限流周期占比最高约 0.446，独立信号为 `clear`，会话关闭。将采集的 firing 和确认告警消失后的同身份恢复通知重放至真实 Webhook。 | [网页](validation/controlled-remediation/cpu.png) · [负载、账本与审计](validation/controlled-remediation/01-cpu-fixed.json) |
+| 缺少 OOM 证据 | 首页 HTTP 500，当前容器运行在 `16Mi`、零重启。真实 Webhook 收到新告警身份后，Vigil 指出缺少 OOM 和重启证据，转人工审批。账本未授权发送，审计无目标写入。同时间段的扩容请求也保留在审计中。 | [现场、账本与审计](validation/controlled-remediation/02-insufficient.json) |
+| 容量不足自动扩容 | 副本数从 1 增至 2，业务恢复，10 个时段全通过。会话关闭。一次写入。 | [网页](validation/controlled-remediation/scale.png) · [账本与审计](validation/controlled-remediation/04-scale-replay.json) |
+| 普通 ConfigMap 修复 | `degraded → healthy`，应用加载新值，10 个时段全通过。会话关闭。一次写入。 | [网页](validation/controlled-remediation/configmap.png) · [账本与审计](validation/controlled-remediation/05-config.json) |
+| 普通环境变量修复 | `VIGIL_MODE: degraded → healthy`，应用加载新值，10 个时段全通过。会话关闭。一次写入。 | [账本与审计](validation/controlled-remediation/05-env.json) |
+| 恶化后补偿 | 失败率从 1/5 升至 5/5。第一次写成 `worsen`，第二次恢复 `degraded`。补偿卡和人工待办均落库。此场景将已采集的告警通过真实 Webhook 重放。 | [网页](validation/controlled-remediation/compensation.png) · [账本与审计](validation/controlled-remediation/03-compensation-fixed.json) |
+| 网页批准普通配置 | AUTO 开启，`limited` 超出自动白名单，卡片显示“参数需人工审查”。Chrome 登录后批准 `VIGIL_MODE: healthy → limited`，后台返回 HTTP 200。API Server 记录一次写入，10 个时段全通过，独立加载信号为 `clear`。通过实验脚本调用实际提案入口创建卡片。 | [批准前](validation/controlled-remediation/manual-approval.png) · [批准后](validation/controlled-remediation/manual-applying.png) · [已验证](validation/controlled-remediation/manual-verified.png) · [账本与审计](validation/controlled-remediation/05-manual-policy.json) |
+| 观察期间复发 | 首个恢复通知到达后会话继续观察。收窄 Service 的后端选择范围后，真实业务探针再次失败，Alertmanager 投递了第二次发作。两个发作最终均恢复，账本仍以无改善结算，十个时段中三个失败。仅初始扩容写入。 | [网页](validation/controlled-remediation/recurrence.png) · [告警、账本与审计](validation/controlled-remediation/06-recurrence-final.json) |
+
+- **内存修复首轮。** 真实首页返回 HTTP 500，现行容器内存限额为 `16Mi`，三次重启，
+  最后一次终止原因为 `OOMKilled`。Vigil 写入 `128Mi`，新 Pod 拉取镜像超时。
+  账本记录变更生效超时。 [账本与审计](validation/controlled-remediation/01-oom.json)
+- **内存修复第二轮。** Vigil 写入 `128Mi`，新 Pod 就绪后首页又过约 90 秒才恢复。
+  这段时间造成前两个时段失败，原逻辑结算为无改善。实际首页恢复后持续返回 HTTP 200。
+  [账本、探针与审计](validation/controlled-remediation/01-oom-final.json)
+- **CPU 修复首轮。** Prometheus 返回 HTTP 400。Pod 名中的连字符被写成 PromQL 字符串不接受的转义，
+  告警未获得发送权，API Server 审计只有身份自查。修复后使用运行中容器的 ID 取证，排除同一 Pod
+  中已终止实例残留的指标。 [失败回包和审计](validation/controlled-remediation/01-cpu-fixed.json)
+- **观察期间复发首轮。** 容量告警恢复后会话继续观察。实验操作者暂时收窄 Service 的
+  后端选择范围，Alertmanager 投递了第二次发作，观察记录中出现两个失败时段。
+  Prometheus 连接中断后动作以未知结果结束，只有初始扩容写入。 [账本与审计](validation/controlled-remediation/06-recurrence.json)
+
+真实补偿首轮发现授权序列化加入了可选字段的 `null`，补偿在数据库读取后校验失败。
+修复后增加持久化授权的回归用例，并在独立数据库复跑完整正向变更与补偿。
+集群启动、注入和采集命令见[受控自动修复验收步骤](../env/README.md#11-受控自动修复验收)。
+
+在独立 PostgreSQL 上运行 `LANGGRAPH_STRICT_MSGPACK=true make check-all`，Python 505 项、
+Vitest 14 项和 Chrome 15 项全部通过，零跳过。门禁包括前端类型检查、样式检查和 Ruff。
+迟到跨组告警的时间重叠修复另经 43 项 PostgreSQL 和 HTTP 聚焦回归验证。
+
 ## FastAPI 网页宿主验收
 
 | 产物 | 构建提交 | wheel SHA-256 | 证据来源 |

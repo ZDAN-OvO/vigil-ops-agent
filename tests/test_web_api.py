@@ -5,18 +5,19 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
-from actions_support import FakeAdapter, FakePrometheus, build_executor, rollout_plan
-from conftest import ActionCleanup
+from controlled_action_support import expire_job, finish_observation, replica_runtime
 from fastapi import FastAPI
+from replica_card_support import replica_card
 
 from aiops import web_api
-from aiops.actions.rollout_undo import ActionError
+from aiops.actions.remediation_store import RemediationStore
 from aiops.actions.safety import ActionSafety
 from aiops.agent.conversation import ConversationDriver, ConversationResult, ConversationRun
 from aiops.config import Settings
 from aiops.contracts import AttemptStatus, ProposalStatus
 from aiops.db import Store
 from aiops.serve import drive_queue
+from aiops.sessions.models import LeaseLost
 from aiops.sessions.store import SessionStore
 from aiops.web_api import BrowserAuth, build_web_app
 
@@ -57,22 +58,14 @@ async def _login(client, auth, origin):
     return client.cookies["vigil_browser"]
 
 
-async def _card(store, tmp_path, settings):
-    adapter = FakeAdapter(rollout_plan())
-    executor = await build_executor(
-        store,
-        adapter,
-        FakePrometheus([200.0, 200.0]),
-        tmp_path,
-        cleanup=ActionCleanup(),
+async def _card(store, settings):
+    runtime = replica_runtime(store)
+    lease, proposal, card = await replica_card(
+        runtime,
         group_key="experiment-group",
         web_url=settings.web_url,
     )
-    proposal, _, _ = await executor.prepare_rollback(
-        deployment="productcatalogservice", reason="验证回滚", actor="tester"
-    )
-    card = await executor.publish_test_card(proposal.id)
-    return executor, proposal, card, adapter
+    return runtime, lease, proposal, card
 
 
 def test_web_host_preserves_explicit_routes_methods_and_headers(monkeypatch, tmp_path):
@@ -232,7 +225,7 @@ def test_rename_session_is_authenticated_and_preserves_manual_titles(isolated_se
 
 
 def test_card_decision_requires_exact_host_origin_cookie_and_bound_fingerprint(
-    isolated_serve_dsn, tmp_path
+    isolated_serve_dsn,
 ):
     async def run():
         settings = Settings(_env_file=None, web_url="http://127.0.0.1:8090")
@@ -256,7 +249,7 @@ def test_card_decision_requires_exact_host_origin_cookie_and_bound_fingerprint(
 
         async with Store.open(isolated_serve_dsn) as store:
             await store.migrate()
-            executor, proposal, card, adapter = await _card(store, tmp_path, settings)
+            runtime, _, proposal, card = await _card(store, settings)
             session_path = f"/api/sessions/{proposal.session_id}"
             card_path = f"{session_path}/cards/{proposal.id}/decision"
             decision = {"decision": "rejected", "fingerprint": card.payload["fingerprint"]}
@@ -287,6 +280,9 @@ def test_card_decision_requires_exact_host_origin_cookie_and_bound_fingerprint(
                     published["url"]
                     == f"{origin}/sessions/{proposal.session_id}#card-{proposal.id}"
                 )
+                assert published["action"] == "scale_replicas"
+                assert published["before"] == {"replicas": 1}
+                assert published["parameters"] == {"replicas": 2}
                 assert cookie not in events.text
 
                 panel = await client.get("/api/monitoring")
@@ -341,7 +337,9 @@ def test_card_decision_requires_exact_host_origin_cookie_and_bound_fingerprint(
                     "error"
                 ] == "not_pending"
                 assert not (await client.get(session_path)).json()["session"]["pending_approval"]
-                assert adapter.calls == []
+                await runtime.drive(proposal.id)
+                assert runtime.kube.dry_runs == runtime.kube.writes == []
+                assert await store.get_attempt(proposal.id) is None
 
                 message = {"text": "请继续查，token=synthetic-secret", "input_id": "web-input-1"}
                 queued = await client.post(
@@ -378,33 +376,34 @@ class _SenderStopped(BaseException):
 
 
 @pytest.mark.parametrize("point", ["pending", "dry_run", "send_granted", "crash_after_grant"])
-def test_manual_alert_close_serializes_with_card_and_send(
-    isolated_serve_dsn, tmp_path, monkeypatch, point
-):
+def test_manual_alert_close_serializes_with_card_and_send(isolated_serve_dsn, monkeypatch, point):
     async def run():
         settings = Settings(_env_file=None)
         ready, proceed = asyncio.Event(), asyncio.Event()
-        original = ActionSafety.grant_send
+        original = RemediationStore.grant_send
 
-        async def hold_send(self, reservation, attempt, approval):
+        async def hold_send(self, claim, attempt, *, authorize):
             if point == "crash_after_grant":
-                await original(self, reservation, attempt, approval)
+                await original(self, claim, attempt, authorize=authorize)
                 ready.set()
                 raise _SenderStopped
             if point == "send_granted":
-                granted = await original(self, reservation, attempt, approval)
+                granted = await original(self, claim, attempt, authorize=authorize)
                 ready.set()
                 await proceed.wait()
                 return granted
             ready.set()
             await proceed.wait()
-            return await original(self, reservation, attempt, approval)
+            with pytest.raises(LeaseLost, match=claim.proposal.id) as lost:
+                await original(self, claim, attempt, authorize=authorize)
+            raise lost.value
 
         if point != "pending":
-            monkeypatch.setattr(ActionSafety, "grant_send", hold_send)
+            monkeypatch.setattr(RemediationStore, "grant_send", hold_send)
         async with Store.open(isolated_serve_dsn) as store:
             await store.migrate()
-            executor, proposal, card, adapter = await _card(store, tmp_path, settings)
+            runtime, _, proposal, card = await _card(store, settings)
+            adapter = runtime.kube
             path = f"/api/sessions/{proposal.session_id}"
             auth = BrowserAuth(interactive=True)
             async with _client(settings, store, auth) as client:
@@ -417,10 +416,18 @@ def test_manual_alert_close_serializes_with_card_and_send(
                         f"{path}/cards/{proposal.id}/decision", headers=origin, json=decision
                     )
                     assert approved.status_code == 200
-                    running = asyncio.create_task(executor.execute_authorized(proposal.id))
+                    running = asyncio.create_task(runtime.drive(proposal.id))
                 try:
                     if running:
                         await asyncio.wait_for(ready.wait(), 5)
+                        assert adapter.dry_runs == [{"replicas": 2}]
+                        assert adapter.writes == []
+                        attempt = await store.get_attempt(proposal.id)
+                        if point == "dry_run":
+                            assert attempt is None
+                        else:
+                            assert attempt.status is AttemptStatus.EXECUTING
+                            assert attempt.send_granted_at is not None
                     for _ in range(2):
                         closed = await client.post(f"{path}/close", headers=origin)
                         assert closed.status_code == 200
@@ -435,54 +442,52 @@ def test_manual_alert_close_serializes_with_card_and_send(
                         )
                 finally:
                     proceed.set()
-                    if point == "dry_run":
-                        with pytest.raises(ActionError):
-                            await running
-                    elif point == "crash_after_grant":
+                    if point == "crash_after_grant":
                         with pytest.raises(_SenderStopped):
                             await running
                     elif running:
-                        assert (await running).status == AttemptStatus.VERIFIED
+                        await running
+                if point == "send_granted":
+                    await runtime.drive(proposal.id)
+                    await finish_observation(runtime, proposal.id)
+                    assert (await store.get_attempt(proposal.id)).status is AttemptStatus.VERIFIED
                 if point == "crash_after_grant":
                     async with Store.open(isolated_serve_dsn) as new_process:
-                        async with new_process.transaction() as conn:
-                            await conn.execute(
-                                "UPDATE action_locks SET expires_at = clock_timestamp() "
-                                "WHERE proposal_id = %s",
-                                (proposal.id,),
-                            )
-                        restarted_safety = ActionSafety(new_process)
-                        await restarted_safety.recover_expired_targets()
-                        await restarted_safety.recover_expired_targets()
+                        await expire_job(new_process, proposal.id)
+                        restarted = replica_runtime(new_process, kube=adapter)
+                        await restarted.drive(proposal.id)
+                        await restarted.drive(proposal.id)
                 events = (await client.get(f"{path}/events")).json()["events"]
                 [closed_event] = [event for event in events if event["type"] == "session_closed"]
                 assert closed_event["reason"] == "manual"
                 final = await store.get_proposal(proposal.id)
                 if point == "send_granted":
-                    assert final.status == ProposalStatus.SUCCEEDED and adapter.calls == [
-                        True,
-                        False,
-                    ]
+                    assert final.status == ProposalStatus.SUCCEEDED
+                    assert adapter.dry_runs == adapter.writes == [{"replicas": 2}]
                     assert events[-1]["type"] == "action_result" and events[-1]["written"] is True
                     assert events[-1]["seq"] > closed_event["seq"]
                 elif point == "crash_after_grant":
-                    assert final.status == ProposalStatus.UNKNOWN and adapter.calls == [True]
+                    assert final.status == ProposalStatus.UNKNOWN
+                    assert adapter.dry_runs == [{"replicas": 2}] and adapter.writes == []
                     assert (await store.get_attempt(proposal.id)).status == AttemptStatus.UNKNOWN
                     assert events[-1]["type"] == "action_result" and events[-1]["written"] is None
                     assert events[-1]["seq"] > closed_event["seq"]
                     assert [event.get("status") for event in events].count("unknown") == 1
                 else:
                     assert final.status == ProposalStatus.VOIDED
-                    assert adapter.calls == ([True] if point == "dry_run" else [])
+                    assert adapter.dry_runs == ([{"replicas": 2}] if point == "dry_run" else [])
+                    assert adapter.writes == []
+                    assert await store.get_attempt(proposal.id) is None
+                    assert not await runtime.ledger.due()
+                    assert events[-1]["type"] == "action_result" and events[-1]["written"] is False
                     if point == "dry_run":
                         assert (await store.get_approval(proposal.id)).revoked_at is not None
-                        assert (await store.get_attempt(proposal.id)).status == AttemptStatus.VOIDED
 
     asyncio.run(run())
 
 
 def test_decided_card_waits_for_terminal_lease_and_is_scanned_after_restart(
-    isolated_serve_dsn, tmp_path, monkeypatch
+    isolated_serve_dsn, monkeypatch
 ):
     async def run():
         from investigation_support import FakeToolbox
@@ -507,7 +512,7 @@ def test_decided_card_waits_for_terminal_lease_and_is_scanned_after_restart(
         monkeypatch.setattr(ConversationRun, "drive", finish)
         async with Store.open(isolated_serve_dsn) as terminal:
             await terminal.migrate()
-            executor, proposal, card, _ = await _card(terminal, tmp_path, settings)
+            _, lease, proposal, card = await _card(terminal, settings)
             path = f"/api/sessions/{proposal.session_id}/cards/{proposal.id}/decision"
             async with Store.open(isolated_serve_dsn) as browser:
                 auth = BrowserAuth(interactive=True)
@@ -521,7 +526,7 @@ def test_decided_card_waits_for_terminal_lease_and_is_scanned_after_restart(
                     assert decision.status_code == 200
                 assert await ActionSafety(browser).list_runnable_card_sessions() == []
             sessions = SessionStore(terminal)
-            assert await sessions.release_lease(executor._session_lease)
+            assert await sessions.release_lease(lease)
             async with Store.open(isolated_serve_dsn) as restarted:
                 safety = ActionSafety(restarted)
                 assert await safety.list_runnable_card_sessions() == [proposal.session_id]

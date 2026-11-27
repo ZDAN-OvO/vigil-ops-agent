@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vigil-config-second-consumer
+  namespace: vigil-experiment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vigil-config-second-consumer
+  template:
+    metadata:
+      labels:
+        app: vigil-config-second-consumer
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command:
+            - python
+            - -c
+            - |
+              import time
+              from pathlib import Path
+              while True:
+                  print(Path("/service-config/mode").read_text().strip(), flush=True)
+                  time.sleep(10)
+          volumeMounts:
+            - name: service-config
+              mountPath: /service-config
+              readOnly: true
+      volumes:
+        - name: service-config
+          configMap:
+            name: vigil-config-fixture

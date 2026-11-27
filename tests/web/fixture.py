@@ -4,15 +4,15 @@ import json
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from mimetypes import guess_type
-from pathlib import Path
 from threading import Thread
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from aiops.config import PROJECT_ROOT
 from aiops.sessions.models import SessionEvent
 from aiops.sessions.projection import project_payload, project_template_diff
 from aiops.web_api import PAGE_CSP
 
-STATIC = Path(__file__).resolve().parents[2] / "web" / "dist"
+STATIC = PROJECT_ROOT / "web" / "dist"
 WHEN = datetime(2026, 11, 20, 2, 14, tzinfo=UTC)
 SECRET = "fictional-fixture-secret-value"
 LOCAL_PATH = "/home/fixture/private-run/raw.json"
@@ -239,7 +239,7 @@ class Fixture:
             "approval_required",
             card_id=CARD,
             fingerprint="fixture-fingerprint",
-            action="rollout_undo",
+            action="scale_replicas",
             status="pending_approval",
             target={
                 "cluster": "demo",
@@ -248,10 +248,18 @@ class Fixture:
                 "name": "frontend",
             },
             parameters={"replicas": 2},
-            risk={"disposition": "approval", "reasons": ["需要核对版本"]},
+            before={"replicas": 1},
+            risk={"disposition": "approval", "reasons": ["需要增加容量"]},
             reason="上一次发布后探测失败",
             verification={"verification_plan": "检查首页探针与 Deployment 就绪副本"},
             evidence_ids=["e-1", "e-unavailable"],
+        )
+
+    def legacy_rollback_card(self):
+        card = self.events["alert-demo"][-1]
+        card.pop("before")
+        card.update(
+            action="rollout_undo",
             template_diff=[
                 {
                     "op": "replace",
@@ -265,6 +273,7 @@ class Fixture:
                 ),
             ],
         )
+        return card
 
     def push(self, kind, sid=None, *, turn_id="turn-demo", **payload):
         sid = sid or self.session_id

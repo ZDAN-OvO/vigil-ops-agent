@@ -32,6 +32,14 @@ NODE_QUERY = (
 )
 NODE_CONDITIONS = ("Ready", "MemoryPressure", "DiskPressure", "PIDPressure")
 ALERT_NAME = re.compile(r"[a-zA-Z_:][a-zA-Z0-9_:]*")
+WEBHOOK_ALERTS = frozenset(
+    {
+        "FrontendProbeFailed",
+        "VigilCpuLimitDegraded",
+        "VigilReplicaCapacityDegraded",
+        "VigilServiceConfigDegraded",
+    }
+)
 
 
 def number(value: object) -> float | None:
@@ -99,15 +107,26 @@ async def prometheus_series(
     return series
 
 
-def alert_group_key(receiver: str, name: str) -> str | None:
-    """对应实验清单按 alertname 分组的根路由与首页告警子路由。"""
+def alert_group_key(receiver: str, name: str, labels: dict[str, str] | None = None) -> str | None:
+    """对应实验清单的分组标签，兼容历史仅按告警名分组的会话。"""
     if not ALERT_NAME.fullmatch(name):
         return None
     group_labels = "{alertname=" + json.dumps(name) + "}"
-    if receiver == "default" and name != "FrontendProbeFailed":
-        return "{}:" + group_labels
-    if receiver == "vigil-webhook" and name == "FrontendProbeFailed":
-        return "{}/" + group_labels + ":" + group_labels
+    labels = labels or {"alertname": name}
+    if set(labels) - {"alertname", "namespace", "source", "target"}:
+        return None
+    encoded = (
+        "{"
+        + ", ".join(
+            key + "=" + json.dumps(value, ensure_ascii=False)
+            for key, value in sorted(labels.items())
+        )
+        + "}"
+    )
+    if receiver == "default" and name not in WEBHOOK_ALERTS:
+        return "{}:" + encoded
+    if receiver == "vigil-webhook" and name in WEBHOOK_ALERTS:
+        return "{}/" + group_labels + ":" + encoded
     return None
 
 
@@ -123,7 +142,7 @@ async def alert_groups(client: httpx.AsyncClient, now: datetime) -> dict:
         labels = row["labels"]
         name = labels.get("alertname")
         receiver = row["receiver"]["name"]
-        key = alert_group_key(receiver, name) if name and set(labels) == {"alertname"} else None
+        key = alert_group_key(receiver, name, labels) if name else None
         alerts = []
         for alert in row["alerts"]:
             started = as_time(alert["startsAt"])

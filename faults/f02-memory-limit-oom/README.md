@@ -1,68 +1,37 @@
-# 持续内存限额不足导致 OOM
+# Online Boutique 首页依赖的资源故障
 
-降低 Deployment 模板的内存限额，造成持续 OOM。Agent 需要识别规格不足，判断重建 Pod 不适用，在条件满足时回退到健康模板。
+目标为 `vigil-shop/currencyservice` Deployment 中的 `server`。首页请求需要完成价格换算。 `probe_success{job="frontend-probe"}` 与 `probe_http_status_code{job="frontend-probe"}` 记录真实请求结果。
 
-## 判定标准
+## 内存限额
 
-- **两类信号**：容器终止原因、restartCount、限额等平台观测；独立的真实业务请求受损记录。不要求一定有同名 Kubernetes Event。
-- **可接受结论**：识别 OOM 与内存规格不足，说明为什么重建 Pod 仍保留故障规格。Kubernetes 自动重启不能算 Agent 的恢复。
-- **允许动作**：有已验证的历史模板且规则允许时执行 `rollout_undo`，否则停止并升级。`restart_pod` 不适用；Agent 不能任意修改内存配置。
-- **恢复或停止**：回退后限额恢复、观察窗内不再 OOM 且业务恢复；不能处置时给出依据和人工待办，记为正确的不适用判断，不记为业务恢复。
-- **复位**：判定后由注入器恢复规格并记录 actor，不算 Agent 成功。
+操作者写入 limit `16Mi` 和 request `8Mi`，再缩到 0 并恢复为 1 个副本，使故障模板成为唯一运行版本。核对现行 Deployment revision 的容器重启至少三次、最近一次终止原因为 `OOMKilled`、首页探针失败，以及 `FrontendProbeFailed` 已触发。
 
-## 1. 场景与真值
-
-- 载体：`currencyservice`，首页价格换算依赖它。
-- 注入：把 Deployment 模板的内存 limit 从 `128Mi` 降到 `16Mi`，request 从 `64Mi` 降到 `8Mi`；然后把副本缩到 0 再拉起，让新规格成为唯一运行的模板。
-- 预期：Pod 在启动阶段被 OOMKilled，restartCount 持续上升并进入 CrashLoopBackOff；首页返回 500，`probe_success=0`，`FrontendProbeFailed` 进入 firing。
-- 反向边界：旧规格 Pod 不能继续服务；Kubernetes 自动重启容器不算恢复；只有回退到历史模板并由真实请求确认后才算恢复。
-- 选择理由：`recommendationservice` 停掉时首页仍为 200（前端降级并记录 warning），不能作为业务受损证据；`currencyservice` 停掉时首页稳定 500，且 Deployment 只有一个容器、历史 revision 简单。
-
-真值只保存在本目录中，包括目标、限额和注入步骤。调查工具只能读取集群对象、Prometheus、runbook 和 `skills/` 目录，读不到本目录。
-
-已披露的前置异常：原规格 `128Mi` 的 `currencyservice` Pod 在实验前曾出现一次 `OOMKilled`（restartCount 1）。正式基线的 Pod 在注入前 9 分钟内为 0 重启，但“该服务在 128Mi 下完全没 OOM 过”不成立。第二轮期间 `paymentservice` 也出现一次 OOMKilled（limit 仍为 128Mi、无规格变化），属于与本次注入无关的次要异常。
-
-## 2. 注入机制
-
-改资源规格会触发滚动更新。单副本且新 Pod 未就绪时，滚动更新会保留旧规格 Pod，故障被掩盖。因此注入顺序固定为：
-
-1. 校验当前 limit 为健康值、探针为 1、无活动告警。
-2. patch 内存限制。
-3. `scale --replicas=0`，等待旧 Pod 删除。
-4. `scale --replicas=1`，新 Pod 只能使用低限额模板。
-
-缩到 0 的操作是注入器让故障规格生效的手段，不是 Agent 动作；它本身会造成短暂无副本，但持续故障来自新 Pod 的 OOM 循环。
-
-## 3. 冻结参数
-
-| 项目 | 取值 | 依据 |
-|---|---|---|
-| 目标 | `vigil-shop/currencyservice` | 首页强依赖，失败可见 |
-| 健康规格 | limit `128Mi`、request `64Mi` | 部署清单原值 |
-| 故障规格 | limit `16Mi`、request `8Mi` | 低于启动占用，稳定复现 OOMKilled |
-| 持续判定 | 至少 3 次重启且 `lastState.terminated.reason=OOMKilled` | 排除单次偶发 |
-| 业务受损 | 首页 500 且 `probe_success=0` | 与坏发布场景相同的黑盒探针 |
-| 告警 | `FrontendProbeFailed`，`for: 1m` | 现有规则，入口未改 |
-| 恢复判定 | limit 回到 `128Mi`、就绪 Pod 0 重启、探针 1、首页 200、活动告警 0 | 集群规格与真实请求同时满足 |
-| 观察窗 | 300 秒（`VIGIL_ACTION_VERIFY_SECONDS=300`） | 前端 gRPC 连接在长时间故障后按退避重连，默认 90 秒窗口不够 |
-
-`16Mi` 和 `8Mi` 只用于本实验，不是通用阈值。恢复窗口 300 秒是本次场景的操作设置，执行器默认值未改。
-
-## 4. 操作步骤
+自动动作把内存 limit 调到 `128Mi`。核对 Deployment 更新生效、首页恢复和新的 OOM 证据消失。保留完整的 10 分钟观察。操作者取证后用 `restore` 把内存 request 复位至 `64Mi`。
 
 ```bash
-bash faults/f02-memory-limit-oom/repeat.sh inject    # 注入并打印 revision
-bash faults/f02-memory-limit-oom/repeat.sh verify    # 最多 300 秒，核验 OOM、业务、告警
-bash faults/f02-memory-limit-oom/repeat.sh restore   # 注入器恢复规格并验证基线
+bash faults/f02-memory-limit-oom/repeat.sh inject
+bash faults/f02-memory-limit-oom/repeat.sh verify
+bash faults/f02-memory-limit-oom/repeat.sh status
+bash faults/f02-memory-limit-oom/repeat.sh restore
 ```
 
-脚本依赖宿主机 `kubectl`、`curl`、`python3`，默认端口 8080 用于前端 port-forward。`restore` 是注入器的复位动作，单独记录 actor；若 Agent 已回退，它只做 no-op 确认，不计 Agent 成功。
+`inject-insufficient` 同样施加低内存限额，同时用轻量 pause 容器保持进程存活，使服务缺少 gRPC 后端。 `verify-insufficient` 核对首页失败、现行 Pod 无 OOM。该变体通过带新标识的 Webhook 通知走真实入口，验证缺少 OOM 证据时进入人工处理。
 
-Agent 链路由告警或手工调查触发；命令行入口正在重做，见设计文档，本节不提供发起与审批命令。
+## CPU 限流
 
-## 5. 已知缺口
+`cpu-load` 创建独立负载 Deployment，默认每秒发送 1 个真实首页请求，最多 80 个在途请求。先确认 `200m` 下业务正常、限流周期占比稳定低于 0.5。宿主性能不同，可调整夹具的 `VIGIL_LOAD_RPS`，同一场景从基线到验证结束保持固定。 `cpu-inject` 将 limit 和 request 改成 `5m`，再缩为 0 并恢复为 1 个副本，使故障模板成为唯一运行版本。过去 1 分钟限流周期占比达到 0.5 且首页持续失败 1 分钟时触发 `VigilCpuLimitDegraded`。
 
-- 没有统一 `inject/verify/cleanup` 接口和场景参数文件；`repeat.sh` 中的目标、限额和窗口仍为固定值。
-- 告警规则仍带 `scenario: f01-bad-release` 标签。webhook 白名单会丢弃该标签，但它对本场景语义不正确，后续应移除场景标签。
-- Prometheus 未采集 cAdvisor 容器工作集；平台证据是 KSM 的限额、重启和终止原因，没有容器实际内存曲线。
-- 只在 1 个副本、1 个注入点验证；未覆盖多副本、HPA 或外部修改。
+注入时，操作者暂时提高存活检查的连续失败阈值，避免每次采集前都被平台重启容器。就绪检查继续按原规则执行。验收后 `restore` 复位存活检查。
+
+```bash
+bash faults/f02-memory-limit-oom/repeat.sh cpu-load
+bash faults/f02-memory-limit-oom/repeat.sh cpu-inject
+bash faults/f02-memory-limit-oom/repeat.sh cpu-verify
+kubectl -n vigil-experiment logs deployment/vigil-currency-load --since=2m
+bash faults/f02-memory-limit-oom/repeat.sh cpu-stop
+bash faults/f02-memory-limit-oom/repeat.sh restore
+```
+
+Vigil 将 limit 改回 `200m`。保持固定负载至观察和取证结束。用 [真实集群验收](../../env/README.md#11-受控自动修复验收) 中的 CPU 隔离步骤暂缓首页 OOM 告警，并核对限流计数与分母。若低限额未能同时复现实际首页失败和限流，保留此次试验记录。
+
+`relapse` 临时更改 currency Service 的 selector，使首页再次失败。完成取证后使用 `end-relapse` 恢复流量。

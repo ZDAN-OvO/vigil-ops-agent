@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vigil-currency-load
+  namespace: vigil-experiment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vigil-currency-load
+  template:
+    metadata:
+      labels:
+        app: vigil-currency-load
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: load
+          image: python:3.12-alpine
+          command: [python, -u, /load/cpu-load.py]
+          env:
+            - name: VIGIL_LOAD_RPS
+              value: "1"
+          volumeMounts:
+            - name: load
+              mountPath: /load
+              readOnly: true
+      volumes:
+        - name: load
+          configMap:
+            name: vigil-currency-load

@@ -39,6 +39,7 @@ from aiops.agent.schemas import (
 from aiops.agent.session_runtime import CardActions, resume_token
 from aiops.contracts import (
     ActionAttempt,
+    ActionKind,
     ActionOrigin,
     ActionProposal,
     ActionPurpose,
@@ -1122,6 +1123,13 @@ def _action_feedback(
     }
 
 
+def _action_reserve(executor, kind: ActionKind) -> float:
+    if kind.value in {"adjust_resources", "scale_replicas", "update_config"}:
+        # 受控动作的执行和观察已交给持久任务，调查只需读取回执。
+        return 10.0
+    return executor.adapter_upper_bound()
+
+
 async def _execute_and_feedback(
     ctx: AgentContext,
     proposal: ActionProposal,
@@ -1133,7 +1141,7 @@ async def _execute_and_feedback(
     executor = ctx.executor
     if executor is None:
         return _error("proposal_unavailable", "未配置动作执行器"), False
-    bound = executor.adapter_upper_bound()
+    bound = _action_reserve(executor, proposal.kind)
     try:
         ctx.budget.check_write_reserve(adapter_bound=bound, model_reserve=ctx.model_reserve_seconds)
     except WriteReserveUnavailable as exc:
@@ -1307,7 +1315,9 @@ async def _validate_action_references(ctx: AgentContext, args: RequestActionArgs
 @tool
 async def request_action(
     runtime: ToolRuntime[AgentContext],
-    action: Literal["restart_pod", "rollout_undo"],
+    action: Literal[
+        "restart_pod", "rollout_undo", "adjust_resources", "scale_replicas", "update_config"
+    ],
     reason: str,
     hypothesis_id: str,
     evidence_ids: list[str],
@@ -1320,6 +1330,9 @@ async def request_action(
     absence_meaning: str = "",
     business_target: str = "",
     observation_window_seconds: int = 0,
+    target_kind: Literal["Deployment", "StatefulSet"] = "Deployment",
+    target_namespace: str = "",
+    parameters: dict[str, str | int | None] | None = None,
 ) -> str:
     """提交一个动作请求：先落提案与风险判定，再按授权执行并返回结构化反馈。
 
@@ -1341,11 +1354,28 @@ async def request_action(
             absence_meaning=absence_meaning,
             business_target=business_target,
             observation_window_seconds=observation_window_seconds,
+            target_kind=target_kind,
+            target_namespace=target_namespace,
+            parameters=parameters or {},
         )
     except ValidationError as exc:
         return _error("invalid_argument", str(exc))
 
-    ctx, call_id, cached = await _prepare_request(runtime, "request_action", args.model_dump())
+    request_data = args.model_dump()
+    if args.action == "update_config" and args.parameters:
+        request_data["parameters"] = {
+            key: "[配置参数]"
+            for key in args.parameters
+            if key
+            in {
+                "source",
+                "key",
+                "value",
+                "container",
+                "config_map",
+            }
+        }
+    ctx, call_id, cached = await _prepare_request(runtime, "request_action", request_data)
     if cached is not None:
         return cached
     existing = await ctx.store.get_tool_request(ctx.investigation_id, call_id)
@@ -1421,12 +1451,27 @@ async def request_action(
                 path=args.path or "/",
                 **common,
             )
-        else:
+        elif args.action == "rollout_undo":
             if not args.target_deployment:
                 raise ActionError("invalid_argument", "rollout_undo 需要目标 Deployment")
             proposal, decision, approval = await executor.prepare_rollback(
                 deployment=args.target_deployment,
                 **common,
+            )
+        else:
+            if ctx.scope is None or not args.target_deployment:
+                raise ActionError("invalid_argument", "受控动作需要会话和登记工作负载")
+            proposal, decision, approval = await executor.prepare_remediation(
+                kind=ActionKind(args.action),
+                target_kind=args.target_kind,
+                namespace=args.target_namespace or ctx.namespace,
+                name=args.target_deployment,
+                parameters=args.parameters,
+                investigation_id=ctx.investigation_id,
+                evidence_ids=args.evidence_ids,
+                reason=ctx.scope.project_text(args.reason),
+                hypothesis_id=args.hypothesis_id,
+                purpose=purpose_enum,
             )
     except AutoExecutionError as exc:
         # 旧路径才会自动执行；新循环只准备，这里仅记录异常以便追踪。
@@ -1496,7 +1541,7 @@ async def request_action(
         return message
 
     # 审批动作也要在暂停前确认恢复后仍有反馈模型调用；否则不要制造无法执行的等待任务。
-    bound = executor.adapter_upper_bound()
+    bound = _action_reserve(executor, proposal.kind)
     try:
         ctx.budget.check_write_reserve(adapter_bound=bound, model_reserve=ctx.model_reserve_seconds)
     except WriteReserveUnavailable as exc:

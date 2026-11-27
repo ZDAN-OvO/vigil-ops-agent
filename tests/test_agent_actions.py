@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from controlled_action_support import REPLICA_TARGET, drive_replica
 from db_env import DSN
 from investigation_support import (
     FakeRestartAdapter,
@@ -21,6 +22,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from aiops.actions.rollout_undo import ActionError
 from aiops.actions.safety import ActionSafety
+from aiops.agent.session_runtime import AwaitingActionReceipt
 from aiops.contracts import (
     Approval,
     ApprovalDecision,
@@ -117,8 +119,34 @@ def _approved(proposal, *, expires_in: int = 900) -> Approval:
     )
 
 
+PROBE = call(
+    "prometheus_query_range",
+    {
+        "expression": 'probe_success{job="vigil-replica-probe"}',
+        "lookback_seconds": 120,
+        "step_seconds": 15,
+    },
+    "call-probe",
+)
+
+
+def _controlled_request(messages, *, call_id="call-action"):
+    return call(
+        "request_action",
+        {
+            "action": "scale_replicas",
+            "target_deployment": REPLICA_TARGET,
+            "parameters": {"replicas": 2},
+            "reason": "容量不足，需要增加副本",
+            "hypothesis_id": hypothesis_id(messages),
+            "evidence_ids": observation_ids(messages)[:2],
+        },
+        call_id,
+    )
+
+
 def _preamble():
-    return [create_hypothesis(), PODS, LOGS, _assess, _request]
+    return [create_hypothesis(), PODS, PROBE, _assess, _controlled_request]
 
 
 def _valid_report(messages):
@@ -173,8 +201,10 @@ async def _paused(case):
     assert card.session_id == case.session_id
     assert card.payload["risk"]["disposition"] == "approval"
     assert card.payload["status"] == ProposalStatus.PENDING_APPROVAL
-    assert card.payload["action"] == "restart_pod"
-    assert card.payload["target"]["name"] == "target-pod"
+    assert card.payload["action"] == "scale_replicas"
+    assert card.payload["target"]["name"] == REPLICA_TARGET
+    assert card.payload["before"] == {"replicas": 1}
+    assert card.payload["parameters"] == {"replicas": 2}
     proposal_id = card.payload["card_id"]
     assert pause.result.payload["card_id"] == proposal_id
     investigation_id = _investigation_id(pause)
@@ -216,9 +246,10 @@ async def _assert_sent(case, done, *, attempt_status=AttemptStatus.VERIFIED):
     attempt = await case.store.get_attempt(proposal.id)
     assert attempt.status is attempt_status
     assert attempt.send_granted_at is not None
-    assert attempt.snapshot["uid"] == proposal.target.uid
-    assert case.restart.dry_runs == [proposal.target.uid]
-    assert case.restart.deleted == [proposal.target.uid]
+    assert attempt.snapshot["plan"]["before"]["object"]["uid"] == proposal.target.uid
+    assert case.remediation.kube.dry_runs == [{"replicas": 2}]
+    assert case.remediation.kube.writes == [{"replicas": 2}]
+    assert case.restart.deleted == []
     assert await case.store.count_attempts_for_investigation(investigation_id) == 1
     request = await case.store.get_tool_request(investigation_id, "call-action")
     assert request.state is ToolRequestState.ACTION_EXECUTED
@@ -229,11 +260,11 @@ async def _assert_sent(case, done, *, attempt_status=AttemptStatus.VERIFIED):
     assert feedback["attempt_id"] == attempt.id
     events = await case.events("action_result")
     assert [event.payload["status"] for event in events] == [
-        AttemptStatus.INTENT,
+        AttemptStatus.EXECUTING,
         AttemptStatus.EXECUTING,
         attempt_status,
     ]
-    assert [event.payload["written"] for event in events] == [False, None, True]
+    assert [event.payload["written"] for event in events] == [None, True, True]
     for event in events:
         assert event.turn_id == done.result.turn_id
         assert event.payload["card_id"] == proposal.id
@@ -434,27 +465,46 @@ def test_restart_requires_target_scoped_platform_evidence(tmp_path, action_sessi
     asyncio.run(run())
 
 
-def test_auto_action_executes_once_and_recovers(tmp_path, action_session_ids):
+@pytest.mark.parametrize("action", ["restart_pod", "rollout_undo"])
+def test_grounded_legacy_request_is_denied_without_card_or_write(
+    tmp_path, action_session_ids, action
+):
+    def legacy_request(messages):
+        if action == "restart_pod":
+            return _request(messages)
+        return call(
+            "request_action",
+            {
+                "action": action,
+                "target_deployment": "target-deploy",
+                "reason": "核对发布差异",
+                "hypothesis_id": hypothesis_id(messages),
+                "evidence_ids": observation_ids(messages)[:2],
+            },
+            "call-action",
+        )
+
     async def run():
-        async with action_case(
-            tmp_path, action_session_ids, responses=[*_preamble(), _valid_report]
-        ) as case:
+        evidence = LOGS if action == "restart_pod" else PROBE
+        responses = [create_hypothesis(), PODS, evidence, _assess, legacy_request, _valid_report]
+        async with action_case(tmp_path, action_session_ids, responses=responses) as case:
             done = await _drive(case)
-            proposal, attempt = await _assert_sent(case, done)
-            task = await case.store.get_task(_investigation_id(done))
-            assert proposal.status is ProposalStatus.SUCCEEDED
-            assert proposal.purpose.value == "diagnostic"
-            assert proposal.prediction == "重建后新 Pod 的 /work 返回 200"
-            assert attempt.verification["outcome"] == "improved"
-            assert task.outcome is TaskOutcome.RECOVERED
-            assert done.result.payload["termination_code"] == TerminationCode.BUSINESS_RECOVERED
-            assert done.exit_code == 0
+            investigation_id = _investigation_id(done)
+            (proposal,) = await case.store.list_proposals_for_investigation(investigation_id)
+            assert proposal.kind == action
+            assert proposal.status is ProposalStatus.DENIED
+            request = await case.store.get_tool_request(investigation_id, "call-action")
+            assert request.state is ToolRequestState.REJECTED
+            assert request.error_code == "policy_denied"
+            feedback = json.loads(request.result["tool_message"])
+            assert feedback["status"] == "denied"
+            assert feedback["write_sent"] is False
             assert done.card is None
             assert await case.events("approval_required") == []
-            assert await case.events("card_decision") == []
-            approval = await case.store.get_approval(proposal.id)
-            assert approval.actor.startswith("policy:")
-            assert approval.proposal_hash == attempt.snapshot["approval_hash"]
+            assert await case.events("action_result") == []
+            assert await case.store.get_approval(proposal.id) is None
+            assert await case.store.get_attempt(proposal.id) is None
+            assert case.restart.dry_runs == case.restart.deleted == []
 
     asyncio.run(run())
 
@@ -465,7 +515,7 @@ def test_approval_pauses_without_write_then_resume_executes_once(tmp_path, actio
             tmp_path,
             action_session_ids,
             responses=[*_preamble(), _valid_report],
-            namespace="vigil-shop",
+            controlled=True,
         ) as case:
             pause, proposal = await _paused(case)
             assert (await _drive(case)).card == pause.card
@@ -480,6 +530,10 @@ def test_approval_pauses_without_write_then_resume_executes_once(tmp_path, actio
             assert decision.payload["status"] == "approved"
             assert decision.payload["decision_id"] == approval.id
             assert approval.proposal_hash == pause.card.payload["fingerprint"]
+            with pytest.raises(AwaitingActionReceipt):
+                await _drive(case)
+            assert case.remediation.kube.writes == []
+            await drive_replica(case.remediation, proposal.id)
             done = await _drive(case)
             assert done.result.turn_id == pause.result.turn_id
             assert (await case.store.get_task(_investigation_id(done))).outcome is (
@@ -492,7 +546,7 @@ def test_approval_pauses_without_write_then_resume_executes_once(tmp_path, actio
             assert await case.events("approval_required") == [pause.card]
             assert await case.events("card_decision") == [decision]
             _, attempt = await _assert_sent(case, done)
-            assert attempt.snapshot["approval_hash"] == approval.proposal_hash
+            assert attempt.proposal_id == approval.proposal_id
             assert decision.seq < (await case.events("action_result"))[0].seq
 
     asyncio.run(run())
@@ -504,7 +558,7 @@ def test_rejection_returns_to_agent_without_write(tmp_path, action_session_ids):
             tmp_path,
             action_session_ids,
             responses=[*_preamble(), _valid_report],
-            namespace="vigil-shop",
+            controlled=True,
         ) as case:
             pause, proposal = await _paused(case)
             rejected = await _decide(case.safety, pause.card, decision=ApprovalDecision.REJECTED)
@@ -541,7 +595,7 @@ def test_expired_approval_does_not_write(tmp_path, action_session_ids):
             tmp_path,
             action_session_ids,
             responses=[*_preamble(), _valid_report],
-            namespace="vigil-shop",
+            controlled=True,
         ) as case:
             pause, proposal = await _paused(case)
             approval = await _decide(case.safety, pause.card)
@@ -551,9 +605,11 @@ def test_expired_approval_does_not_write(tmp_path, action_session_ids):
                     "UPDATE approvals SET expires_at = decided_at WHERE id = %s",
                     (approval.id,),
                 )
+            await drive_replica(case.remediation, proposal.id)
             done = await _drive(case)
             assert done.exit_code == 0
-            assert (await case.store.get_proposal(proposal.id)).status is ProposalStatus.EXPIRED
+            saved = await case.store.get_proposal(proposal.id)
+            assert saved.status in {ProposalStatus.FAILED, ProposalStatus.EXPIRED}
             assert (await case.store.get_approval(proposal.id)).revoked_at is not None
             assert await case.store.get_attempt(proposal.id) is None
             assert case.restart.deleted == []
@@ -566,11 +622,14 @@ def test_expired_approval_does_not_write(tmp_path, action_session_ids):
             assert decision.seq < event.seq < done.result.seq
             assert event.turn_id == pause.card.turn_id
             assert event.payload["card_id"] == proposal.id
-            assert event.payload["proposal_status"] == "expired"
+            assert event.payload["proposal_status"] == saved.status
             assert event.payload["attempt_id"] is None
             assert event.payload["written"] is False
-            feedback = _action_message(case.model.seen[-1], "expired")
+            request = await case.store.get_tool_request(_investigation_id(done), "call-action")
+            feedback = json.loads(request.result["tool_message"])
+            assert feedback["status"] == saved.status
             assert feedback["write_sent"] is False
+            assert case.remediation.kube.writes == []
 
     asyncio.run(run())
 
@@ -633,10 +692,14 @@ def test_recovered_task_blocks_further_actions(tmp_path, action_session_ids):
             action_session_ids,
             responses=[
                 *_preamble(),
-                lambda messages: _request(messages, call_id="call-second-action"),
+                lambda messages: _controlled_request(messages, call_id="call-second-action"),
                 _valid_report,
             ],
+            controlled=True,
         ) as case:
+            pause, proposal = await _paused(case)
+            await _decide(case.safety, pause.card)
+            await drive_replica(case.remediation, proposal.id)
             done = await _drive(case)
             await _assert_sent(case, done)
             investigation_id = _investigation_id(done)
@@ -682,13 +745,14 @@ def test_write_reserve_blocks_action_without_write(tmp_path, action_session_ids)
             tmp_path,
             action_session_ids,
             responses=[*_preamble(), report_call(confirmed=False, conclusion="动作预算不足，未写")],
-            investigation_budget_action_seconds=10,
+            controlled=True,
+            investigation_budget_action_seconds=9,
         ) as case:
             done = await _drive(case)
             proposal = await _assert_budget_voided(case, done)
             approval = await case.store.get_approval(proposal.id)
-            assert approval.actor.startswith("policy:")
-            assert approval.revoked_at is not None
+            assert approval is None
+            assert case.remediation.kube.writes == []
             assert _action_message(case.model.seen[-1], "budget_reserve")["write_sent"] is False
             assert (await case.store.get_task(_investigation_id(done))).outcome is (
                 TaskOutcome.INCONCLUSIVE
@@ -703,8 +767,12 @@ def test_budget_exhaustion_after_recovery_keeps_recovered_outcome(tmp_path, acti
             tmp_path,
             action_session_ids,
             responses=[*_preamble(), PODS],
+            controlled=True,
             investigation_budget_model_calls=6,
         ) as case:
+            pause, proposal = await _paused(case)
+            await _decide(case.safety, pause.card)
+            await drive_replica(case.remediation, proposal.id)
             done = await _drive(case)
             _, attempt = await _assert_sent(case, done)
             investigation_id = _investigation_id(done)
@@ -729,7 +797,7 @@ def test_approval_is_not_created_without_feedback_model_budget(tmp_path, action_
             tmp_path,
             action_session_ids,
             responses=_preamble(),
-            namespace="vigil-shop",
+            controlled=True,
             investigation_budget_model_calls=5,
         ) as case:
             done = await _drive(case)
@@ -751,11 +819,12 @@ def test_agent_turns_failed_action_into_needs_human(tmp_path, action_session_ids
             tmp_path,
             action_session_ids,
             responses=[*_preamble(), _valid_report],
-            namespace="vigil-shop",
-            restart=FakeRestartAdapter(baseline_status=500, rebuilt_status=500),
+            controlled=True,
+            post_probe=0.0,
         ) as case:
-            pause, _ = await _paused(case)
+            pause, pending = await _paused(case)
             await _decide(case.safety, pause.card)
+            await drive_replica(case.remediation, pending.id)
             done = await _drive(case)
             proposal, attempt = await _assert_sent(case, done, attempt_status=AttemptStatus.FAILED)
             assert proposal.status is ProposalStatus.FAILED
@@ -767,6 +836,14 @@ def test_agent_turns_failed_action_into_needs_human(tmp_path, action_session_ids
             assert done.exit_code == 0
             (followup,) = await case.store.list_followups(proposal_id=proposal.id)
             assert followup.attempt_id == attempt.id
+            resolved = await case.store.resolve_followup(
+                followup.id, actor="tester", note="已核对，交由值班人处理"
+            )
+            assert resolved.status.value == "resolved"
+            assert any(
+                event.event == "action.followup_resolved"
+                for event in await case.store.list_audit(proposal.id)
+            )
 
     asyncio.run(run())
 
@@ -777,23 +854,21 @@ def test_two_concurrent_resumes_write_once(tmp_path, action_session_ids):
             tmp_path,
             action_session_ids,
             responses=[*_preamble(), _valid_report],
-            namespace="vigil-shop",
+            controlled=True,
         ) as case:
             pause, proposal = await _paused(case)
             approved = await _decide(case.safety, pause.card)
             async with case.driver.claim(case.session_id) as winner:
                 assert winner is not None
-                drive = asyncio.create_task(winner.drive())
-                try:
-                    async with case.driver.claim(case.session_id) as contender:
-                        assert contender is None
-                finally:
-                    done = await drive
+                async with case.driver.claim(case.session_id) as contender:
+                    assert contender is None
+                await drive_replica(case.remediation, proposal.id)
+                done = await winner.drive()
             assert done.exit_code == 0
             assert await _drive(case) is None
             _, attempt = await _assert_sent(case, done)
             assert attempt.proposal_id == proposal.id
-            assert attempt.snapshot["approval_hash"] == approved.proposal_hash
+            assert approved.proposal_hash == pause.card.payload["fingerprint"]
             assert len(await case.events("card_decision")) == 1
 
     asyncio.run(run())

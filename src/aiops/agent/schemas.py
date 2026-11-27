@@ -50,10 +50,15 @@ class AssessEvidenceArgs(Strict):
 class RequestActionArgs(Strict):
     """动作请求：目的、目标、依据、预测和业务验证目标。"""
 
-    action: Literal["restart_pod", "rollout_undo"]
+    action: Literal[
+        "restart_pod", "rollout_undo", "adjust_resources", "scale_replicas", "update_config"
+    ]
     purpose: Literal["diagnostic", "mitigation", "remediation"] = "remediation"
     target_pod: str = ""
     target_deployment: str = ""
+    target_kind: Literal["Deployment", "StatefulSet"] = "Deployment"
+    target_namespace: str = ""
+    parameters: dict[str, str | int | None] = Field(default_factory=dict)
     service: str = ""
     path: str = "/"
     reason: str = Field(min_length=1)

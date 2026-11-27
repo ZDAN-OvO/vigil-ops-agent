@@ -97,6 +97,60 @@ data:
             target_label: instance
           - target_label: __address__
             replacement: blackbox-exporter:9115
+      - job_name: vigil-replica-probe
+        metrics_path: /probe
+        params:
+          module: [http_2xx]
+        static_configs:
+          - targets: ["http://vigil-replica-gateway.vigil-experiment.svc.cluster.local.:8080/business"]
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: blackbox-exporter:9115
+      - job_name: vigil-replica-state
+        static_configs:
+          - targets: ["vigil-replica-gateway.vigil-experiment.svc.cluster.local.:8080"]
+      - job_name: vigil-config-probe
+        metrics_path: /probe
+        params:
+          module: [http_2xx]
+        static_configs:
+          - targets: ["http://vigil-config-fixture.vigil-experiment.svc.cluster.local.:8080/configuration?source=configmap"]
+            labels: {signal: gate, source: configmap}
+          - targets: ["http://vigil-config-fixture.vigil-experiment.svc.cluster.local.:8080/configuration?source=env"]
+            labels: {signal: gate, source: env}
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: blackbox-exporter:9115
+      - job_name: vigil-config-business
+        scrape_interval: 1m
+        metrics_path: /probe
+        params:
+          module: [http_2xx]
+        static_configs:
+          - targets: ["http://vigil-config-fixture.vigil-experiment.svc.cluster.local.:8080/business?source=configmap"]
+            labels: {signal: business, source: configmap}
+          - targets: ["http://vigil-config-fixture.vigil-experiment.svc.cluster.local.:8080/business?source=env"]
+            labels: {signal: business, source: env}
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: blackbox-exporter:9115
+          - target_label: job
+            replacement: vigil-config-probe
+      - job_name: vigil-config-state
+        static_configs:
+          - targets: ["vigil-config-fixture.vigil-experiment.svc.cluster.local.:8080"]
       - job_name: kubelet-cadvisor
         scheme: https
         metrics_path: /metrics/cadvisor
@@ -111,7 +165,7 @@ data:
             target_label: node
         metric_relabel_configs:
           - source_labels: [__name__]
-            regex: "container_cpu_usage_seconds_total|container_memory_working_set_bytes"
+            regex: "container_cpu_usage_seconds_total|container_memory_working_set_bytes|container_cpu_cfs_throttled_periods_total|container_cpu_cfs_periods_total"
             action: keep
           - source_labels: [namespace, pod, container]
             regex: ".+;.+;.+"
@@ -127,15 +181,57 @@ data:
     groups:
       - name: vigil-business
         rules:
+          - record: vigil:currency_cpu_throttle_ratio:rate1m
+            expr: |
+              sum(rate(container_cpu_cfs_throttled_periods_total{job="kubelet-cadvisor",namespace="vigil-shop",pod=~"currencyservice-.*",container="server"}[1m]))
+              /
+              (sum(rate(container_cpu_cfs_periods_total{job="kubelet-cadvisor",namespace="vigil-shop",pod=~"currencyservice-.*",container="server"}[1m])) > 0)
           - alert: FrontendProbeFailed
             expr: probe_success{job="frontend-probe",instance="http://frontend.vigil-shop.svc.cluster.local./"} == 0
             for: 1m
             labels:
               severity: critical
-              scenario: f01-bad-release
+              namespace: vigil-shop
+              target: currencyservice
+              source: frontend
             annotations:
               summary: Frontend blackbox probe failed
               description: probe_success has been 0 for 1 minute.
+          - alert: VigilCpuLimitDegraded
+            expr: |
+              (probe_success{job="frontend-probe"} == 0)
+              and on() (vigil:currency_cpu_throttle_ratio:rate1m >= 0.5)
+            for: 1m
+            labels:
+              severity: critical
+              namespace: vigil-shop
+              target: currencyservice
+              source: cpu
+            annotations:
+              summary: Currency service is CPU throttled and storefront requests fail
+          - alert: VigilReplicaCapacityDegraded
+            expr: |
+              (probe_success{job="vigil-replica-probe"} == 0)
+              and on() (up{job="vigil-replica-state"} == 1)
+            for: 1m
+            labels:
+              severity: critical
+              namespace: vigil-experiment
+              target: vigil-replica-fixture
+              source: capacity
+            annotations:
+              summary: Two concurrent transactions exceed available capacity
+          - alert: VigilServiceConfigDegraded
+            expr: |
+              (probe_success{job="vigil-config-probe",signal="gate"} == 0)
+              and on() (up{job="vigil-config-state"} == 1)
+            for: 1m
+            labels:
+              severity: critical
+              namespace: vigil-experiment
+              target: vigil-config-fixture
+            annotations:
+              summary: Service requests fail with the loaded configuration
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -146,7 +242,7 @@ data:
   alertmanager.yml: |
     route:
       receiver: default
-      group_by: [alertname]
+      group_by: [alertname, namespace, target, source]
       group_wait: 10s
       group_interval: 30s
       repeat_interval: 1h
@@ -154,7 +250,15 @@ data:
         - matchers:
             - alertname="FrontendProbeFailed"
           receiver: vigil-webhook
-          group_wait: 10s
+        - matchers:
+            - alertname="VigilCpuLimitDegraded"
+          receiver: vigil-webhook
+        - matchers:
+            - alertname="VigilReplicaCapacityDegraded"
+          receiver: vigil-webhook
+        - matchers:
+            - alertname="VigilServiceConfigDegraded"
+          receiver: vigil-webhook
     receivers:
       - name: default
       - name: vigil-webhook

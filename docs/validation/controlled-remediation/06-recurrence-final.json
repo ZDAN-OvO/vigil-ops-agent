@@ -1,0 +1,410 @@
+{
+  "audit_source": "k3s API Server Metadata",
+  "audit_identity": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+  "requests": [
+    {
+      "audit_id": "b9dc6cf5-62a3-477f-bc30-944c2fd2f6d3",
+      "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-experiment/deployments/vigil-replica-fixture?dryRun=All",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-experiment",
+        "name": "vigil-replica-fixture",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T16:49:27.760493Z",
+      "dry_run": true,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T16:49:27.760493Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T16:49:27.784096Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    },
+    {
+      "audit_id": "7702ea27-2f8c-4cea-a1a7-0c1bc892ac2d",
+      "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-experiment/deployments/vigil-replica-fixture",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-experiment",
+        "name": "vigil-replica-fixture",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T16:49:27.997340Z",
+      "dry_run": false,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T16:49:27.997340Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T16:49:28.011755Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    }
+  ],
+  "vigil_ledger": [
+    {
+      "after": {
+        "replicas": 2
+      },
+      "alerts": [
+        {
+          "source": "capacity",
+          "starts_at": "2026-11-27T16:49:11.43+00:00",
+          "fingerprint": "767fbece254b04ee",
+          "resolved_at": "2026-11-27T16:50:25.977147+00:00"
+        },
+        {
+          "source": "capacity",
+          "starts_at": "2026-11-27T16:53:26.43+00:00",
+          "fingerprint": "767fbece254b04ee",
+          "resolved_at": "2026-11-27T16:54:41.031106+00:00"
+        }
+      ],
+      "before": {
+        "replicas": 1
+      },
+      "status": "failed",
+      "target": "vigil-experiment/Deployment/vigil-replica-fixture",
+      "sent_at": "2026-11-27T16:49:27.959287+00:00",
+      "baseline": {
+        "method": "business_probe_window",
+        "samples": [
+          [
+            [
+              1795797874.238,
+              true
+            ],
+            [
+              1795797889.223,
+              true
+            ],
+            [
+              1795797904.223,
+              true
+            ],
+            [
+              1795797919.21,
+              true
+            ]
+          ],
+          [
+            [
+              1795797934.21,
+              true
+            ],
+            [
+              1795797949.199,
+              true
+            ],
+            [
+              1795797964.2,
+              true
+            ],
+            [
+              1795797979.19,
+              true
+            ]
+          ],
+          [
+            [
+              1795797994.19,
+              true
+            ],
+            [
+              1795798009.182,
+              true
+            ],
+            [
+              1795798024.182,
+              true
+            ],
+            [
+              1795798039.176,
+              true
+            ]
+          ],
+          [
+            [
+              1795798054.177,
+              true
+            ],
+            [
+              1795798069.172,
+              true
+            ],
+            [
+              1795798084.172,
+              false
+            ],
+            [
+              1795798099.167,
+              false
+            ]
+          ],
+          [
+            [
+              1795798114.166,
+              false
+            ],
+            [
+              1795798129.149,
+              false
+            ],
+            [
+              1795798144.151,
+              false
+            ],
+            [
+              1795798159.141,
+              false
+            ]
+          ]
+        ],
+        "started_at": "2026-11-27T16:44:27.721482+00:00",
+        "failed_slots": 2,
+        "slot_seconds": 60,
+        "slots_required": 5,
+        "slots_collected": 5
+      },
+      "followups": [
+        {
+          "id": "fol-235e31407c964dee9a8d5543333c476e",
+          "status": "open",
+          "outcome": "no_improvement"
+        }
+      ],
+      "applied_at": "2026-11-27T16:49:28.027084+00:00",
+      "parameters": {
+        "replicas": 2
+      },
+      "session_id": "be26b9153d17482ca6b03578589474db",
+      "target_uid": "09dcdfb7-7e91-40e4-baca-6bf8713aa7d6",
+      "compensated": false,
+      "finished_at": "2026-11-27T17:00:05.613454+00:00",
+      "proposal_id": "act-cc2d975fa8784e4090069fdd36abe57c",
+      "effective_at": "2026-11-27T16:49:46.82633+00:00",
+      "verification": {
+        "method": "business_probe_window",
+        "outcome": "no_improvement",
+        "samples": [
+          [
+            [
+              1795798189.139,
+              true
+            ],
+            [
+              1795798204.139,
+              true
+            ],
+            [
+              1795798219.136,
+              true
+            ],
+            [
+              1795798234.135,
+              true
+            ]
+          ],
+          [
+            [
+              1795798249.132,
+              true
+            ],
+            [
+              1795798264.133,
+              true
+            ],
+            [
+              1795798279.128,
+              true
+            ],
+            [
+              1795798294.128,
+              true
+            ]
+          ],
+          [
+            [
+              1795798309.125,
+              true
+            ],
+            [
+              1795798324.125,
+              true
+            ],
+            [
+              1795798339.122,
+              false
+            ],
+            [
+              1795798354.122,
+              false
+            ]
+          ],
+          [
+            [
+              1795798369.119,
+              false
+            ],
+            [
+              1795798384.118,
+              false
+            ],
+            [
+              1795798399.114,
+              false
+            ],
+            [
+              1795798414.114,
+              false
+            ]
+          ],
+          [
+            [
+              1795798429.111,
+              false
+            ],
+            [
+              1795798444.112,
+              true
+            ],
+            [
+              1795798459.106,
+              true
+            ],
+            [
+              1795798474.106,
+              true
+            ]
+          ],
+          [
+            [
+              1795798489.101,
+              true
+            ],
+            [
+              1795798504.102,
+              true
+            ],
+            [
+              1795798519.1,
+              true
+            ],
+            [
+              1795798534.1,
+              true
+            ]
+          ],
+          [
+            [
+              1795798549.096,
+              true
+            ],
+            [
+              1795798564.095,
+              true
+            ],
+            [
+              1795798579.093,
+              true
+            ],
+            [
+              1795798594.093,
+              true
+            ]
+          ],
+          [
+            [
+              1795798609.089,
+              true
+            ],
+            [
+              1795798624.09,
+              true
+            ],
+            [
+              1795798639.086,
+              true
+            ],
+            [
+              1795798654.087,
+              true
+            ]
+          ],
+          [
+            [
+              1795798669.083,
+              true
+            ],
+            [
+              1795798684.083,
+              true
+            ],
+            [
+              1795798699.08,
+              true
+            ],
+            [
+              1795798714.08,
+              true
+            ]
+          ],
+          [
+            [
+              1795798729.076,
+              true
+            ],
+            [
+              1795798744.077,
+              true
+            ],
+            [
+              1795798759.073,
+              true
+            ],
+            [
+              1795798774.073,
+              true
+            ]
+          ]
+        ],
+        "fault_pods": {},
+        "started_at": "2026-11-27T16:49:46.826330+00:00",
+        "failed_slots": 3,
+        "slot_seconds": 60,
+        "outcome_reason": "业务请求失败或同类故障仍在，需人工处理",
+        "slots_required": 10,
+        "slots_collected": 10
+      },
+      "policy_version": "controlled-remediation-v1-8f5dcece25ec1c30e97b837ec5bec5b7726f785c4e50a3838b733fbe676a832e",
+      "session_closed_at": null,
+      "parent_proposal_id": null
+    }
+  ]
+}

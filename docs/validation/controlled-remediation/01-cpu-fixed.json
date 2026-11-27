@@ -1,0 +1,1306 @@
+{
+  "audit_source": "k3s API Server Metadata",
+  "audit_identity": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+  "requests": [
+    {
+      "audit_id": "d7694349-2a43-40fd-b8e8-779af946de03",
+      "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-shop/deployments/currencyservice?dryRun=All",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-shop",
+        "name": "currencyservice",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T18:06:01.971792Z",
+      "dry_run": true,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T18:06:01.971792Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T18:06:01.982375Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    },
+    {
+      "audit_id": "4adc94a2-efb5-4e6c-92bd-36e21d994ad6",
+      "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-shop/deployments/currencyservice",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-shop",
+        "name": "currencyservice",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T18:06:02.068930Z",
+      "dry_run": false,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T18:06:02.068930Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T18:06:02.076611Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    }
+  ],
+  "vigil_ledger": [
+    {
+      "after": {
+        "limit_cpu": "200m"
+      },
+      "alerts": [
+        {
+          "source": "cpu",
+          "starts_at": "2026-11-27T18:03:41.43+00:00",
+          "fingerprint": "d5f8e6de0180baea",
+          "resolved_at": "2026-11-27T18:10:32.454605+00:00"
+        }
+      ],
+      "before": {
+        "limit_cpu": "5m"
+      },
+      "status": "succeeded",
+      "target": "vigil-shop/Deployment/currencyservice",
+      "sent_at": "2026-11-27T18:06:02.055501+00:00",
+      "baseline": {
+        "method": "business_probe_window",
+        "samples": [
+          [
+            [
+              1795802465.095,
+              true
+            ],
+            [
+              1795802480.093,
+              true
+            ],
+            [
+              1795802495.093,
+              true
+            ],
+            [
+              1795802510.092,
+              true
+            ]
+          ],
+          [
+            [
+              1795802525.092,
+              true
+            ],
+            [
+              1795802540.091,
+              false
+            ],
+            [
+              1795802555.09,
+              false
+            ],
+            [
+              1795802570.089,
+              false
+            ]
+          ],
+          [
+            [
+              1795802585.089,
+              false
+            ],
+            [
+              1795802600.087,
+              false
+            ],
+            [
+              1795802615.087,
+              false
+            ],
+            [
+              1795802630.086,
+              false
+            ]
+          ],
+          [
+            [
+              1795802645.086,
+              false
+            ],
+            [
+              1795802660.084,
+              false
+            ],
+            [
+              1795802675.084,
+              false
+            ],
+            [
+              1795802690.083,
+              false
+            ]
+          ],
+          [
+            [
+              1795802705.083,
+              false
+            ],
+            [
+              1795802720.082,
+              false
+            ],
+            [
+              1795802735.082,
+              false
+            ],
+            [
+              1795802750.08,
+              false
+            ]
+          ]
+        ],
+        "started_at": "2026-11-27T18:01:01.956014+00:00",
+        "failed_slots": 4,
+        "slot_seconds": 60,
+        "slots_required": 5,
+        "slots_collected": 5
+      },
+      "followups": null,
+      "applied_at": "2026-11-27T18:06:02.085143+00:00",
+      "parameters": {
+        "container": "server",
+        "limit_cpu": "200m"
+      },
+      "session_id": "c23f33a7b55b4ca2a2ccbe5848b79827",
+      "target_uid": "947e97ee-1eaf-4481-a098-c39e2234c53c",
+      "compensated": false,
+      "finished_at": "2026-11-27T18:16:36.356266+00:00",
+      "proposal_id": "act-0ac5aaa8cecc4104a1f314437835198b",
+      "effective_at": "2026-11-27T18:06:15.00161+00:00",
+      "verification": {
+        "method": "business_probe_window",
+        "outcome": "improved",
+        "samples": [
+          [
+            [
+              1795802780.079,
+              true
+            ],
+            [
+              1795802795.079,
+              true
+            ],
+            [
+              1795802810.077,
+              true
+            ],
+            [
+              1795802825.078,
+              true
+            ],
+            [
+              1795802840.077,
+              true
+            ]
+          ],
+          [
+            [
+              1795802855.077,
+              true
+            ],
+            [
+              1795802870.075,
+              true
+            ],
+            [
+              1795802885.075,
+              true
+            ],
+            [
+              1795802900.072,
+              true
+            ]
+          ],
+          [
+            [
+              1795802915.073,
+              true
+            ],
+            [
+              1795802930.072,
+              true
+            ],
+            [
+              1795802945.073,
+              true
+            ],
+            [
+              1795802960.071,
+              true
+            ]
+          ],
+          [
+            [
+              1795802975.07,
+              true
+            ],
+            [
+              1795802990.069,
+              true
+            ],
+            [
+              1795803005.069,
+              true
+            ],
+            [
+              1795803020.066,
+              true
+            ]
+          ],
+          [
+            [
+              1795803035.066,
+              true
+            ],
+            [
+              1795803050.067,
+              true
+            ],
+            [
+              1795803065.066,
+              true
+            ],
+            [
+              1795803080.065,
+              true
+            ]
+          ],
+          [
+            [
+              1795803095.066,
+              true
+            ],
+            [
+              1795803110.064,
+              true
+            ],
+            [
+              1795803125.064,
+              true
+            ],
+            [
+              1795803140.062,
+              true
+            ]
+          ],
+          [
+            [
+              1795803155.062,
+              true
+            ],
+            [
+              1795803170.061,
+              true
+            ],
+            [
+              1795803185.061,
+              true
+            ],
+            [
+              1795803200.06,
+              true
+            ]
+          ],
+          [
+            [
+              1795803215.06,
+              true
+            ],
+            [
+              1795803230.058,
+              true
+            ],
+            [
+              1795803245.058,
+              true
+            ],
+            [
+              1795803260.057,
+              true
+            ]
+          ],
+          [
+            [
+              1795803275.057,
+              true
+            ],
+            [
+              1795803290.056,
+              true
+            ],
+            [
+              1795803305.056,
+              true
+            ],
+            [
+              1795803320.052,
+              true
+            ]
+          ],
+          [
+            [
+              1795803335.052,
+              true
+            ],
+            [
+              1795803350.052,
+              true
+            ],
+            [
+              1795803365.052,
+              true
+            ],
+            [
+              1795803380.051,
+              true
+            ]
+          ]
+        ],
+        "fault_pods": {
+          "3e7a1d11-86dd-4fa3-9b01-e46e564641c2": {
+            "restarts": 0,
+            "container_id": "containerd://9dfe1408d05f90b04a7a7938ef2549a4d31e60b4ab7412bf9ab37d74216895a2"
+          }
+        },
+        "started_at": "2026-11-27T18:06:20.079000+00:00",
+        "failed_slots": 0,
+        "slot_seconds": 60,
+        "fault_signals": [
+          {
+            "pods": [
+              "3e7a1d11-86dd-4fa3-9b01-e46e564641c2"
+            ],
+            "signal": "throttle_ratio",
+            "status": "clear",
+            "samples": [
+              [
+                1795802816.675,
+                0.445945945945946
+              ],
+              [
+                1795802832.668,
+                0.36054421768707484
+              ],
+              [
+                1795802844.662,
+                0.3283582089552239
+              ],
+              [
+                1795802857.253,
+                0.2984496124031008
+              ],
+              [
+                1795802874.91,
+                0.2564102564102564
+              ],
+              [
+                1795802886.442,
+                0.2607003891050583
+              ],
+              [
+                1795802902.092,
+                0.3057553956834532
+              ],
+              [
+                1795802921.506,
+                0.3794642857142857
+              ],
+              [
+                1795802935.174,
+                0.4
+              ],
+              [
+                1795802952.222,
+                0.39647577092511016
+              ],
+              [
+                1795802981.64,
+                0.36893203883495146
+              ],
+              [
+                1795802997.723,
+                0.3514851485148514
+              ],
+              [
+                1795803013.256,
+                0.37410071942446044
+              ],
+              [
+                1795803025.066,
+                0.3736842105263158
+              ],
+              [
+                1795803041.738,
+                0.3804347826086956
+              ],
+              [
+                1795803052.253,
+                0.3771929824561403
+              ],
+              [
+                1795803065.109,
+                0.34883720930232553
+              ],
+              [
+                1795803081.037,
+                0.3504273504273504
+              ],
+              [
+                1795803100.555,
+                0.359375
+              ],
+              [
+                1795803113.96,
+                0.37142857142857144
+              ],
+              [
+                1795803129.419,
+                0.36666666666666664
+              ],
+              [
+                1795803139.882,
+                0.3700787401574803
+              ],
+              [
+                1795803153.175,
+                0.3452914798206278
+              ],
+              [
+                1795803170.432,
+                0.3541666666666667
+              ],
+              [
+                1795803187.009,
+                0.35772357723577236
+              ],
+              [
+                1795803203.227,
+                0.3679245283018868
+              ],
+              [
+                1795803218.37,
+                0.35960591133004927
+              ],
+              [
+                1795803235.883,
+                0.3333333333333333
+              ],
+              [
+                1795803247.384,
+                0.31843575418994413
+              ],
+              [
+                1795803260.484,
+                0.2869198312236287
+              ],
+              [
+                1795803275.432,
+                0.2330508474576271
+              ],
+              [
+                1795803293.542,
+                0.1875
+              ],
+              [
+                1795803308.169,
+                0.15577889447236182
+              ],
+              [
+                1795803326.814,
+                0.2077922077922078
+              ],
+              [
+                1795803337.551,
+                0.2647058823529412
+              ],
+              [
+                1795803350.568,
+                0.2755905511811023
+              ],
+              [
+                1795803366.564,
+                0.30952380952380953
+              ]
+            ],
+            "counters": [
+              {
+                "samples": [
+                  [
+                    1795802802.162,
+                    156.0
+                  ],
+                  [
+                    1795802816.675,
+                    230.0
+                  ],
+                  [
+                    1795802832.668,
+                    303.0
+                  ],
+                  [
+                    1795802844.662,
+                    357.0
+                  ],
+                  [
+                    1795802857.253,
+                    414.0
+                  ],
+                  [
+                    1795802874.91,
+                    503.0
+                  ],
+                  [
+                    1795802886.442,
+                    560.0
+                  ],
+                  [
+                    1795802902.092,
+                    635.0
+                  ],
+                  [
+                    1795802921.506,
+                    727.0
+                  ],
+                  [
+                    1795802935.174,
+                    785.0
+                  ],
+                  [
+                    1795802952.222,
+                    862.0
+                  ],
+                  [
+                    1795802981.64,
+                    991.0
+                  ],
+                  [
+                    1795802997.723,
+                    1064.0
+                  ],
+                  [
+                    1795803013.256,
+                    1130.0
+                  ],
+                  [
+                    1795803025.066,
+                    1181.0
+                  ],
+                  [
+                    1795803041.738,
+                    1248.0
+                  ],
+                  [
+                    1795803052.253,
+                    1292.0
+                  ],
+                  [
+                    1795803065.109,
+                    1345.0
+                  ],
+                  [
+                    1795803081.037,
+                    1415.0
+                  ],
+                  [
+                    1795803100.555,
+                    1504.0
+                  ],
+                  [
+                    1795803113.96,
+                    1555.0
+                  ],
+                  [
+                    1795803129.419,
+                    1625.0
+                  ],
+                  [
+                    1795803139.882,
+                    1669.0
+                  ],
+                  [
+                    1795803153.175,
+                    1727.0
+                  ],
+                  [
+                    1795803170.432,
+                    1795.0
+                  ],
+                  [
+                    1795803187.009,
+                    1871.0
+                  ],
+                  [
+                    1795803203.227,
+                    1939.0
+                  ],
+                  [
+                    1795803218.37,
+                    1998.0
+                  ],
+                  [
+                    1795803235.883,
+                    2069.0
+                  ],
+                  [
+                    1795803247.384,
+                    2118.0
+                  ],
+                  [
+                    1795803260.484,
+                    2176.0
+                  ],
+                  [
+                    1795803275.432,
+                    2234.0
+                  ],
+                  [
+                    1795803293.542,
+                    2309.0
+                  ],
+                  [
+                    1795803308.169,
+                    2375.0
+                  ],
+                  [
+                    1795803326.814,
+                    2465.0
+                  ],
+                  [
+                    1795803337.551,
+                    2513.0
+                  ],
+                  [
+                    1795803350.568,
+                    2563.0
+                  ],
+                  [
+                    1795803366.564,
+                    2627.0
+                  ]
+                ],
+                "selector": "container_cpu_cfs_periods_total{job=\"kubelet-cadvisor\",namespace=\"vigil-shop\",container=\"server\",pod=\"currencyservice-65c7dc565b-ffhsk\",id=~\".*9dfe1408d05f90b04a7a7938ef2549a4d31e60b4ab7412bf9ab37d74216895a2(\\\\.scope)?\"}"
+              },
+              {
+                "samples": [
+                  [
+                    1795802802.162,
+                    78.0
+                  ],
+                  [
+                    1795802816.675,
+                    111.0
+                  ],
+                  [
+                    1795802832.668,
+                    131.0
+                  ],
+                  [
+                    1795802844.662,
+                    144.0
+                  ],
+                  [
+                    1795802857.253,
+                    155.0
+                  ],
+                  [
+                    1795802874.91,
+                    181.0
+                  ],
+                  [
+                    1795802886.442,
+                    198.0
+                  ],
+                  [
+                    1795802902.092,
+                    229.0
+                  ],
+                  [
+                    1795802921.506,
+                    266.0
+                  ],
+                  [
+                    1795802935.174,
+                    288.0
+                  ],
+                  [
+                    1795802952.222,
+                    319.0
+                  ],
+                  [
+                    1795802981.64,
+                    364.0
+                  ],
+                  [
+                    1795802997.723,
+                    390.0
+                  ],
+                  [
+                    1795803013.256,
+                    416.0
+                  ],
+                  [
+                    1795803025.066,
+                    435.0
+                  ],
+                  [
+                    1795803041.738,
+                    460.0
+                  ],
+                  [
+                    1795803052.253,
+                    476.0
+                  ],
+                  [
+                    1795803065.109,
+                    491.0
+                  ],
+                  [
+                    1795803081.037,
+                    517.0
+                  ],
+                  [
+                    1795803100.555,
+                    552.0
+                  ],
+                  [
+                    1795803113.96,
+                    569.0
+                  ],
+                  [
+                    1795803129.419,
+                    594.0
+                  ],
+                  [
+                    1795803139.882,
+                    611.0
+                  ],
+                  [
+                    1795803153.175,
+                    629.0
+                  ],
+                  [
+                    1795803170.432,
+                    654.0
+                  ],
+                  [
+                    1795803187.009,
+                    682.0
+                  ],
+                  [
+                    1795803203.227,
+                    707.0
+                  ],
+                  [
+                    1795803218.37,
+                    727.0
+                  ],
+                  [
+                    1795803235.883,
+                    748.0
+                  ],
+                  [
+                    1795803247.384,
+                    764.0
+                  ],
+                  [
+                    1795803260.484,
+                    775.0
+                  ],
+                  [
+                    1795803275.432,
+                    782.0
+                  ],
+                  [
+                    1795803293.542,
+                    793.0
+                  ],
+                  [
+                    1795803308.169,
+                    806.0
+                  ],
+                  [
+                    1795803326.814,
+                    830.0
+                  ],
+                  [
+                    1795803337.551,
+                    847.0
+                  ],
+                  [
+                    1795803350.568,
+                    863.0
+                  ],
+                  [
+                    1795803366.564,
+                    884.0
+                  ]
+                ],
+                "selector": "container_cpu_cfs_throttled_periods_total{job=\"kubelet-cadvisor\",namespace=\"vigil-shop\",container=\"server\",pod=\"currencyservice-65c7dc565b-ffhsk\",id=~\".*9dfe1408d05f90b04a7a7938ef2549a4d31e60b4ab7412bf9ab37d74216895a2(\\\\.scope)?\"}"
+              }
+            ],
+            "container": "server"
+          }
+        ],
+        "outcome_reason": "完整观察窗内业务探针全通过，故障信号未复发",
+        "slots_required": 10,
+        "slots_collected": 10,
+        "worsening_window": {
+          "method": "business_probe_window",
+          "samples": [
+            [
+              [
+                1795802780.079,
+                true
+              ],
+              [
+                1795802795.079,
+                true
+              ],
+              [
+                1795802810.077,
+                true
+              ],
+              [
+                1795802825.078,
+                true
+              ]
+            ],
+            [
+              [
+                1795802840.077,
+                true
+              ],
+              [
+                1795802855.077,
+                true
+              ],
+              [
+                1795802870.075,
+                true
+              ],
+              [
+                1795802885.075,
+                true
+              ]
+            ],
+            [
+              [
+                1795802900.072,
+                true
+              ],
+              [
+                1795802915.073,
+                true
+              ],
+              [
+                1795802930.072,
+                true
+              ],
+              [
+                1795802945.073,
+                true
+              ]
+            ],
+            [
+              [
+                1795802960.071,
+                true
+              ],
+              [
+                1795802975.07,
+                true
+              ],
+              [
+                1795802990.069,
+                true
+              ],
+              [
+                1795803005.069,
+                true
+              ]
+            ],
+            [
+              [
+                1795803020.066,
+                true
+              ],
+              [
+                1795803035.066,
+                true
+              ],
+              [
+                1795803050.067,
+                true
+              ],
+              [
+                1795803065.066,
+                true
+              ]
+            ]
+          ],
+          "started_at": "2026-11-27T18:06:15.001610+00:00",
+          "failed_slots": 0,
+          "slot_seconds": 60,
+          "slots_required": 5,
+          "slots_collected": 5
+        },
+        "business_recovered_at": "2026-11-27T18:06:20.079000+00:00"
+      },
+      "policy_version": "controlled-remediation-v1-8f5dcece25ec1c30e97b837ec5bec5b7726f785c4e50a3838b733fbe676a832e",
+      "session_closed_at": "2026-11-27T18:16:36.372703+00:00",
+      "parent_proposal_id": null
+    }
+  ],
+  "audit_interval_utc": {
+    "since": "2026-11-27T17:57:59Z",
+    "until": "2026-11-27T18:16:40Z"
+  },
+  "webhook_replays": {
+    "firing": {
+      "delivery": {
+        "session_id": "c23f33a7b55b4ca2a2ccbe5848b79827",
+        "outcome": "created"
+      },
+      "group_key": "{}/{alertname=\"VigilCpuLimitDegraded\"}:{alertname=\"VigilCpuLimitDegraded\", namespace=\"vigil-shop\", source=\"cpu\", target=\"currencyservice\"}",
+      "alerts": [
+        {
+          "fingerprint": "d5f8e6de0180baea",
+          "startsAt": "2026-11-27T18:03:41.430Z",
+          "endsAt": "2026-11-27T18:08:56.430Z",
+          "status": "firing"
+        }
+      ]
+    },
+    "resolved": {
+      "delivery": {
+        "session_id": "c23f33a7b55b4ca2a2ccbe5848b79827",
+        "outcome": "partially_resolved"
+      },
+      "group_key": "{}/{alertname=\"VigilCpuLimitDegraded\"}:{alertname=\"VigilCpuLimitDegraded\", namespace=\"vigil-shop\", source=\"cpu\", target=\"currencyservice\"}",
+      "alerts": [
+        {
+          "fingerprint": "d5f8e6de0180baea",
+          "startsAt": "2026-11-27T18:03:41.430Z",
+          "endsAt": "2026-11-27T18:10:32.301085Z",
+          "status": "resolved"
+        }
+      ]
+    }
+  },
+  "fault_fixture": {
+    "load_requests_per_second": 1,
+    "baseline": [
+      "2026-11-27T17:58:00Z memory=128Mi cpu=200m probe=1 http=200 frontend_alert=none cpu_alert=none throttle=0.4032258064516129 pods=[{\"name\": \"currencyservice-74ff799696-lvb6p\", \"uid\": \"3b414f42-7c1f-4f8a-98f0-3589cf581af9\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]",
+      "2026-11-27T18:02:01Z memory=128Mi cpu=200m probe=1 http=200 frontend_alert=none cpu_alert=none throttle=0.3174603174603175 pods=[{\"name\": \"currencyservice-74ff799696-lvb6p\", \"uid\": \"3b414f42-7c1f-4f8a-98f0-3589cf581af9\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]"
+    ],
+    "fault": [
+      "2026-11-27T18:02:12Z memory=128Mi cpu=5m probe=1 http=200 frontend_alert=none cpu_alert=none throttle=0.31746031746031744 pods=[{\"name\": \"currencyservice-6fc67d946-wvfbf\", \"uid\": \"095724e0-b5ac-4ca4-890d-67af7433b62f\", \"restarts\": 0, \"ready\": false, \"running\": false, \"last_reason\": null}]",
+      "2026-11-27T18:02:23Z memory=128Mi cpu=5m probe=0 http=500 frontend_alert=none cpu_alert=none throttle=0.31746031746031744 pods=[{\"name\": \"currencyservice-6fc67d946-wvfbf\", \"uid\": \"095724e0-b5ac-4ca4-890d-67af7433b62f\", \"restarts\": 0, \"ready\": false, \"running\": true, \"last_reason\": null}]",
+      "2026-11-27T18:02:34Z memory=128Mi cpu=5m probe=0 http=500 frontend_alert=none cpu_alert=none throttle=0.3157894736842105 pods=[{\"name\": \"currencyservice-6fc67d946-wvfbf\", \"uid\": \"095724e0-b5ac-4ca4-890d-67af7433b62f\", \"restarts\": 0, \"ready\": false, \"running\": true, \"last_reason\": null}]",
+      "2026-11-27T18:02:45Z memory=128Mi cpu=5m probe=0 http=500 frontend_alert=none cpu_alert=none throttle=0.30909090909090914 pods=[{\"name\": \"currencyservice-6fc67d946-wvfbf\", \"uid\": \"095724e0-b5ac-4ca4-890d-67af7433b62f\", \"restarts\": 0, \"ready\": false, \"running\": true, \"last_reason\": null}]",
+      "2026-11-27T18:02:56Z memory=128Mi cpu=5m probe=0 http=500 frontend_alert=none cpu_alert=none throttle=0.9414658966128411 pods=[{\"name\": \"currencyservice-6fc67d946-wvfbf\", \"uid\": \"095724e0-b5ac-4ca4-890d-67af7433b62f\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]",
+      "2026-11-27T18:03:07Z memory=128Mi cpu=5m probe=0 http=500 frontend_alert=none cpu_alert=none throttle=0.9414658966128411 pods=[{\"name\": \"currencyservice-6fc67d946-wvfbf\", \"uid\": \"095724e0-b5ac-4ca4-890d-67af7433b62f\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]",
+      "2026-11-27T18:03:17Z memory=128Mi cpu=5m probe=0 http=500 frontend_alert=none cpu_alert=none throttle=0.9539014324032851 pods=[{\"name\": \"currencyservice-6fc67d946-wvfbf\", \"uid\": \"095724e0-b5ac-4ca4-890d-67af7433b62f\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]",
+      "2026-11-27T18:03:29Z memory=128Mi cpu=5m probe=0 http=0 frontend_alert=none cpu_alert=none throttle=0.9254093725440187 pods=[{\"name\": \"currencyservice-6fc67d946-wvfbf\", \"uid\": \"095724e0-b5ac-4ca4-890d-67af7433b62f\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]",
+      "2026-11-27T18:03:40Z memory=128Mi cpu=5m probe=0 http=0 frontend_alert=1 cpu_alert=none throttle=0.9473684210526316 pods=[{\"name\": \"currencyservice-6fc67d946-wvfbf\", \"uid\": \"095724e0-b5ac-4ca4-890d-67af7433b62f\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]",
+      "2026-11-27T18:03:52Z memory=128Mi cpu=5m probe=0 http=0 frontend_alert=1 cpu_alert=none throttle=0.9473684210526316 pods=[{\"name\": \"currencyservice-6fc67d946-wvfbf\", \"uid\": \"095724e0-b5ac-4ca4-890d-67af7433b62f\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]",
+      "2026-11-27T18:04:03Z memory=128Mi cpu=5m probe=0 http=0 frontend_alert=1 cpu_alert=1 throttle=0.9620253164556962 pods=[{\"name\": \"currencyservice-6fc67d946-wvfbf\", \"uid\": \"095724e0-b5ac-4ca4-890d-67af7433b62f\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]",
+      "2026-11-27T18:04:06Z memory=128Mi cpu=5m probe=0 http=0 frontend_alert=1 cpu_alert=1 throttle=0.9620253164556962 pods=[{\"name\": \"currencyservice-6fc67d946-wvfbf\", \"uid\": \"095724e0-b5ac-4ca4-890d-67af7433b62f\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]"
+    ],
+    "recovered": [
+      "2026-11-27T18:11:54Z memory=128Mi cpu=200m probe=1 http=200 frontend_alert=none cpu_alert=none throttle=0.359375 pods=[{\"name\": \"currencyservice-65c7dc565b-ffhsk\", \"uid\": \"3e7a1d11-86dd-4fa3-9b01-e46e564641c2\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]",
+      "2026-11-27T18:16:40Z memory=128Mi cpu=200m probe=1 http=200 frontend_alert=none cpu_alert=none throttle=0.34389140271493207 pods=[{\"name\": \"currencyservice-65c7dc565b-ffhsk\", \"uid\": \"3e7a1d11-86dd-4fa3-9b01-e46e564641c2\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]"
+    ],
+    "load_samples": {
+      "baseline": [
+        "epoch=1795802252 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802253 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802254 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802255 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802256 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802257 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802258 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802259 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802260 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802261 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802262 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802263 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802264 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802265 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802266 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802267 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802268 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802269 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802270 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802271 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802272 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802273 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802274 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802275 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802276 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802277 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802278 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802279 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802280 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795802281 scheduled=1 issued=1 completed={200: 1}"
+      ],
+      "fault": [
+        "epoch=1795802624 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802625 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802626 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802627 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802628 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802629 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802630 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802631 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802632 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802633 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802634 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802635 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802636 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802637 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802638 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802639 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802640 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802641 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802642 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802643 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802644 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802645 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802646 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802647 scheduled=1 issued=1 completed={'network_error': 1}",
+        "epoch=1795802648 scheduled=1 issued=1 completed={'network_error': 1}"
+      ],
+      "recovery": [
+        "epoch=1795803373 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803374 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803375 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803376 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803377 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803378 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803379 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803380 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803381 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803382 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803383 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803384 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803385 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803386 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803387 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803388 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803389 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803390 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803391 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803392 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803393 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803394 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803395 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803396 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803397 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803398 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803399 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803400 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803401 scheduled=1 issued=1 completed={200: 1}",
+        "epoch=1795803402 scheduled=1 issued=1 completed={200: 1}"
+      ]
+    },
+    "cpu_alert_active_after_recovery_in_prometheus": false,
+    "cpu_alert_active_after_recovery_in_alertmanager": false
+  },
+  "prior_promql_failure": {
+    "prometheus_response": [
+      "HTTP 400 min(timestamp(container_cpu_cfs_periods_total{namespace=\"vigil-shop\",pod=~\"currencyservice\\-ccccbcfb9\\-98mz5\",container=\"server\"}))",
+      "{\"status\":\"error\",\"errorType\":\"bad_data\",\"error\":\"invalid parameter \\\"query\\\": 1:75: parse error: unknown escape sequence U+002D '-'\"}"
+    ],
+    "audit": {
+      "since": "2026-11-27T17:46:38Z",
+      "until": "2026-11-27T17:54:31Z",
+      "summary": {
+        "system:serviceaccount:vigil-monitoring:vigil-remediation": {
+          "real": {
+            "success": 1
+          },
+          "dry_run": {}
+        }
+      },
+      "requests": [
+        {
+          "audit_id": "5549f980-1e0d-42a4-a3ac-81445352ddf0",
+          "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+          "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+          "verb": "create",
+          "uri": "/apis/authentication.k8s.io/v1/selfsubjectreviews",
+          "target": {
+            "resource": "selfsubjectreviews",
+            "apiGroup": "authentication.k8s.io",
+            "apiVersion": "v1"
+          },
+          "started_at": "2026-11-27T17:53:31.741936Z",
+          "dry_run": false,
+          "outcome": "success",
+          "status_code": 201,
+          "stages": [
+            {
+              "stage": "RequestReceived",
+              "at": "2026-11-27T17:53:31.741936Z",
+              "code": null,
+              "reason": null
+            },
+            {
+              "stage": "ResponseComplete",
+              "at": "2026-11-27T17:53:31.745400Z",
+              "code": 201,
+              "reason": null
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "live_workload_recovered": {
+    "uid": "947e97ee-1eaf-4481-a098-c39e2234c53c",
+    "resource_version": "14655",
+    "resources": {
+      "limits": {
+        "cpu": "200m",
+        "memory": "128Mi"
+      },
+      "requests": {
+        "cpu": "5m",
+        "memory": "64Mi"
+      }
+    },
+    "liveness_failure_threshold": 30
+  },
+  "operator_injection_requests": [
+    {
+      "audit_id": "86a978bc-5b34-49cd-a18e-6881d882a68b",
+      "actor": "system:admin",
+      "authenticated_actor": "system:admin",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-shop/deployments/currencyservice?fieldManager=kubectl-patch",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-shop",
+        "name": "currencyservice",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T18:02:03.977188Z",
+      "dry_run": false,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T18:02:03.977188Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T18:02:03.983612Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    },
+    {
+      "audit_id": "171dd376-d419-420c-aafd-7c261acb136c",
+      "actor": "system:admin",
+      "authenticated_actor": "system:admin",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-shop/deployments/currencyservice/scale",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-shop",
+        "name": "currencyservice",
+        "apiGroup": "apps",
+        "apiVersion": "v1",
+        "subresource": "scale"
+      },
+      "started_at": "2026-11-27T18:02:04.116264Z",
+      "dry_run": false,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T18:02:04.116264Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T18:02:04.123199Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    },
+    {
+      "audit_id": "d568e0e5-f9e7-424a-986b-59a4399f74b7",
+      "actor": "system:admin",
+      "authenticated_actor": "system:admin",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-shop/deployments/currencyservice/scale",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-shop",
+        "name": "currencyservice",
+        "apiGroup": "apps",
+        "apiVersion": "v1",
+        "subresource": "scale"
+      },
+      "started_at": "2026-11-27T18:02:10.513048Z",
+      "dry_run": false,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T18:02:10.513048Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T18:02:10.516479Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    }
+  ]
+}

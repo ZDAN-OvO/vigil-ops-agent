@@ -3,13 +3,20 @@
 import hmac
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, StringConstraints, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, StringConstraints, field_validator
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from aiops.actions.remediation_alerts import (
+    clearance_state,
+    link_firing,
+    lock_workload_alerts,
+    record_firing,
+    record_resolved,
+)
 from aiops.actions.safety import ActionSafety
 from aiops.config import Settings
 from aiops.http_api import APIError, http_error, read_json
@@ -34,6 +41,13 @@ class Alert(BaseModel):
     status: AlertStatus
     labels: dict[str, str]
     annotations: dict[str, str] | None = None
+    fingerprint: Annotated[str, StringConstraints(pattern=r"^[a-fA-F0-9]{16}$")] | None = None
+    starts_at: AwareDatetime | None = Field(default=None, alias="startsAt")
+
+    def identity(self) -> tuple[str, AwareDatetime] | None:
+        if self.fingerprint is not None and self.starts_at is not None:
+            return self.fingerprint.lower(), self.starts_at
+        return None
 
     @field_validator("labels", "annotations")
     @classmethod
@@ -76,7 +90,13 @@ def _authorised(request: Request, expected: bytes) -> bool:
     return scheme.lower() == "bearer" and hmac.compare_digest(presented.encode("latin-1"), expected)
 
 
-def build_app(settings: Settings, *, sessions: SessionStore, safety: ActionSafety) -> Starlette:
+def build_app(
+    settings: Settings,
+    *,
+    sessions: SessionStore,
+    safety: ActionSafety,
+    remediation_available: bool = False,
+) -> Starlette:
     settings.validate_webhook_listener()
     if settings.webhook_token is None:
         raise ValueError("告警监听需要配置令牌")
@@ -91,22 +111,45 @@ def build_app(settings: Settings, *, sessions: SessionStore, safety: ActionSafet
         session_id = None
         outcome = "ignored"
         async with sessions.alert_transaction(group.group_key) as conn:
-            if group.status == "resolved" or resolved:
-                session = await sessions.get_open_alert_session(conn, group.group_key)
-                if session is not None:
-                    session_id = session.id
-                    if group.status == "resolved":
-                        await safety.close_session(conn, session.id, reason="alert_resolved")
-                        outcome = "closed"
-                    else:
-                        names = "、".join(dict.fromkeys(alert.name for alert in resolved))
-                        await sessions.append_alert_message(
-                            conn, session.id, display_text=project_text(f"部分告警已恢复：{names}")
-                        )
-                        outcome = "partially_resolved"
-            if group.status == "firing" and firing and session_id is None:
-                names = tuple(dict.fromkeys(alert.name for alert in firing))
-                text = "请排查告警：\n" + "\n".join(alert.describe() for alert in firing)
+            scope = {"cluster": settings.cluster, "group_key": group.group_key}
+            keys = {
+                (alert.labels["namespace"], alert.labels["target"])
+                for alert in group.alerts
+                if alert.identity() and {"namespace", "target"} <= alert.labels.keys()
+            }
+            for namespace, target in sorted(keys):
+                await lock_workload_alerts(conn, settings.cluster, namespace, target)
+            for alert in resolved:
+                if identity := alert.identity():
+                    await record_resolved(
+                        conn,
+                        **scope,
+                        fingerprint=identity[0],
+                        starts_at=identity[1],
+                        labels=alert.labels,
+                    )
+
+            fresh = []
+            if group.status == "firing":
+                for alert in firing:
+                    identity = alert.identity()
+                    if resolved and identity is None:
+                        # 旧告警的混合批次只通报恢复，避免重复追加 firing。
+                        scoped = await sessions.get_open_alert_session(conn, group.group_key)
+                        if scoped is not None:
+                            continue
+                    if identity is None or await record_firing(
+                        conn,
+                        **scope,
+                        fingerprint=identity[0],
+                        starts_at=identity[1],
+                        labels=alert.labels,
+                    ):
+                        fresh.append(alert)
+
+            if fresh:
+                names = tuple(dict.fromkeys(alert.name for alert in fresh))
+                text = "请排查告警：\n" + "\n".join(alert.describe() for alert in fresh)
                 receipt = await sessions.record_alert(
                     conn,
                     group.group_key,
@@ -118,6 +161,39 @@ def build_app(settings: Settings, *, sessions: SessionStore, safety: ActionSafet
                 )
                 session_id = receipt.session_id
                 outcome = "created" if receipt.created else "repeated"
+                for alert in fresh:
+                    if identity := alert.identity():
+                        await link_firing(
+                            conn,
+                            **scope,
+                            fingerprint=identity[0],
+                            starts_at=identity[1],
+                            session_id=session_id,
+                            evaluate=remediation_available and settings.remediation_auto_enabled,
+                        )
+            elif resolved or group.status == "resolved" or firing:
+                session = await sessions.get_open_alert_session(conn, group.group_key)
+                if session is not None:
+                    session_id = session.id
+                    if resolved or group.status == "resolved":
+                        known, active, blocked = await clearance_state(conn, session.id)
+                        matched = bool(resolved) and all(alert.identity() for alert in resolved)
+                        if group.status == "resolved" and not active and not blocked:
+                            if not known or matched:
+                                await safety.close_session(
+                                    conn, session.id, reason="alert_resolved"
+                                )
+                                outcome = "closed"
+                        if outcome != "closed" and resolved:
+                            names = "、".join(dict.fromkeys(alert.name for alert in resolved))
+                            await sessions.append_alert_message(
+                                conn,
+                                session.id,
+                                display_text=project_text(f"部分告警已恢复：{names}"),
+                            )
+                            outcome = "partially_resolved"
+                    else:
+                        outcome = "repeated"
         return JSONResponse({"session_id": session_id, "outcome": outcome})
 
     app = Starlette(

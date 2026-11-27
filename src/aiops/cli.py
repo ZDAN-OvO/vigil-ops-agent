@@ -19,6 +19,7 @@ from typing import Any
 from loguru import logger
 
 from aiops.actions.reconciliation import ActionReconciler, LegacyActionCutover
+from aiops.actions.remediation_service import drive_remediation, open_remediation
 from aiops.actions.restart_pod import PodRestartAdapter
 from aiops.actions.rollout_undo import ActionError, RolloutUndoAdapter
 from aiops.actions.safety import ActionSafety
@@ -200,11 +201,13 @@ def _text_event(event: SessionEvent) -> str | None:
             lane = "旁路" if fields.get("lane") == "side" else "主线"
             return f"线索已送达{lane}轮次 {event.turn_id} 的第 {fields['step']} 步"
         case "approval_required":
-            return "审批卡片 " + _json(fields, indent=2)
+            return "处置卡片 " + _json(fields, indent=2)
         case "card_decision":
             return f"审批决定 {fields['card_id']}  {fields['status']}"
         case "action_result":
             return "动作回执 " + _json(fields, indent=2)
+        case "remediation_progress":
+            return f"动作 {fields['card_id']} 观察中，已收集 {fields['slots_collected']} 个时段"
         case "result" if fields["exit_code"] == 1 or (
             fields["exit_code"] != 0 and fields.get("lane") != "side"
         ):
@@ -605,6 +608,22 @@ async def _migrate(store: Store) -> list[str]:
 
 
 async def _reconcile(store: Store, settings: Settings, args: argparse.Namespace) -> int:
+    async with open_remediation(settings, store) as remediation:
+        return await _reconcile_action(
+            store,
+            settings,
+            args,
+            remediation_adapter=remediation.kube if remediation else None,
+        )
+
+
+async def _reconcile_action(
+    store: Store,
+    settings: Settings,
+    args: argparse.Namespace,
+    *,
+    remediation_adapter,
+) -> int:
     reconciler = ActionReconciler(
         store,
         adapter=RolloutUndoAdapter(
@@ -613,6 +632,7 @@ async def _reconcile(store: Store, settings: Settings, args: argparse.Namespace)
         restart_adapter=PodRestartAdapter(
             kubeconfig=settings.kubeconfig, context_name=settings.kube_context
         ),
+        remediation_adapter=remediation_adapter,
     )
     proposal_id = args.proposal_id
     target = await reconciler.get_reconciliation(proposal_id)
@@ -739,10 +759,28 @@ async def _run(args: argparse.Namespace, terminal: bool, output: OnceOutput | No
         if args.message and not settings.model_name:
             raise CLIError("未配置 VIGIL_MODEL_NAME")
         session = await _find_session(SessionStore(store), args)
-        async with open_conversation(settings=settings, store=store) as driver:
-            if output is None:
-                return await TerminalChat(driver, session).run(args.message)
-            outcome = await _once(driver, session, args, output)
+        async with open_remediation(settings, store) as remediation:
+            if remediation is None:
+                async with open_conversation(settings=settings, store=store) as driver:
+                    if output is None:
+                        return await TerminalChat(driver, session).run(args.message)
+                    outcome = await _once(driver, session, args, output)
+            else:
+                async with open_conversation(
+                    settings=settings,
+                    store=store,
+                    remediation=remediation,
+                ) as driver:
+                    if output is None:
+                        chat = TerminalChat(driver, session)
+                        async with asyncio.TaskGroup() as workers:
+                            workers.create_task(drive_remediation(remediation, chat.stop))
+                            try:
+                                result = await chat.run(args.message)
+                            finally:
+                                chat.stop.set()
+                        return result
+                    outcome = await _once(driver, session, args, output)
     if outcome is None and session.state == "closed":
         return await output.finish(status="closed", summary="会话已关闭")
     return await output.finish(outcome)

@@ -30,6 +30,8 @@ type EventOf<T extends string, Fields = Record<never, never>> = EventEnvelope & 
 export interface VerificationPlan {
   method?: string;
   window_seconds?: number | null;
+  duration_seconds?: number;
+  sample_seconds?: number;
 }
 
 export type Verification = VerificationPlan | string | null;
@@ -40,7 +42,15 @@ export type CardEvent = EventOf<"approval_required", {
   status?: string;
   action: string;
   target?: { cluster?: string; namespace?: string; kind?: string; name?: string; uid?: string };
-  parameters?: { replicas?: number; node_name?: string; restart_count?: number; last_exit_reason?: string };
+  parameters?: {
+    replicas?: number; node_name?: string; restart_count?: number; last_exit_reason?: string;
+    container?: string; request_cpu?: string; limit_cpu?: string;
+    request_memory?: string; limit_memory?: string;
+    source?: "env" | "config_map"; key?: string; value?: string; config_map?: string;
+  };
+  before?: Record<string, unknown> | null;
+  automatic_compensation?: boolean;
+  compensates?: string | null;
   risk?: { disposition: "approval" | "deny" | "auto"; reasons?: string[] };
   reason?: string;
   evidence_ids?: string[];
@@ -59,7 +69,12 @@ export type CardUpdate = EventOf<"card_decision", {
   proposal_status: string;
   attempt_id?: string | null;
   reason?: string | null;
+  compensated?: boolean;
   verification?: Record<string, unknown> | null;
+}>;
+
+export type RemediationProgress = EventOf<"remediation_progress", {
+  card_id: string; slots_collected: number; slots_required?: number; failed_slots?: number;
 }>;
 
 export type ObservationEvent = EventOf<"tool_call", {
@@ -83,7 +98,7 @@ export type ObservationEvent = EventOf<"tool_call", {
 export type DeliveryEvent = EventOf<"input_delivered", { input_id: string; step?: number; lane: string }>;
 
 export type SessionEvent =
-  | CardEvent | CardUpdate | ObservationEvent | DeliveryEvent
+  | CardEvent | CardUpdate | ObservationEvent | DeliveryEvent | RemediationProgress
   | EventOf<"session", { title?: string; source?: Session["source"]; resumed?: boolean; renamed?: boolean }>
   | EventOf<"session_closed">
   | EventOf<"message", {

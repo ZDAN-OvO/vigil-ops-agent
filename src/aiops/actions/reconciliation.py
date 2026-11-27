@@ -9,6 +9,8 @@ from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 
 from aiops.actions.kubernetes_write import WRITE_TIMEOUT_SECONDS
+from aiops.actions.remediation_kube import PatchPlan, RemediationKubeAdapter, RemediationKubeError
+from aiops.actions.remediation_policy import CONTROLLED_KINDS
 from aiops.actions.restart_pod import PodRestartAdapter
 from aiops.actions.rollout_undo import ActionError, RolloutUndoAdapter
 from aiops.actions.safety import OPEN_UNSENT, POSSIBLY_SENT, ActionSafety, _key, _now, _one
@@ -43,11 +45,13 @@ class ActionReconciler:
         *,
         adapter: RolloutUndoAdapter,
         restart_adapter: PodRestartAdapter | None = None,
+        remediation_adapter: RemediationKubeAdapter | None = None,
     ) -> None:
         self.safety = ActionSafety(store)
         self.store = store
         self.adapter = adapter
         self.restart_adapter = restart_adapter
+        self.remediation_adapter = remediation_adapter
 
     async def get_reconciliation(self, proposal_id: str) -> dict[str, Any] | None:
         """查询脱敏后的处置、原发送者与已保存的核实依据。"""
@@ -124,7 +128,29 @@ class ActionReconciler:
                 raise ActionError("identity_unknown", "无法确认批准目标身份")
             preparation = uuid4().hex
             namespace, name = row["namespace"], row["target_name"]
-            if row["kind"] == ActionKind.ROLLOUT_UNDO:
+            if row["kind"] in CONTROLLED_KINDS:
+                if self.remediation_adapter is None:
+                    raise ActionError("adapter_missing", "缺少已核验的专用处置身份")
+                plan = PatchPlan.from_dict(snapshot["plan"])
+                if plan.before.workload.uid != uid:
+                    raise ActionError("identity_unknown", "写入计划与工作负载身份不一致")
+                try:
+                    isolated = await asyncio.to_thread(
+                        self.remediation_adapter.isolate,
+                        plan.before.object,
+                        preparation,
+                    )
+                    actual = await asyncio.to_thread(self.remediation_adapter.inspect, plan)
+                except RemediationKubeError as exc:
+                    raise ActionError(exc.code, "未确认隔离及字段状态，继续持锁") from None
+                if (
+                    isolated == plan.before.object.resource_version
+                    or actual.object.resource_version != isolated
+                    or actual.state == "drift"
+                ):
+                    raise ActionError("state_changed", "字段或版本有漂移，继续持锁")
+                evidence = {"isolated_version": isolated, "field_state": actual.state}
+            elif row["kind"] == ActionKind.ROLLOUT_UNDO:
                 version = snapshot.get("resource_version") or row["target_resource_version"]
                 if not version:
                     raise ActionError("version_unknown", "无法确认原回滚请求的版本条件")
@@ -222,7 +248,27 @@ class ActionReconciler:
             if not prepared or prepared["preparation_id"] != preparation_id:
                 raise ActionError("preparation_changed", "核实凭据已改变，需重新核实")
             evidence = prepared["evidence"]
-            if row["kind"] == ActionKind.ROLLOUT_UNDO:
+            if row["kind"] in CONTROLLED_KINDS:
+                if self.remediation_adapter is None:
+                    raise ActionError("adapter_missing", "缺少已核验的专用处置身份")
+                plan = PatchPlan.from_dict(attempt["snapshot"]["plan"])
+                try:
+                    version = await asyncio.to_thread(
+                        self.remediation_adapter.confirm_isolation,
+                        plan.before.object,
+                        preparation_id,
+                    )
+                    actual = await asyncio.to_thread(self.remediation_adapter.inspect, plan)
+                except RemediationKubeError as exc:
+                    raise ActionError(exc.code, "隔离后的目标状态无法核对，继续持锁") from None
+                if (
+                    version != evidence["isolated_version"]
+                    or actual.object.resource_version != version
+                    or actual.state != evidence["field_state"]
+                    or (actual.state == "after") != written
+                ):
+                    raise ActionError("state_changed", "提交结论与隔离后的字段状态不一致")
+            elif row["kind"] == ActionKind.ROLLOUT_UNDO:
                 state = await asyncio.to_thread(
                     self.adapter.state, row["namespace"], row["target_name"]
                 )
@@ -288,16 +334,30 @@ class ActionReconciler:
         if proposal["session_id"] is not None:
             await self.safety.sessions.lock_session(conn, proposal["session_id"])
         row = await self.safety._proposal(conn, proposal_id)
+        job = await _one(
+            conn,
+            "SELECT * FROM remediation_jobs WHERE proposal_id = %s FOR UPDATE",
+            (proposal_id,),
+        )
         attempt = await self.safety._attempt(conn, proposal_id)
-        lock = await self.safety._lock(conn, _key(row))
+        keys = job["resource_keys"] if job is not None else [_key(row)]
+        result = await conn.execute(
+            """
+            SELECT * FROM action_locks WHERE target_key = ANY(%s)
+            ORDER BY target_key FOR UPDATE
+            """,
+            (keys,),
+        )
+        locks = await result.fetchall()
         if (
             attempt is None
             or attempt["status"] not in POSSIBLY_SENT
-            or lock is None
-            or lock["proposal_id"] != proposal_id
+            or (job is not None and (job["state"] != "finished" or attempt["status"] != "unknown"))
+            or [lock["target_key"] for lock in locks] != keys
+            or any(lock["proposal_id"] != proposal_id for lock in locks)
         ):
             raise ActionError("not_reconcilable", "未发现仍锁定的待核实动作")
-        return row, attempt, lock
+        return row, attempt, locks[0]
 
     async def _require_quiet(
         self,
