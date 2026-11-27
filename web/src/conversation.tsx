@@ -138,6 +138,7 @@ export function Conversation({ events, access, anchor, notice, decide }: Convers
       case "approval_required":
         return <Card card={event} access={access} anchored={anchor === `card-${event.card_id}`}
           {...projection.cardUpdates.get(event.card_id)} decide={decide}
+          progress={projection.remediationProgress.get(event.card_id)}
           observationFor={(id) => projection.cardObservationFor(event, id)} reveal={setJump} />;
       case "session_closed":
         return <p className="stamp">会话已关闭</p>;

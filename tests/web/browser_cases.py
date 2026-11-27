@@ -103,7 +103,7 @@ class BrowserCases(unittest.TestCase):
             ("intent", "intent", "准备写入", "已取得动作锁 · 尚未取得发送权", "gold"),
             ("executing", "executing", "执行中", "已取得发送权 · 结果待定", "gold"),
             ("verified", "verified", "已验证", "结果 · 入口探测 · 已恢复", "ok"),
-            ("failed", "failed", "失败", "目标版本已变 · 目标状态见第 9 节", "danger"),
+            ("failed", "failed", "失败", "目标版本已变", "danger"),
             ("unknown", "unknown", "不确定", "结果不确定 · 目标保持锁定，等待人工核实", "danger"),
         ]
         pending = ("pending_approval", "待审批", "等待人工批准 · 授权在批准时才生成", "dim")
@@ -209,11 +209,7 @@ class BrowserCases(unittest.TestCase):
                 expect(self.card.locator(".approve")).to_have_css(
                     "background-color", COLORS["gold"]
                 )
-                expect(self.card.locator(".change-table")).to_contain_text("将被移除")
-                expect(self.card.locator(".change-table")).to_contain_text("app:r4")
-                expect(self.card.locator(".change-table")).to_contain_text("app:r3")
-                expect(self.card.locator(".change-table")).not_to_contain_text(SECRET)
-                expect(self.card.locator(".card-body .fields").first).to_contain_text("当前 2 副本")
+                expect(self.card.locator(".card-change")).to_contain_text("1 → 2")
                 expect(page.locator(".feed-entry").first).to_have_css("animation-duration", "0.36s")
                 expect(page.locator(".observation .fold-body").first).to_have_css(
                     "transition-duration", "0.24s, 0.24s"
@@ -478,7 +474,7 @@ class BrowserCases(unittest.TestCase):
         expect(self.page.get_by_text("已取得初步观测", exact=True)).to_have_count(1)
         self.assert_no_errors()
 
-    def test_pod_card_uses_target_fields(self):
+    def test_voided_historical_pod_card_uses_target_fields(self):
         event = self.fixture.events["alert-demo"][-1]
         event["action"] = "restart_pod"
         event["target"].update(kind="Pod", name="frontend-fixture", uid="uid-fixture")
@@ -487,12 +483,57 @@ class BrowserCases(unittest.TestCase):
             "restart_count": 3,
             "last_exit_reason": "OOMKilled",
         }
+        event.pop("before")
+        self.fixture.receipt("voided")
         self.open_card()
+        expect(self.card.locator(".card-state")).to_have_text("已作废")
+        expect(self.card.get_by_role("button", name="批准")).to_be_hidden()
         expect(self.card.locator(".card-change")).to_contain_text("frontend-fixture")
         expect(self.card.locator(".card-change")).to_contain_text("uid-fixture")
         expect(self.card.locator(".card-change")).to_contain_text("node-a")
         expect(self.card.locator(".card-change")).to_contain_text("OOMKilled")
         expect(self.card.locator(".change-table")).to_have_count(0)
+        self.assert_no_errors()
+
+    def test_verified_historical_rollback_card_keeps_redacted_diff(self):
+        self.fixture.legacy_rollback_card()
+        self.fixture.decision("approved")
+        self.fixture.receipt(
+            "succeeded",
+            "verified",
+            phase="verification",
+            written=True,
+            verification={"method": "入口探测", "summary": "已恢复"},
+        )
+        self.open_card()
+        expect(self.card.locator(".card-state")).to_have_text("已验证")
+        expect(self.card.locator(".card-foot-line")).to_have_text("结果 · 入口探测 · 已恢复")
+        expect(self.card.get_by_role("button", name="批准")).to_be_hidden()
+        diff = self.card.locator(".change-table")
+        for detail in ("将被移除", "app:r4", "app:r3"):
+            expect(diff).to_contain_text(detail)
+        expect(diff).not_to_contain_text(SECRET)
+        expect(self.card.locator(".card-body .fields").first).to_contain_text("当前 2 副本")
+        self.assertEqual(self.fixture.posts, [])
+        self.assert_no_errors()
+
+    def test_controlled_card_displays_observation_and_compensation(self):
+        self.open_card()
+        expect(self.card.locator(".card-title")).to_contain_text("调整副本数")
+        expect(self.card.locator(".card-change")).to_contain_text("1 → 2")
+        self.card.get_by_role("button", name="批准").click()
+        self.fixture.receipt("executing", "executing", phase="sent", written=True)
+        self.fixture.push(
+            "remediation_progress", card_id=CARD, slots_collected=3, slots_required=10
+        )
+        expect(self.card.locator(".card-state")).to_have_text("观察中")
+        expect(self.card.locator(".card-foot-line")).to_contain_text("3 / 10")
+        self.fixture.receipt("succeeded", "verified", written=True, compensated=True)
+        expect(self.card.locator(".card-state")).to_have_text("已补偿")
+        expect(self.card.locator(".card-foot-line")).to_have_text("已恢复原值，原故障待人工处理")
+        expect(self.card.get_by_role("button", name="批准")).to_be_hidden()
+        self.page.reload()
+        expect(self.card.locator(".card-state")).to_have_text("已补偿")
         self.assert_no_errors()
 
     def test_create_session_from_empty_list(self):

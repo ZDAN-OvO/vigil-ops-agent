@@ -26,7 +26,8 @@ def test_existing_frontend_probe_and_new_entry_probes_are_distinct():
         {"targets": ["http://frontend.vigil-shop.svc.cluster.local./"]}
     ]
     assert legacy["params"] == {"module": ["http_2xx"]}
-    (rule,) = yaml.safe_load(config["rules.yml"])["groups"][0]["rules"]
+    rules = yaml.safe_load(config["rules.yml"])["groups"][0]["rules"]
+    (rule,) = [entry for entry in rules if entry.get("alert") == "FrontendProbeFailed"]
     assert rule["alert"] == "FrontendProbeFailed" and rule["for"] == "1m"
     assert rule["expr"] == (
         'probe_success{job="frontend-probe",'

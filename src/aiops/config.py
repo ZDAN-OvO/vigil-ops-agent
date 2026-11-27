@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     grafana_url: str | None = None
     kubeconfig: Path | None = None
     kube_context: str | None = None
+    remediation_config_dir: Path | None = None
+    remediation_auto_enabled: bool = False
+    action_kubeconfig: Path | None = None
+    action_kube_context: str | None = None
     tool_timeout_seconds: float = 10.0
     tool_max_points: int = 2000
     tool_max_series: int = 200

@@ -13,8 +13,7 @@ from uuid import uuid4
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 
-from aiops.actions.kubernetes_write import WRITE_TIMEOUT_SECONDS
-from aiops.actions.policy import AUTO_NAMESPACES, target_key
+from aiops.actions.policy import target_key
 from aiops.actions.rollout_undo import ActionError
 from aiops.contracts import (
     ActionAttempt,
@@ -43,6 +42,7 @@ ACTION_LOCK_SECONDS = 120
 ACTION_HEARTBEAT_SECONDS = 30
 POSSIBLY_SENT = {"executing", "unknown"}
 OPEN_UNSENT = {"pending_approval", "approved"}
+LEGACY_WRITE_KINDS = ("restart_pod", "rollout_undo")
 
 
 def proposal_hash(proposal: ActionProposal) -> str:
@@ -194,6 +194,15 @@ class ActionSafety:
                         "last_exit_reason",
                         "service",
                         "path",
+                        "container",
+                        "request_cpu",
+                        "limit_cpu",
+                        "request_memory",
+                        "limit_memory",
+                        "source",
+                        "config_map",
+                        "key",
+                        "value",
                     )
                     if key in parameters
                 }
@@ -201,6 +210,11 @@ class ActionSafety:
             "template_diff": project_template_diff(parameters.get("template_diff") or []),
             "verification": project_payload(proposal.observation_conditions),
             "purpose": proposal.purpose.value,
+            "before": project_payload(proposal.observation_conditions.get("before")),
+            "automatic_compensation": bool(
+                proposal.observation_conditions.get("automatic_compensation")
+            ),
+            "compensates": proposal.observation_conditions.get("compensates"),
         }
 
     async def publish_card(self, proposal_id: str, *, lease: Lease, turn_id: str) -> SessionEvent:
@@ -259,14 +273,19 @@ class ActionSafety:
             row = await _one(
                 conn,
                 """
-                SELECT p.status, e.payload
+                SELECT p.status, p.kind, e.payload
                 FROM action_proposals p JOIN session_events e
                   ON e.session_id = p.session_id AND e.seq = p.published_seq
                 WHERE p.id = %s AND p.session_id = %s
                 """,
                 (proposal_id, session_id),
             )
-            return {**row["payload"], "status": row["status"]} if row else None
+            if row is None:
+                return None
+            status = row["status"]
+            if status in OPEN_UNSENT and row["kind"] in LEGACY_WRITE_KINDS:
+                status = "voided"
+            return {**row["payload"], "status": status}
 
     async def list_runnable_card_sessions(self, *, limit: int = 50) -> list[str]:
         async with self.store.transaction() as conn:
@@ -298,6 +317,7 @@ class ActionSafety:
                 JOIN sessions s ON s.id = p.session_id
                 WHERE p.session_id = ANY(%s) AND s.closed_at IS NULL
                   AND p.published_seq IS NOT NULL AND p.status = 'pending_approval'
+                  AND p.kind NOT IN ('restart_pod', 'rollout_undo')
                 """,
                 (session_ids,),
             )
@@ -366,6 +386,13 @@ class ActionSafety:
             if session.closed_at is not None:
                 raise ActionError("session_closed", "会话已关闭")
             row = await self._proposal(conn, proposal_id, session_id=session_id)
+            job = await _one(
+                conn,
+                "SELECT * FROM remediation_jobs WHERE proposal_id = %s FOR UPDATE",
+                (proposal_id,),
+            )
+            if row["kind"] in LEGACY_WRITE_KINDS or job is None:
+                raise ActionError("policy_denied", "旧处置授权已停用")
             if (
                 row["published_seq"] is None
                 or row["status"] != "pending_approval"
@@ -377,7 +404,7 @@ class ActionSafety:
                 "SELECT 1 FROM session_turns WHERE id = %s AND finished_at IS NULL",
                 (row["session_turn_id"],),
             )
-            if active is None:
+            if active is None and row["origin"] == "model":
                 raise ActionError("not_pending", "卡片所属轮次已结束")
             proposal = _proposal_from_row(row)
             published = await _one(
@@ -392,6 +419,13 @@ class ActionSafety:
                 raise ActionError("hash_mismatch", "卡片内容已变化，请刷新后核对")
             approval = await self._insert_decision(conn, proposal, decision, actor, reason)
             await self._status(conn, proposal.id, decision.value)
+            await conn.execute(
+                """
+                UPDATE remediation_jobs SET state = %s, run_after = clock_timestamp()
+                WHERE proposal_id = %s AND state = 'awaiting_approval'
+                """,
+                ("ready" if decision is ApprovalDecision.APPROVED else "finished", proposal.id),
+            )
             await self.audit(
                 conn,
                 proposal.id,
@@ -440,7 +474,12 @@ class ActionSafety:
         rows = await conn.execute(
             """
             SELECT * FROM action_proposals WHERE session_id = %s
-              AND status IN ('pending_approval', 'approved') ORDER BY id FOR UPDATE
+              AND status IN ('pending_approval', 'approved')
+              AND NOT EXISTS (
+                  SELECT 1 FROM remediation_jobs j WHERE j.proposal_id = action_proposals.id
+                    AND j.parent_proposal_id IS NOT NULL
+              )
+              ORDER BY id FOR UPDATE
             """,
             (session_id,),
         )
@@ -466,6 +505,8 @@ class ActionSafety:
             await self.sessions.require_turn(conn, lease, turn_id)
             row = await self._proposal(conn, proposal_id)
             self._check_scope(row, lease, turn_id)
+            if row["kind"] in LEGACY_WRITE_KINDS:
+                raise ActionError("policy_denied", "旧处置授权已停用")
             attempt = await self._attempt(conn, proposal_id)
             if attempt is not None and attempt["status"] != "voided":
                 raise ActionError("already_claimed", "处置已有执行尝试，不能由轮次放弃")
@@ -591,105 +632,8 @@ class ActionSafety:
         attempt: ActionAttempt,
         approval: Approval,
     ) -> ActionAttempt:
-        expired = False
-        async with self.store.transaction() as conn:
-            row, saved, lock = await self._locked_reservation(conn, reservation)
-            await self._require_unsent(conn, reservation, row, lock)
-            if saved is None or saved["id"] != attempt.id or saved["status"] != "intent":
-                raise ActionError("attempt_lost", "发送意图已改变")
-            current = await _one(
-                conn, "SELECT * FROM approvals WHERE id = %s FOR UPDATE", (approval.id,)
-            )
-            if (
-                current is None
-                or current["proposal_id"] != reservation.proposal_id
-                or current["revoked_at"] is not None
-                or current["decision"] != "approved"
-                or current["proposal_hash"] != proposal_hash(_proposal_from_row(row))
-                or (row["published_seq"] is None and row["risk_disposition"] != "auto")
-            ):
-                raise ActionError("no_approval", "找不到匹配当前卡片的有效批准")
-            if row["risk_disposition"] == "approval":
-                decision_event = await _one(
-                    conn,
-                    """
-                    SELECT 1 FROM session_events
-                    WHERE session_id = %s AND turn_id = %s AND type = 'card_decision'
-                      AND payload->>'card_id' = %s AND payload->>'decision_id' = %s
-                      AND payload->>'status' = 'approved'
-                    """,
-                    (row["session_id"], row["session_turn_id"], row["id"], approval.id),
-                )
-                if decision_event is None:
-                    raise ActionError("no_approval", "找不到这张卡片的审批事件")
-            elif not (
-                row["risk_disposition"] == "auto"
-                and row["target_kind"] == "Pod"
-                and row["kind"] == "restart_pod"
-                and row["namespace"] in AUTO_NAMESPACES
-                and current["actor"] == f"policy:{row['policy_version']}"
-            ):
-                raise ActionError("no_approval", "动作不满足自动授权例外")
-            if row["investigation_id"] is not None:
-                linked = await _one(
-                    conn,
-                    """
-                    SELECT 1 FROM tool_requests
-                    WHERE investigation_id = %s AND proposal_id = %s AND state = 'action_pending'
-                    """,
-                    (row["investigation_id"], row["id"]),
-                )
-                if linked is None:
-                    raise ActionError("action_unbound", "轮次工具账本尚未关联待执行动作")
-            lease = reservation.lease
-            updated = await _one(
-                conn,
-                """
-                UPDATE action_attempts a
-                SET status = 'executing', send_granted_at = clock_timestamp(),
-                    request_timeout_seconds = %s, result = '{"stage":"send_granted"}'::jsonb
-                FROM sessions s, action_locks l, approvals d
-                WHERE a.id = %s AND a.status = 'intent' AND s.id = %s AND s.closed_at IS NULL
-                  AND s.lease_owner = %s AND s.lease_generation = %s
-                  AND s.lease_expires_at > clock_timestamp()
-                  AND l.target_key = %s AND l.owner = %s AND l.generation = %s
-                  AND l.expires_at > clock_timestamp() AND d.id = %s
-                  AND d.expires_at > clock_timestamp()
-                RETURNING a.*
-                """,
-                (
-                    WRITE_TIMEOUT_SECONDS,
-                    attempt.id,
-                    lease.session_id,
-                    lease.owner,
-                    lease.generation,
-                    reservation.key,
-                    reservation.owner,
-                    reservation.generation,
-                    approval.id,
-                ),
-            )
-            if updated is None:
-                await self._require_unsent(conn, reservation, row, lock)
-                if current["expires_at"] is None or current["expires_at"] <= await _now(conn):
-                    await self._end_unsent(conn, row, saved, "expired", code="expired")
-                    expired = True
-                else:
-                    raise LeaseLost(lease.session_id)
-            else:
-                await self._status(conn, row["id"], "executing")
-                receipt = _attempt_from_row(updated)
-                await self._emit_result(conn, row, receipt, status="executing")
-                await self.audit(
-                    conn,
-                    row["id"],
-                    approval.actor,
-                    "action.send_granted",
-                    {"attempt_id": attempt.id},
-                )
-        if expired:
-            raise ActionError("expired", "审批已过期，未发送写请求")
-        return receipt
+        # 此入口只保留给旧适配器，登记动作使用持久任务的发送事务。
+        raise ActionError("policy_denied", "旧处置授权已停用")
 
     async def fail_unsent(
         self, reservation: Reservation, *, status: str, code: str, reason: str = ""
@@ -750,6 +694,10 @@ class ActionSafety:
                 return
             await self.sessions.lock_session(conn, reference["session_id"])
             row = await self._proposal(conn, reference["proposal_id"])
+            if await _one(
+                conn, "SELECT 1 FROM remediation_jobs WHERE proposal_id = %s", (row["id"],)
+            ):
+                return
             attempt = await self._attempt(conn, row["id"])
             lock = await self._lock(conn, key)
             if lock is None or lock["proposal_id"] != row["id"] or lock["expires_at"] is None:
@@ -786,6 +734,9 @@ class ActionSafety:
                 LEFT JOIN action_attempts a ON a.proposal_id = p.id
                 WHERE p.session_id IS NOT NULL AND l.expires_at <= clock_timestamp()
                   AND a.status IS DISTINCT FROM 'unknown'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM remediation_jobs j WHERE j.proposal_id = p.id
+                  )
                 ORDER BY l.expires_at, l.target_key LIMIT %s
                 """,
                 (limit,),
@@ -832,6 +783,7 @@ class ActionSafety:
         result: dict | None,
         verification: dict | None,
         followup: ActionFollowup | None,
+        release_locks: bool = True,
     ) -> ActionAttempt:
         updated = await _one(
             conn,
@@ -853,7 +805,7 @@ class ActionSafety:
         await self._status(conn, row["id"], proposal_status)
         if followup is not None:
             await self.store._insert_followup(conn, followup)
-        if status != "unknown":
+        if release_locks and status != "unknown":
             await self._unlock(conn, row)
         receipt = _attempt_from_row(updated)
         await self._emit_result(conn, row, receipt, status=proposal_status)
@@ -912,6 +864,14 @@ class ActionSafety:
         reason: str = "",
     ) -> None:
         await self._status(conn, row["id"], status)
+        await conn.execute(
+            """
+            UPDATE remediation_jobs SET state = 'finished', owner = NULL,
+                generation = NULL, expires_at = NULL
+            WHERE proposal_id = %s AND sent_at IS NULL
+            """,
+            (row["id"],),
+        )
         await conn.execute(
             """
             UPDATE approvals SET revoked_at = clock_timestamp()
@@ -1025,8 +985,8 @@ class ActionSafety:
     @staticmethod
     async def _unlock(conn: AsyncConnection, row: dict) -> None:
         await conn.execute(
-            "DELETE FROM action_locks WHERE target_key = %s AND proposal_id = %s",
-            (_key(row), row["id"]),
+            "DELETE FROM action_locks WHERE proposal_id = %s",
+            (row["id"],),
         )
 
     @staticmethod

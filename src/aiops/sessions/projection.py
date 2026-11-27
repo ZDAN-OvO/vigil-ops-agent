@@ -281,6 +281,7 @@ def project_action_result(
         "status": attempt.status.value,
         "phase": phase,
         "written": written,
+        "compensated": result.get("compensated") is True,
         "reason": project_text(reason) if isinstance(reason, str) else None,
         "verification": project_payload(attempt.verification),
     }

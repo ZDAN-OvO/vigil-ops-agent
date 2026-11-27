@@ -6,6 +6,7 @@
 
 - 配置用 Pydantic Settings，日志用 Loguru；脚本使用 shell 或 Python。
 - 优先复用成熟依赖：LangGraph 负责编排、checkpoint 与审批恢复，LangChain `create_agent` 负责工具循环。
+- 受控写入由持久处置任务执行。模型调查可提出限定动作，告警规则可使用独立证据授权。任务在同一事务内绑定审批摘要、锁组和故障发送名额，然后用专用 Kubernetes 身份发送并验证限定字段。
 - 一个 PostgreSQL 实例承载业务表、checkpoint 与以后的知识向量。
 - 只用现有模型网关的 OpenAI 兼容端点。
 - 不导入、不读取 `deprecated/` 中的旧项目。

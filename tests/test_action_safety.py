@@ -2,9 +2,7 @@
 
 import asyncio
 import json
-from dataclasses import replace
-from datetime import UTC, datetime, timedelta
-from threading import Event
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -14,18 +12,28 @@ from actions_support import (
     FakePrometheus,
     FakeRestartAdapter,
     build_executor,
+    legacy_risk,
     make_proposal,
     pod_plan,
+    restart_proposal,
     rollout_plan,
+    seed_legacy_approval,
+    seed_legacy_attempt,
+    seed_legacy_card,
+)
+from controlled_action_support import (
+    expire_job,
+    finish_observation,
+    intent_for,
+    prepare_replica,
+    replica_runtime,
 )
 
-from aiops.actions import executor as executor_module
-from aiops.actions import safety as safety_module
 from aiops.actions.kubernetes_write import WRITE_TIMEOUT_SECONDS
-from aiops.actions.policy import decide, target_key
+from aiops.actions.policy import target_key
 from aiops.actions.reconciliation import ActionReconciler, LegacyActionCutover
 from aiops.actions.rollout_undo import ActionError
-from aiops.actions.safety import ActionSafety
+from aiops.actions.safety import ActionSafety, Reservation
 from aiops.contracts import ActionAttempt, ApprovalDecision, AttemptStatus, ProposalStatus
 from aiops.db import Store
 from aiops.sessions.models import LeaseLost
@@ -35,28 +43,31 @@ from aiops.sessions.store import SessionStore
 pytestmark = pytest.mark.skipif(not DSN, reason="未配置 VIGIL_DATABASE_URL")
 
 
-async def _new(store, tmp_path, cleanup, *, adapter=None, **kwargs):
+async def _legacy_executor(store, tmp_path, cleanup, adapter):
     await store.migrate()
-    adapter = adapter or FakeAdapter(rollout_plan())
+    return await build_executor(
+        store, adapter, FakePrometheus([200.0, 200.0]), tmp_path, cleanup=cleanup
+    )
+
+
+async def _new(store, tmp_path, cleanup, **kwargs):
+    await store.migrate()
     executor = await build_executor(
         store,
-        adapter,
+        FakeAdapter(rollout_plan()),
         FakePrometheus([200.0, 200.0]),
         tmp_path,
         cleanup=cleanup,
         **kwargs,
     )
-    proposal, _, _ = await executor.prepare_rollback(
-        deployment="productcatalogservice",
-        reason="凭据 token=synthetic-key",
-        actor="tester",
-    )
+    runtime = replica_runtime(store)
+    proposal = await prepare_replica(executor, runtime, reason="凭据 token=synthetic-key")
     cleanup.append(proposal.id)
-    return executor, proposal, adapter
+    return executor, proposal, runtime
 
 
 async def _approved(store, tmp_path, cleanup, **kwargs):
-    executor, proposal, adapter = await _new(store, tmp_path, cleanup, **kwargs)
+    executor, proposal, runtime = await _new(store, tmp_path, cleanup, **kwargs)
     event = await executor.publish_test_card(proposal.id)
     approval = await ActionSafety(store).record_card_decision(
         proposal.id,
@@ -65,7 +76,7 @@ async def _approved(store, tmp_path, cleanup, **kwargs):
         decision=ApprovalDecision.APPROVED,
         actor="tester",
     )
-    return executor, proposal, adapter, approval
+    return executor, proposal, runtime, approval
 
 
 def _key(proposal):
@@ -89,31 +100,11 @@ async def _expire(store, proposal):
 
 def test_card_is_bound_to_pause_scope_and_saved_fingerprint(tmp_path, cleanup):
     async def run():
-        plan = replace(
-            rollout_plan(),
-            replicas=2,
-            changes=[
-                {"op": "remove", "path": "/spec/containers/0/extra", "current": "removed-value"},
-                {
-                    "op": "remove",
-                    "path": "/spec/containers/0/env/0",
-                    "current": {"name": "CREDENTIAL", "value": "original-private-value"},
-                },
-                {
-                    "op": "add",
-                    "path": "/spec/containers/0/env",
-                    "value": [
-                        {"name": "CUSTOM", "value": "opaque-fake-password"},
-                    ],
-                },
-            ],
-        )
         async with Store.open(DSN) as store:
-            executor, proposal, adapter = await _new(
+            executor, proposal, runtime = await _new(
                 store,
                 tmp_path,
                 cleanup,
-                adapter=FakeAdapter(plan),
                 web_url="http://127.0.0.1:8090",
             )
             safety = ActionSafety(store)
@@ -133,11 +124,9 @@ def test_card_is_bound_to_pause_scope_and_saved_fingerprint(tmp_path, cleanup):
             assert card.payload["url"].endswith(
                 f"/sessions/{proposal.session_id}#card-{proposal.id}"
             )
-            assert card.payload["template_diff"][0]["op"] == "remove"
-            assert card.payload["template_diff"][0]["current"] == "removed-value"
-            assert card.payload["parameters"]["replicas"] == 2
-            assert "original-private-value" not in json.dumps(card.payload)
-            assert "opaque-fake-password" not in json.dumps(card.payload)
+            assert card.payload["action"] == "scale_replicas"
+            assert card.payload["parameters"] == {"replicas": 2}
+            assert card.payload["before"] == {"replicas": 1}
             assert "synthetic-key" not in json.dumps(card.payload)
             assert await safety.list_runnable_card_sessions() == []
             await SessionStore(store).release_lease(lease)
@@ -170,169 +159,171 @@ def test_card_is_bound_to_pause_scope_and_saved_fingerprint(tmp_path, cleanup):
             events = await SessionStore(store).list_events(proposal.session_id, after_seq=card.seq)
             (decision,) = [event for event in events if event.type == "card_decision"]
             assert decision.payload["expires_at"] is None
-            assert adapter.calls == []
+            assert runtime.kube.dry_runs == runtime.kube.writes == []
 
     asyncio.run(run())
 
 
-def test_close_wins_after_intent_and_revokes_approval(tmp_path, cleanup, monkeypatch):
+def test_close_revokes_approval_after_job_claim(tmp_path, cleanup):
     async def run():
-        ready, resume = asyncio.Event(), asyncio.Event()
-        original = ActionSafety.grant_send
-
-        async def pause(self, reservation, attempt, approval):
-            ready.set()
-            await resume.wait()
-            return await original(self, reservation, attempt, approval)
-
-        monkeypatch.setattr(ActionSafety, "grant_send", pause)
         async with Store.open(DSN) as driver, Store.open(DSN) as service:
-            executor, proposal, adapter, _ = await _approved(
-                driver,
-                tmp_path,
-                cleanup,
-                group_key=f"alert-{uuid4().hex}",
+            _, proposal, runtime, _ = await _approved(
+                driver, tmp_path, cleanup, group_key=f"alert-{uuid4().hex}"
             )
+            claim = await runtime.ledger.claim(proposal.id)
+            assert claim is not None
             sessions = SessionStore(service)
             session = await sessions.get_session(proposal.session_id)
-            original_task = asyncio.create_task(executor.execute_authorized(proposal.id))
-            await asyncio.wait_for(ready.wait(), 5)
             async with sessions.alert_transaction(session.group_key) as conn:
                 event = await ActionSafety(service).close_session(conn, session.id, reason="已恢复")
                 assert event.type == "session_closed"
-            resume.set()
-            with pytest.raises(ActionError):
-                await original_task
-            assert adapter.calls == [True]
+            with pytest.raises((ActionError, LeaseLost)):
+                await runtime.ledger.grant_send(
+                    claim, intent_for(proposal), authorize=lambda *_: pytest.fail("会话已关闭")
+                )
             assert not await service.target_is_locked(_key(proposal))
             assert (await service.get_proposal(proposal.id)).status == ProposalStatus.VOIDED
             assert (await service.get_approval(proposal.id)).revoked_at is not None
-            assert (await service.get_attempt(proposal.id)).status == AttemptStatus.VOIDED
+            assert await service.get_attempt(proposal.id) is None
+            assert runtime.kube.writes == []
             events = await sessions.list_events(session.id)
-            assert [
-                (event.payload["phase"], event.payload["written"])
-                for event in events
-                if event.type == "action_result"
-            ] == [("intent", False), ("intent", False)]
+            (receipt,) = [event for event in events if event.type == "action_result"]
+            assert receipt.payload["written"] is False
 
     asyncio.run(run())
 
 
 @pytest.mark.parametrize("close", [False, True])
-def test_live_verifier_renews_after_session_takeover_or_close(
-    tmp_path, cleanup, monkeypatch, close
-):
-    # 缩短时限，让验证跨过首代锁的有期窗口。
-    monkeypatch.setattr(safety_module, "ACTION_LOCK_SECONDS", 2)
-    monkeypatch.setattr(executor_module, "ACTION_HEARTBEAT_SECONDS", 0.15)
-    verifying, complete = Event(), Event()
-
-    class SlowVerification(FakeAdapter):
-        def wait_rolled_out(self, plan, timeout_seconds):
-            verifying.set()
-            return complete.wait(8)
-
+def test_observation_is_taken_over_after_session_lease_ends(tmp_path, cleanup, close):
     async def run():
         async with Store.open(DSN) as driver, Store.open(DSN) as service:
-            executor, proposal, adapter, _ = await _approved(
-                driver,
-                tmp_path,
-                cleanup,
-                adapter=SlowVerification(rollout_plan()),
-            )
-            original_task = asyncio.create_task(executor.execute_authorized(proposal.id))
-            successor_task = None
-            assert await asyncio.to_thread(verifying.wait, 5)
-            try:
-                sessions = SessionStore(service)
-                if close:
-                    async with service.transaction() as conn:
-                        await ActionSafety(service).close_session(
-                            conn, proposal.session_id, reason="关闭"
-                        )
-                else:
-                    await sessions.release_lease(executor._session_lease)
-                    successor = await build_executor(
-                        service,
-                        adapter,
-                        FakePrometheus([200.0, 200.0]),
-                        tmp_path,
-                        cleanup=cleanup,
+            executor, proposal, original, _ = await _approved(driver, tmp_path, cleanup)
+            await original.drive(proposal.id)
+            await original.drive(proposal.id)
+            first = await service.get_attempt(proposal.id)
+            assert first.status is AttemptStatus.EXECUTING
+            assert original.kube.writes == [{"replicas": 2}]
+            assert await service.target_is_locked(_key(proposal))
+            sessions = SessionStore(service)
+            if close:
+                async with service.transaction() as conn:
+                    await ActionSafety(service).close_session(
+                        conn, proposal.session_id, reason="关闭"
                     )
-                    successor_task = asyncio.create_task(successor.resume(proposal.id))
-                await asyncio.sleep(2.2)
-                await ActionSafety(service).recover_target(_key(proposal))
-                assert await service.target_is_locked(_key(proposal))
-                assert (await service.get_attempt(proposal.id)).status == AttemptStatus.EXECUTING
-                with pytest.raises(ActionError, match="原发送者"):
-                    await ActionReconciler(service, adapter=adapter).prepare_reconciliation(
-                        proposal.id,
-                        actor="tester",
-                    )
-                if successor_task:
-                    assert not successor_task.done()
-            finally:
-                complete.set()
-            result = await original_task
-            if successor_task:
-                assert await successor_task == result
-            assert result.status == AttemptStatus.VERIFIED
-            assert adapter.calls == [True, False]
+            else:
+                await sessions.release_lease(executor._session_lease)
+                assert await sessions.acquire_main_lease(proposal.session_id, "successor")
+            successor = replica_runtime(service, kube=original.kube)
+            await finish_observation(successor, proposal.id)
+            result = await service.get_attempt(proposal.id)
+            assert result.id == first.id
+            assert result.status is AttemptStatus.VERIFIED
+            assert original.kube.writes == [{"replicas": 2}]
             assert not await service.target_is_locked(_key(proposal))
-            assert project_action_result(result)["written"] is True
-            rollbacks = await ActionSafety(service).list_verified_rollbacks(
-                since=datetime.now(UTC) - timedelta(minutes=1),
-                cluster=proposal.target.cluster,
-            )
-            row = next(item for item in rollbacks if item["card_id"] == proposal.id)
-            assert row["approved_by"] == "tester"
-            assert row["target_revision"] == "1"
 
     asyncio.run(run())
 
 
-class SimulatedProcessExit(BaseException):
-    pass
-
-
-@pytest.mark.parametrize("crash_after", ["reserve", "save_intent", "grant_send"])
-def test_recovery_distinguishes_lock_intent_and_send_grant(
-    tmp_path, cleanup, monkeypatch, crash_after
-):
-    original = getattr(ActionSafety, crash_after)
-
-    async def crash(self, *args, **kwargs):
-        await original(self, *args, **kwargs)
-        raise SimulatedProcessExit()
-
-    monkeypatch.setattr(ActionSafety, crash_after, crash)
-
+@pytest.mark.parametrize("checkpoint", ["claim", "send_grant"])
+def test_new_job_recovery_distinguishes_claim_and_send_grant(tmp_path, cleanup, checkpoint):
     async def run():
         async with Store.open(DSN) as driver, Store.open(DSN) as recovery:
-            executor, proposal, adapter, _ = await _approved(driver, tmp_path, cleanup)
-            with pytest.raises(SimulatedProcessExit):
-                await executor.execute_authorized(proposal.id)
-            assert adapter.calls.count(False) == 0
-            await _expire(recovery, proposal)
-            lease = await SessionStore(recovery).acquire_main_lease(proposal.session_id, "recovery")
-            executor._session_lease = lease
-            if crash_after == "reserve":
-                await ActionSafety(recovery).recover_target(_key(proposal))
-            attempt = await executor.read_action_attempt(proposal.id)
-            saved = await recovery.get_proposal(proposal.id)
-            if crash_after == "grant_send":
-                assert saved.status == ProposalStatus.UNKNOWN
-                assert await recovery.target_is_locked(_key(proposal))
-                assert attempt.status == AttemptStatus.UNKNOWN
-                assert project_action_result(attempt)["written"] is None
-                monkeypatch.setattr(ActionSafety, crash_after, original)
-                assert await executor.execute_authorized(proposal.id) == attempt
+            _, proposal, original, _ = await _approved(driver, tmp_path, cleanup)
+            claim = await original.ledger.claim(proposal.id)
+            assert claim is not None
+            if checkpoint == "send_grant":
+                await original.ledger.grant_send(
+                    claim, intent_for(proposal), authorize=lambda *_: None
+                )
+            await expire_job(recovery, proposal.id)
+            successor = replica_runtime(recovery)
+            next_claim = await successor.ledger.claim(proposal.id)
+            if checkpoint == "claim":
+                assert next_claim is not None
+                assert next_claim.job["generation"] > claim.job["generation"]
+                with pytest.raises(LeaseLost):
+                    await original.ledger.renew(claim)
+                assert await recovery.get_attempt(proposal.id) is None
             else:
-                assert saved.status == ProposalStatus.VOIDED
-                assert not await recovery.target_is_locked(_key(proposal))
-                assert attempt is None or attempt.status == AttemptStatus.VOIDED
-                assert (await recovery.get_approval(proposal.id)).revoked_at is not None
-            assert adapter.calls.count(False) == 0
+                assert next_claim is None
+                receipt = await recovery.get_attempt(proposal.id)
+                assert receipt.status is AttemptStatus.UNKNOWN
+                assert project_action_result(receipt)["written"] is None
+                assert await recovery.target_is_locked(_key(proposal))
+                assert await successor.ledger.claim(proposal.id) is None
+            assert original.kube.writes == successor.kube.writes == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("checkpoint", ["intent", "send_grant"])
+@pytest.mark.parametrize("proposal_factory", [make_proposal, restart_proposal])
+def test_legacy_send_is_disabled_and_recovery_prunes_only_unsent(
+    tmp_path, cleanup, proposal_factory, checkpoint
+):
+    async def run():
+        adapter = FakeAdapter(rollout_plan())
+        async with Store.open(DSN) as store:
+            executor = await _legacy_executor(store, tmp_path, cleanup, adapter)
+            proposal, card = await seed_legacy_card(
+                store, executor, cleanup, proposal_factory=proposal_factory
+            )
+            safety = ActionSafety(store)
+            displayed = await safety.get_card(proposal.id, session_id=proposal.session_id)
+            assert displayed["action"] == proposal.kind
+            assert displayed["status"] == "voided"
+            assert displayed["fingerprint"] == card.payload["fingerprint"]
+            with pytest.raises(ActionError) as caught:
+                await safety.record_card_decision(
+                    proposal.id,
+                    session_id=proposal.session_id,
+                    fingerprint=card.payload["fingerprint"],
+                    decision=ApprovalDecision.APPROVED,
+                    actor="tester",
+                )
+            assert caught.value.code == "policy_denied"
+            assert await store.get_approval(proposal.id) is None
+            approval = await seed_legacy_approval(store, proposal)
+            sent = checkpoint == "send_grant"
+            attempt = await seed_legacy_attempt(
+                store,
+                proposal,
+                status=AttemptStatus.EXECUTING if sent else AttemptStatus.INTENT,
+                lock=True,
+            )
+            if sent:
+                await store.set_proposal_status(proposal.id, ProposalStatus.EXECUTING)
+            else:
+                lease, turn_id = executor._scope()
+                async with store.transaction() as conn:
+                    lock = await safety._lock(conn, _key(proposal))
+                reservation = Reservation(
+                    proposal.id, _key(proposal), lock["owner"], lock["generation"], lease, turn_id
+                )
+                with pytest.raises(ActionError) as caught:
+                    await safety.grant_send(reservation, attempt, approval)
+                assert caught.value.code == "policy_denied"
+                assert (await store.get_attempt(proposal.id)).send_granted_at is None
+            assert (
+                await safety.get_card_decision(proposal.id, session_id=proposal.session_id)
+                == approval
+            )
+            await _expire(store, proposal)
+            await safety.recover_target(_key(proposal))
+            saved = await store.get_proposal(proposal.id)
+            receipt = await store.get_attempt(proposal.id)
+            if sent:
+                assert saved.status is ProposalStatus.UNKNOWN
+                assert receipt.status is AttemptStatus.UNKNOWN
+                assert project_action_result(receipt)["written"] is None
+                assert await store.target_is_locked(_key(proposal))
+            else:
+                assert saved.status is ProposalStatus.VOIDED
+                assert receipt.status is AttemptStatus.VOIDED
+                assert project_action_result(receipt)["written"] is False
+                assert (await store.get_approval(proposal.id)).revoked_at is not None
+                assert not await store.target_is_locked(_key(proposal))
+            assert adapter.calls == []
 
     asyncio.run(run())
 
@@ -388,9 +379,18 @@ def test_human_verification_fences_late_rollback_and_keeps_lock_on_failure(tmp_p
     async def run():
         adapter = LostResponse(rollout_plan())
         async with Store.open(DSN) as store:
-            executor, proposal, _, _ = await _approved(store, tmp_path, cleanup, adapter=adapter)
-            receipt = await executor.execute_authorized(proposal.id)
-            assert adapter.sends == 1 and receipt.status == AttemptStatus.UNKNOWN
+            executor = await _legacy_executor(store, tmp_path, cleanup, adapter)
+            proposal, _ = await seed_legacy_card(
+                store, executor, cleanup, status=ProposalStatus.UNKNOWN
+            )
+            receipt = await seed_legacy_attempt(
+                store,
+                proposal,
+                status=AttemptStatus.UNKNOWN,
+                lock=True,
+                result={"stage": "apply", "error": "TimeoutError"},
+            )
+            assert adapter.sends == 0 and receipt.status == AttemptStatus.UNKNOWN
             reconciler = ActionReconciler(store, adapter=adapter)
             assert (await reconciler.get_reconciliation(proposal.id))["attempt_id"] == receipt.id
             with pytest.raises(ActionError, match="原发送者"):
@@ -443,8 +443,8 @@ def test_legacy_cutover_is_explicit_idempotent_and_restores_unknown_lock(tmp_pat
                 status=ProposalStatus.UNKNOWN,
             )
             cleanup.extend([pending.id, unknown.id])
-            await store.save_proposal(pending, decide(pending, target_busy=False))
-            await store.save_proposal(unknown, decide(unknown, target_busy=False))
+            await store.save_proposal(pending, legacy_risk(pending))
+            await store.save_proposal(unknown, legacy_risk(unknown))
             await store.save_attempt(
                 ActionAttempt(
                     id=f"att-{uuid4().hex}",
@@ -596,7 +596,7 @@ def test_pending_legacy_lease_blocks_cutover_then_voids(cleanup, ids):
                 )
             proposal = make_proposal(id=f"act-{uuid4().hex}", idempotency_key=uuid4().hex)
             cleanup.append(proposal.id)
-            await store.save_proposal(proposal, decide(proposal, target_busy=False))
+            await store.save_proposal(proposal, legacy_risk(proposal))
             cutover = LegacyActionCutover(store)
             assert (await cutover.preview())["blocked"]
             flags = dict(
@@ -642,15 +642,21 @@ def test_reconciliation_records_residual_pod_uid_risk(tmp_path, cleanup):
                 cleanup=cleanup,
                 restart_adapter=restart,
             )
-            proposal, _, _ = await executor.prepare_restart_pod(
-                pod=restart._plan.name,
-                service="rebuild-demo",
-                path="/work",
-                reason="重建",
-                actor="tester",
+            proposal, _ = await seed_legacy_card(
+                store,
+                executor,
+                cleanup,
+                proposal_factory=restart_proposal,
+                status=ProposalStatus.UNKNOWN,
             )
-            cleanup.append(proposal.id)
-            receipt = await executor.approve(proposal.id, actor="tester")
+            receipt = await seed_legacy_attempt(
+                store,
+                proposal,
+                status=AttemptStatus.UNKNOWN,
+                lock=True,
+                result={"stage": "apply", "error": "TimeoutError"},
+            )
+            assert restart.calls == []
             assert receipt.status == AttemptStatus.UNKNOWN
             assert project_action_result(receipt)["written"] is None
             reconciler = ActionReconciler(store, adapter=rollout, restart_adapter=restart)
@@ -675,44 +681,42 @@ def test_reconciliation_records_residual_pod_uid_risk(tmp_path, cleanup):
     asyncio.run(run())
 
 
-def test_stale_and_unscoped_drivers_cannot_abandon_or_execute(tmp_path, cleanup):
+def test_stale_driver_cannot_abandon_a_new_card(tmp_path, cleanup):
     async def run():
         async with Store.open(DSN) as store:
-            executor, proposal, adapter, _ = await _approved(store, tmp_path, cleanup)
+            executor, proposal, runtime, _ = await _approved(store, tmp_path, cleanup)
             old_lease = executor._session_lease
-            await SessionStore(store).release_lease(old_lease)
-            new_lease = await SessionStore(store).acquire_main_lease(
-                proposal.session_id, "new-driver"
-            )
+            sessions = SessionStore(store)
+            await sessions.release_lease(old_lease)
+            new_lease = await sessions.acquire_main_lease(proposal.session_id, "new-driver")
+            assert new_lease is not None
             with pytest.raises(LeaseLost):
                 await executor.abandon(proposal.id, actor="old-driver", reason="已失租")
-            with pytest.raises(LeaseLost):
-                await executor.execute_authorized(proposal.id)
             executor._session_lease = None
             with pytest.raises(ActionError) as caught:
-                await executor.execute_authorized(proposal.id)
+                await executor.abandon(proposal.id, actor="unscoped", reason="无主线")
             assert caught.value.code == "scope_required"
-            assert (await store.get_proposal(proposal.id)).status == ProposalStatus.APPROVED
-            assert adapter.calls == []
+            assert (await store.get_proposal(proposal.id)).status is ProposalStatus.APPROVED
             executor._session_lease = new_lease
-            attempt = await executor.execute_authorized(proposal.id)
-            assert attempt.send_granted_at is not None
+            await runtime.drive(proposal.id)
+            assert (await store.get_attempt(proposal.id)).send_granted_at is not None
             with pytest.raises(ActionError) as caught:
                 await executor.abandon(proposal.id, actor="new-driver", reason="已发送")
             assert caught.value.code == "already_claimed"
+            assert runtime.kube.writes == [{"replicas": 2}]
 
     asyncio.run(run())
 
 
-def test_approval_binds_verification_settings_across_drivers(tmp_path, cleanup):
+def test_new_approval_cannot_send_with_changed_policy_version(tmp_path, cleanup):
     async def run():
         async with Store.open(DSN) as store:
-            executor, proposal, adapter, _ = await _approved(store, tmp_path, cleanup)
-            executor._probe_expression = "changed_probe"
-            with pytest.raises(ActionError) as caught:
-                await executor.execute_authorized(proposal.id)
-            assert caught.value.code == "verification_changed"
-            assert adapter.calls == []
-            assert (await store.get_proposal(proposal.id)).status == ProposalStatus.FAILED
+            _, proposal, runtime, _ = await _approved(store, tmp_path, cleanup)
+            runtime.policy = runtime.policy.model_copy(update={"version": "changed"})
+            await runtime.drive(proposal.id)
+            assert runtime.kube.dry_runs == runtime.kube.writes == []
+            assert await store.get_attempt(proposal.id) is None
+            assert (await store.get_proposal(proposal.id)).status is ProposalStatus.FAILED
+            assert not await store.target_is_locked(_key(proposal))
 
     asyncio.run(run())

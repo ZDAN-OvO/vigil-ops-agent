@@ -1,5 +1,39 @@
 # Vigil 安装与切换验收
 
+## 受控自动修复验收
+
+在隔离 Kubernetes `v1.35.5+k3s1` 上运行 Vigil、Alertmanager、Prometheus 和真实业务探针。
+API Server 启用 Metadata 级别审计。注入与复位由实验操作者执行。Vigil 的写入使用
+`system:serviceaccount:vigil-monitoring:vigil-remediation`。
+
+Docker 宿主使用 cgroup v1，实验节点以 `native` snapshotter 运行。部分固定镜像由已核对摘要
+的本地副本导入，Prometheus 与 Alertmanager 分别使用 Debian 打包的 2.42.0 和 0.25.0。
+以下证据保留各次运行的动作、会话、目标 UID、样本及对应审计 ID。
+审计包含服务端预检，写入次数只计实际 PATCH。
+
+| 场景 | 实际结果 | 证据 |
+| --- | --- | --- |
+| 缺少 OOM 证据 | 首页 HTTP 500，当前容器运行在 `16Mi`、零重启。真实 Webhook 收到新告警身份后，Vigil 指出缺少 OOM 和重启证据，转人工审批。账本未授权发送，审计无目标写入。同时间段的扩容请求也保留在审计中。 | [现场、账本与审计](validation/controlled-remediation/02-insufficient.json) |
+| 容量不足自动扩容 | 副本数从 1 增至 2，业务恢复，10 个时段全通过。会话关闭。一次写入。 | [网页](validation/controlled-remediation/scale.png) · [账本与审计](validation/controlled-remediation/04-scale-replay.json) |
+| 普通 ConfigMap 修复 | `degraded → healthy`，应用加载新值，10 个时段全通过。会话关闭。一次写入。 | [网页](validation/controlled-remediation/configmap.png) · [账本与审计](validation/controlled-remediation/05-config.json) |
+| 普通环境变量修复 | `VIGIL_MODE: degraded → healthy`，应用加载新值，10 个时段全通过。会话关闭。一次写入。 | [账本与审计](validation/controlled-remediation/05-env.json) |
+| 恶化后补偿 | 失败率从 1/5 升至 5/5。第一次写成 `worsen`，第二次恢复 `degraded`。补偿卡和人工待办均落库。此场景将已采集的告警通过真实 Webhook 重放。 | [网页](validation/controlled-remediation/compensation.png) · [账本与审计](validation/controlled-remediation/03-compensation-fixed.json) |
+| 网页批准普通配置 | Chrome 经一次性链接登录后批准 `VIGIL_MODE: healthy → limited`，后台返回 HTTP 200。API Server 记录一次写入，10 个时段全通过，独立加载信号为 `clear`。通过实验脚本创建待审批卡片。 | [批准前](validation/controlled-remediation/manual-approval.png) · [批准后](validation/controlled-remediation/manual-applying.png) · [已验证](validation/controlled-remediation/manual-verified.png) · [账本与审计](validation/controlled-remediation/05-manual-final.json) |
+
+- **内存修复首轮。** 真实首页返回 HTTP 500，现行容器内存限额为 `16Mi`，三次重启，
+  最后一次终止原因为 `OOMKilled`。Vigil 写入 `128Mi`，新 Pod 拉取镜像超时。
+  账本记录变更生效超时。 [账本与审计](validation/controlled-remediation/01-oom.json)
+- **观察期间复发首轮。** 容量告警恢复后会话继续观察。实验操作者暂时收窄 Service 的
+  后端选择范围，Alertmanager 投递了第二次发作，观察记录中出现两个失败时段。
+  Prometheus 连接中断后动作以未知结果结束，只有初始扩容写入。 [账本与审计](validation/controlled-remediation/06-recurrence.json)
+
+真实补偿首轮发现授权序列化加入了可选字段的 `null`，补偿在数据库读取后校验失败。
+修复后增加持久化授权的回归用例，并在独立数据库复跑完整正向变更与补偿。
+集群启动、注入和采集命令见[受控自动修复验收步骤](../env/README.md#11-受控自动修复验收)。
+
+在独立 PostgreSQL 上运行 `LANGGRAPH_STRICT_MSGPACK=true make check-all`，Python 485 项、
+Vitest 14 项和 Chrome 15 项全部通过，零跳过。门禁包括前端类型检查、样式检查和 Ruff。
+
 ## FastAPI 网页宿主验收
 
 | 产物 | 构建提交 | wheel SHA-256 | 证据来源 |

@@ -1,0 +1,278 @@
+# 由 scripts/generate_remediation_manifests.py 生成。
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: vigil-remediation-write
+  annotations:
+    vigil.aiops/policy-version: controlled-remediation-v1-8f5dcece25ec1c30e97b837ec5bec5b7726f785c4e50a3838b733fbe676a832e
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups:
+      - '*'
+      apiVersions:
+      - '*'
+      operations:
+      - CREATE
+      - UPDATE
+      - DELETE
+      - CONNECT
+      resources:
+      - '*/*'
+      scope: Namespaced
+  matchConditions:
+  - name: dedicated-remediation-identity
+    expression: request.userInfo.username == "system:serviceaccount:vigil-monitoring:vigil-remediation"
+  variables:
+  - name: new
+    expression: |-
+      dyn(object)
+  - name: old
+    expression: |-
+      dyn(oldObject)
+  - name: targets
+    expression: |-
+      {"vigil-experiment/configmaps/vigil-config-fixture":dyn({"mode":dyn(["healthy","degraded","limited"])}),"vigil-experiment/deployments/vigil-config-fixture":dyn({"env":dyn({"app":dyn({"VIGIL_MODE":dyn(["healthy","degraded","limited"])})}),"replicas":dyn(0),"resources":dyn({})}),"vigil-experiment/deployments/vigil-replica-fixture":dyn({"env":dyn({}),"replicas":dyn(3),"resources":dyn({})}),"vigil-shop/deployments/currencyservice":dyn({"env":dyn({}),"replicas":dyn(0),"resources":dyn({"server":dyn({"limits":dyn({"cpu":dyn("1"),"memory":dyn("512Mi")}),"requests":dyn({"cpu":dyn("500m"),"memory":dyn("256Mi")})})})})}
+  - name: key
+    expression: |-
+      request.namespace + '/' + request.resource.resource + '/' + request.name
+  - name: target
+    expression: |-
+      variables.targets[variables.key]
+  - name: isConfig
+    expression: |-
+      request.resource.resource == 'configmaps'
+  - name: annotations
+    expression: |-
+      ('annotations' in variables.new.metadata ? variables.new.metadata.annotations : {})
+  - name: oldAnnotations
+    expression: |-
+      ('annotations' in variables.old.metadata ? variables.old.metadata.annotations : {})
+  - name: fenceChanged
+    expression: |-
+      variables.annotations[?"vigil.aiops/reconciliation"] != variables.oldAnnotations[?"vigil.aiops/reconciliation"]
+  - name: containers
+    expression: |-
+      variables.new.spec.template.spec.containers
+  - name: oldContainers
+    expression: |-
+      variables.old.spec.template.spec.containers
+  - name: newData
+    expression: |-
+      ('data' in variables.new ? variables.new.data : {})
+  - name: oldData
+    expression: |-
+      ('data' in variables.old ? variables.old.data : {})
+  validations:
+  - expression: |-
+      (request.operation == 'UPDATE' &&
+      (!has(request.subResource) || request.subResource == '') &&
+      variables.key in variables.targets && oldObject != null && object != null) &&
+      ((variables.new.metadata).all(k, k in ['annotations', 'generation', 'managedFields'] || (k in (variables.old.metadata) && (variables.new.metadata)[k] == (variables.old.metadata)[k])) &&
+      (variables.old.metadata).all(k, k in ['annotations', 'generation', 'managedFields'] || k in (variables.new.metadata)) &&
+      (variables.annotations).all(k, k in ["vigil.aiops/reconciliation"] || (k in (variables.oldAnnotations) && (variables.annotations)[k] == (variables.oldAnnotations)[k])) &&
+      (variables.oldAnnotations).all(k, k in ["vigil.aiops/reconciliation"] || k in (variables.annotations)) &&
+      (!variables.fenceChanged || (
+        "vigil.aiops/reconciliation" in variables.annotations &&
+        variables.annotations["vigil.aiops/reconciliation"].matches('^[A-Za-z0-9._:-]{1,128}$')
+      ))) &&
+      (variables.isConfig ? ((variables.new).all(k, k in ['metadata', 'data'] || (k in (variables.old) && (variables.new)[k] == (variables.old)[k])) &&
+      (variables.old).all(k, k in ['metadata', 'data'] || k in (variables.new)) &&
+      (variables.fenceChanged ? variables.new.?data == variables.old.?data : (variables.newData.size() == variables.oldData.size() &&
+      variables.newData.all(k, k in variables.oldData && (variables.newData[k] == variables.oldData[k] ||
+        (k in variables.target && variables.newData[k] in variables.target[k] && variables.oldData[k] in variables.target[k])))))) : ((variables.new).all(k, k in ['metadata', 'spec'] || (k in (variables.old) && (variables.new)[k] == (variables.old)[k])) &&
+      (variables.old).all(k, k in ['metadata', 'spec'] || k in (variables.new)) &&
+      (variables.fenceChanged ? variables.new.spec == variables.old.spec : ((variables.new.spec).all(k, k in ['replicas', 'template'] || (k in (variables.old.spec) && (variables.new.spec)[k] == (variables.old.spec)[k])) &&
+      (variables.old.spec).all(k, k in ['replicas', 'template'] || k in (variables.new.spec)) &&
+      (variables.new.spec.?replicas == variables.old.spec.?replicas ||
+        (variables.target.replicas > 0 && has(variables.new.spec.replicas) &&
+         has(variables.old.spec.replicas) &&
+         variables.new.spec.replicas >= 1 && variables.new.spec.replicas <= variables.target.replicas)) &&
+      (variables.new.spec.template).all(k, k in ['spec'] || (k in (variables.old.spec.template) && (variables.new.spec.template)[k] == (variables.old.spec.template)[k])) &&
+      (variables.old.spec.template).all(k, k in ['spec'] || k in (variables.new.spec.template)) &&
+      (variables.new.spec.template.spec).all(k, k in ['containers'] || (k in (variables.old.spec.template.spec) && (variables.new.spec.template.spec)[k] == (variables.old.spec.template.spec)[k])) &&
+      (variables.old.spec.template.spec).all(k, k in ['containers'] || k in (variables.new.spec.template.spec)) &&
+      variables.containers.map(n, n.name) == variables.oldContainers.map(o, o.name) &&
+      variables.containers.all(n, variables.oldContainers.all(o, n.name != o.name || n == o || (
+        (n).all(k, k in ['resources', 'env'] || (k in (o) && (n)[k] == (o)[k])) &&
+      (o).all(k, k in ['resources', 'env'] || k in (n)) &&
+        (
+      n.?resources == o.?resources ||
+      (n.name in variables.target.resources && has(n.resources) && has(o.resources) &&
+      (n.resources).all(k, k in ['requests', 'limits'] || (k in (o.resources) && (n.resources)[k] == (o.resources)[k])) &&
+      (o.resources).all(k, k in ['requests', 'limits'] || k in (n.resources)) &&
+      n.resources.?requests.hasValue() == o.resources.?requests.hasValue() &&
+      n.resources.?limits.hasValue() == o.resources.?limits.hasValue() &&
+      (
+      (('requests' in n.resources ? n.resources.requests : {})).all(k, k in variables.target.resources[n.name].requests || (k in (('requests' in o.resources ? o.resources.requests : {})) && (('requests' in n.resources ? n.resources.requests : {}))[k] == (('requests' in o.resources ? o.resources.requests : {}))[k])) &&
+      (('requests' in o.resources ? o.resources.requests : {})).all(k, k in variables.target.resources[n.name].requests || k in (('requests' in n.resources ? n.resources.requests : {}))) &&
+      (('requests' in n.resources ? n.resources.requests : {})).all(k, k in (('requests' in o.resources ? o.resources.requests : {})) && ((('requests' in n.resources ? n.resources.requests : {}))[k] == (('requests' in o.resources ? o.resources.requests : {}))[k] ||
+        (k in variables.target.resources[n.name].requests && isQuantity(string((('requests' in n.resources ? n.resources.requests : {}))[k])) &&
+         quantity(string((('requests' in n.resources ? n.resources.requests : {}))[k])).isGreaterThan(quantity('0')) &&
+         !quantity(string((('requests' in n.resources ? n.resources.requests : {}))[k])).isGreaterThan(quantity(variables.target.resources[n.name].requests[k])))))
+      ) &&
+      (
+      (('limits' in n.resources ? n.resources.limits : {})).all(k, k in variables.target.resources[n.name].limits || (k in (('limits' in o.resources ? o.resources.limits : {})) && (('limits' in n.resources ? n.resources.limits : {}))[k] == (('limits' in o.resources ? o.resources.limits : {}))[k])) &&
+      (('limits' in o.resources ? o.resources.limits : {})).all(k, k in variables.target.resources[n.name].limits || k in (('limits' in n.resources ? n.resources.limits : {}))) &&
+      (('limits' in n.resources ? n.resources.limits : {})).all(k, k in (('limits' in o.resources ? o.resources.limits : {})) && ((('limits' in n.resources ? n.resources.limits : {}))[k] == (('limits' in o.resources ? o.resources.limits : {}))[k] ||
+        (k in variables.target.resources[n.name].limits && isQuantity(string((('limits' in n.resources ? n.resources.limits : {}))[k])) &&
+         quantity(string((('limits' in n.resources ? n.resources.limits : {}))[k])).isGreaterThan(quantity('0')) &&
+         !quantity(string((('limits' in n.resources ? n.resources.limits : {}))[k])).isGreaterThan(quantity(variables.target.resources[n.name].limits[k])))))
+      ) &&
+      (
+      'cpu' in ('requests' in n.resources ? n.resources.requests : {}) && 'cpu' in ('limits' in n.resources ? n.resources.limits : {})
+       ? !quantity(string(('requests' in n.resources ? n.resources.requests : {})['cpu'])).isGreaterThan(quantity(string(('limits' in n.resources ? n.resources.limits : {})['cpu'])))
+       : true
+      ) &&
+      (
+      'memory' in ('requests' in n.resources ? n.resources.requests : {}) && 'memory' in ('limits' in n.resources ? n.resources.limits : {})
+       ? !quantity(string(('requests' in n.resources ? n.resources.requests : {})['memory'])).isGreaterThan(quantity(string(('limits' in n.resources ? n.resources.limits : {})['memory'])))
+       : true
+      ))
+      ) &&
+        (
+      n.?env == o.?env ||
+      (n.name in variables.target.env && has(n.env) && has(o.env) &&
+      n.env.map(e, e.name) == o.env.map(e, e.name) &&
+      n.env.all(e, o.env.all(p, e.name != p.name || e == p || (
+        e.name in variables.target.env[n.name] &&
+        (e).all(k, k in ['value'] || (k in (p) && (e)[k] == (p)[k])) &&
+      (p).all(k, k in ['value'] || k in (e)) &&
+        !has(e.valueFrom) && !has(p.valueFrom) &&
+        has(e.value) && has(p.value) && e.value in variables.target.env[n.name][e.name] && p.value in variables.target.env[n.name][e.name]
+      ))))
+      )
+      )))))))
+    message: Vigil remediation write exceeds the registered hard bounds
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: vigil-remediation-write
+spec:
+  policyName: vigil-remediation-write
+  validationActions:
+  - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: vigil-remediation-config-consumers
+  annotations:
+    vigil.aiops/policy-version: controlled-remediation-v1-8f5dcece25ec1c30e97b837ec5bec5b7726f785c4e50a3838b733fbe676a832e
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - pods
+      - pods/ephemeralcontainers
+      - podtemplates
+      - replicationcontrollers
+      scope: Namespaced
+    - apiGroups:
+      - apps
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - deployments
+      - statefulsets
+      - replicasets
+      - daemonsets
+      scope: Namespaced
+    - apiGroups:
+      - batch
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - cronjobs
+      - jobs
+      scope: Namespaced
+  variables:
+  - name: reservations
+    expression: |-
+      [{"configMap":"vigil-config-fixture","namespace":"vigil-experiment","resource":"deployments","workload":"vigil-config-fixture"}]
+  - name: resource
+    expression: |-
+      request.resource.resource
+  - name: spec
+    expression: |-
+      dyn(object).?spec.orValue({})
+  - name: podSpec
+    expression: |-
+      variables.resource == 'pods' ? variables.spec : variables.resource == 'podtemplates' ? dyn(object).template.spec : variables.resource == 'cronjobs' ? variables.spec.jobTemplate.spec.template.spec : variables.spec.?template.orValue({}).?spec.orValue({})
+  - name: owners
+    expression: |-
+      dyn(object).metadata.?ownerReferences.orValue([])
+  - name: containers
+    expression: |-
+      variables.podSpec.?containers.orValue([]) + variables.podSpec.?initContainers.orValue([]) + variables.podSpec.?ephemeralContainers.orValue([])
+  - name: volumes
+    expression: |-
+      variables.podSpec.?volumes.orValue([])
+  - name: username
+    expression: |-
+      request.userInfo.username
+  validations:
+  - expression: |-
+      variables.reservations.all(r, request.namespace != r.namespace || !(
+      variables.volumes.exists(v,
+        v.?configMap.orValue({}).?name.orValue('') == r.configMap ||
+        v.?projected.orValue({}).?sources.orValue([]).exists(s,
+          s.?configMap.orValue({}).?name.orValue('') == r.configMap
+        )
+      ) ||
+      variables.containers.exists(c,
+        c.?envFrom.orValue([]).exists(e, e.?configMapRef.orValue({}).?name.orValue('') == r.configMap) ||
+        c.?env.orValue([]).exists(e,
+          e.?valueFrom.orValue({}).?configMapKeyRef.orValue({}).?name.orValue('') == r.configMap
+        )
+      )
+      ) || (
+      (variables.resource == r.resource && request.name == r.workload) ||
+      (variables.resource == 'replicasets' && r.resource == 'deployments' &&
+       variables.username in [
+         'system:kube-controller-manager', 'system:serviceaccount:kube-system:deployment-controller'
+       ] &&
+       variables.owners.exists(o,
+         o.?controller.orValue(false) && o.apiVersion == 'apps/v1' && o.kind == 'Deployment' &&
+         o.name == r.workload && o.uid != ''
+       )) ||
+      (variables.resource == 'pods' &&
+       variables.owners.exists(o,
+         o.?controller.orValue(false) && o.apiVersion == 'apps/v1' && o.uid != '' && (
+           (r.resource == 'deployments' && o.kind == 'ReplicaSet' &&
+            o.name.startsWith(r.workload + '-') && variables.username in [
+              'system:kube-controller-manager', 'system:serviceaccount:kube-system:replicaset-controller'
+            ]) ||
+           (r.resource == 'statefulsets' && o.kind == 'StatefulSet' && o.name == r.workload &&
+            variables.username in [
+              'system:kube-controller-manager', 'system:serviceaccount:kube-system:statefulset-controller'
+            ])
+         )
+       ))
+      ))
+    message: ConfigMap reserved for one remediation workload
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: vigil-remediation-config-consumers
+spec:
+  policyName: vigil-remediation-config-consumers
+  validationActions:
+  - Deny

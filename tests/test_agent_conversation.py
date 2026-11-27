@@ -5,22 +5,25 @@ import json
 from contextlib import asynccontextmanager
 
 import pytest
+from controlled_action_support import REPLICA_TARGET, drive_replica
 from db_env import DSN
 from investigation_support import (
     FakeAgentExecutor,
     FakeToolbox,
     ScriptedChatModel,
+    action_case,
     call,
     report_call,
     settings,
 )
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from test_agent_actions import _approved
-from test_agent_recovery import _preamble, _valid_report
+from test_agent_actions import _decide, _preamble, _valid_report
 
+from aiops.actions.executor import ActionExecutor
+from aiops.actions.safety import ActionSafety
 from aiops.agent import tools as agent_tools
-from aiops.agent.conversation import ConversationDriver, redact_text
+from aiops.agent.conversation import AwaitingActionReceipt, ConversationDriver, redact_text
 from aiops.agent.delegation import CURRENT_DELEGATION
 from aiops.agent.engine import LangChainInvestigation
 from aiops.agent.skill_reader import SkillReadMiddleware
@@ -300,6 +303,7 @@ def test_skill_events_follow_actual_reads_and_survive_pending_write_failure(tmp_
                 f'---\nname: {name}\ndescription: "核对 token=demo-skill /home/demo/catalog"\n'
                 f"{metadata}---\n\n私有 Skill 正文标记\n",
                 encoding="utf-8",
+                newline="\n",
             )
         (root / "notes.md").write_text("name: recommended\ndescription: 伪匹配", encoding="utf-8")
         fields = {"file_path": "/by-description/SKILL.md"}
@@ -339,7 +343,9 @@ def test_skill_events_follow_actual_reads_and_survive_pending_write_failure(tmp_
             ]
             actual = root / "by-description" / "SKILL.md"
             actual.write_text(
-                actual.read_text().replace("私有 Skill 正文标记", "文件已变化"), encoding="utf-8"
+                actual.read_text(encoding="utf-8").replace("私有 Skill 正文标记", "文件已变化"),
+                encoding="utf-8",
+                newline="\n",
             )
             async with driver.claim(sid) as resumed:
                 result = await resumed.drive()
@@ -438,101 +444,41 @@ def test_interjection_is_persisted_before_next_model_and_late_input_starts_next_
     asyncio.run(run())
 
 
-class CardExecutor(FakeAgentExecutor):
-    def __init__(self, driver, lease, turn_id, failures, sent):
-        super().__init__(driver.store)
-        self.driver = driver
-        self.lease = lease
-        self.turn_id = turn_id
-        self.failures = failures
-        self.sent = sent
-
-    async def get_card_decision(self, proposal_id, *, session_id):
-        assert self.lease.session_id == session_id
-        return await self.driver.store.get_approval(proposal_id)
-
-    async def read_action_attempt(self, proposal_id):
-        return await self.driver.store.get_attempt(proposal_id)
-
-    async def publish_card(self, proposal_id, *, lease, turn_id):
-        assert lease == self.lease and turn_id == self.turn_id
-        turn = await self.driver.sessions.get_turn(turn_id)
-        saved = await SessionCheckpointer(self.driver.store, lease, turn).aget_tuple(
-            {"configurable": {"thread_id": turn.checkpoint_thread_id}}
-        )
-        assert any(channel == "__interrupt__" for _, channel, _ in saved.pending_writes)
-        if self.failures:
-            raise self.failures.pop()
-        async with self.driver.sessions.run(lease, turn_id) as tx:
-            found = next(
-                (
-                    event
-                    for event in await self.driver.sessions.list_events(lease.session_id)
-                    if event.type == "approval_required" and event.payload["card_id"] == proposal_id
-                ),
-                None,
-            )
-            if found:
-                return found
-            return await tx.append_event(
-                "approval_required",
-                {
-                    "card_id": proposal_id,
-                    "action": "restart_pod",
-                    "target": "vigil-shop/target-pod",
-                    "risk": "approval",
-                    "url": None,
-                },
-            )
-
-    async def execute_authorized(self, proposal_id, *, actor):
-        result = await super().execute_authorized(proposal_id, actor=actor)
-        self.sent.append(proposal_id)
-        async with self.driver.sessions.run(self.lease, self.turn_id) as tx:
-            await tx.append_event(
-                "action_result",
-                {
-                    "card_id": proposal_id,
-                    "attempt_id": result.id,
-                    "written": True,
-                    "verification": {},
-                },
-            )
-        return result
-
-
-async def persist_decision(proposal_id, *, rejected=False):
+async def persist_decision(card, *, rejected=False):
+    decision = ApprovalDecision.REJECTED if rejected else ApprovalDecision.APPROVED
     async with Store.open(DSN) as approver:
-        proposal = await approver.get_proposal(proposal_id)
-        approval = _approved(proposal)
-        if rejected:
-            approval = approval.model_copy(update={"decision": ApprovalDecision.REJECTED})
-        async with approver.transaction() as conn:
-            await conn.execute(
-                "UPDATE action_proposals SET status = %s WHERE id = %s",
-                ("rejected" if rejected else "approved", proposal_id),
-            )
-            await approver._insert_approval(conn, approval)
+        await _decide(ActionSafety(approver), card, decision=decision)
 
 
 @pytest.mark.parametrize("rejected", [False, True])
-def test_saved_interrupt_republishes_and_resumes_from_persisted_decision(tmp_path, rejected):
+def test_saved_interrupt_republishes_and_resumes_from_persisted_decision(
+    tmp_path, action_session_ids, monkeypatch, rejected
+):
     async def run():
-        failures = [RuntimeError("模拟 checkpoint 成功与发布之间崩溃")]
-        sent = []
+        original = ActionExecutor.publish_card
+        crashed = False
 
-        @asynccontextmanager
-        async def executor_factory(*, lease, turn_id):
+        async def crash_before_publish(self, proposal_id, *, lease, turn_id):
+            nonlocal crashed
             assert lease.side_turn_id is None
-            yield CardExecutor(driver, lease, turn_id, failures, sent)
+            turn = await driver.sessions.get_turn(turn_id)
+            saved = await SessionCheckpointer(driver.store, lease, turn).aget_tuple(
+                {"configurable": {"thread_id": turn.checkpoint_thread_id}}
+            )
+            assert any(channel == "__interrupt__" for _, channel, _ in saved.pending_writes)
+            if not crashed:
+                crashed = True
+                raise RuntimeError("模拟 checkpoint 成功与发布之间崩溃")
+            return await original(self, proposal_id, lease=lease, turn_id=turn_id)
 
-        async with case(
+        monkeypatch.setattr(ActionExecutor, "publish_card", crash_before_publish)
+        async with action_case(
             tmp_path,
+            action_session_ids,
             responses=_preamble(),
-            executor_factory=executor_factory,
-            namespace="vigil-shop",
-        ) as (driver, session_id):
-            await enqueue(driver, session_id, "排查异常并提出动作")
+            controlled=True,
+        ) as action:
+            driver, session_id = action.driver, action.session_id
             async with driver.claim(session_id) as main:
                 with pytest.raises(RuntimeError, match="之间崩溃"):
                     await main.drive()
@@ -545,6 +491,8 @@ def test_saved_interrupt_republishes_and_resumes_from_persisted_decision(tmp_pat
             async with driver.claim(session_id) as main:
                 pause = await main.drive()
                 assert pause.exit_code == 3 and pause.card.type == "approval_required"
+                assert pause.card.payload["action"] == "scale_replicas"
+                assert pause.card.payload["target"]["name"] == REPLICA_TARGET
                 assert (await main.drive()).card.seq == pause.card.seq
                 proposal_id = pause.card.payload["card_id"]
                 investigation_id = await driver.store.get_investigation_id_for_turn(
@@ -557,11 +505,11 @@ def test_saved_interrupt_republishes_and_resumes_from_persisted_decision(tmp_pat
                     side_answer = await side.drive()
                 assert side_answer.exit_code == 3
                 assert side_answer.result.payload["summary"] == "旁路回复"
-                assert not sent
+                assert action.remediation.kube.writes == []
                 assert (await driver.store.get_task(investigation_id)).used_model_calls == (
                     first_usage.used_model_calls
                 )
-                await persist_decision(proposal_id, rejected=rejected)
+                await persist_decision(pause.card, rejected=rejected)
 
                 def report_with_side(messages):
                     assert any(
@@ -570,12 +518,20 @@ def test_saved_interrupt_republishes_and_resumes_from_persisted_decision(tmp_pat
                     return _valid_report(messages)
 
                 driver.model.responses[:] = [report_with_side]
+                if not rejected:
+                    with pytest.raises(AwaitingActionReceipt, match=proposal_id):
+                        await main.drive()
+                    await drive_replica(action.remediation, proposal_id)
                 done = await main.drive()
             assert done.exit_code == 0
-            assert sent == ([] if rejected else [proposal_id])
+            assert action.remediation.kube.writes == ([] if rejected else [{"replicas": 2}])
             events = await driver.sessions.list_events(session_id)
             assert sum(event.type == "approval_required" for event in events) == 1
-            assert sum(event.type == "action_result" for event in events) == int(not rejected)
+            outcomes = [event for event in events if event.type == "action_result"]
+            assert [event.payload["written"] for event in outcomes] == (
+                [] if rejected else [None, True, True]
+            )
+            assert all(event.payload["card_id"] == proposal_id for event in outcomes)
             assert (await driver.sessions.get_session(session_id)).state == "idle"
 
     asyncio.run(run())
@@ -744,8 +700,8 @@ def test_budget_stops_after_saved_obs_and_next_turn_gets_fresh_budget(tmp_path):
 def test_unsupported_action_path_rejects_preparation(tmp_path):
     async def run():
         class UnsupportedExecutor(FakeAgentExecutor):
-            async def prepare_restart_pod(self, **kwargs):
-                pytest.fail("基线执行器不能用于新的会话")
+            async def prepare_remediation(self, **kwargs):
+                pytest.fail("缺少会话动作接口的执行器不能准备处置")
 
         @asynccontextmanager
         async def executor_factory(*, lease, turn_id):
@@ -767,122 +723,114 @@ def test_unsupported_action_path_rejects_preparation(tmp_path):
     asyncio.run(run())
 
 
-def test_takeover_voids_unique_unlinked_draft_without_executing(tmp_path):
+def test_takeover_voids_unique_unlinked_draft_without_executing(
+    tmp_path, action_session_ids, monkeypatch
+):
     async def run():
-        sent = []
         proposals = []
+        original = ActionExecutor.prepare_remediation
 
-        class OrphanExecutor(CardExecutor):
-            async def prepare_restart_pod(self, **kwargs):
-                proposal, _, _ = await super().prepare_restart_pod(**kwargs)
-                proposals.append(proposal.id)
-                raise LeaseLost("模拟动作准备提交后、工具绑定前中断")
+        async def crash_before_binding(self, **kwargs):
+            proposal, _, _ = await original(self, **kwargs)
+            proposals.append(proposal.id)
+            raise LeaseLost("模拟动作准备提交后、工具绑定前中断")
 
-            async def abandon(self, proposal_id, *, actor, reason):
-                assert proposals == [proposal_id]
-                async with self.driver.sessions.run(self.lease, self.turn_id):
-                    await self.driver.store.set_proposal_status(
-                        proposal_id, ProposalStatus.REJECTED
-                    )
-
-        @asynccontextmanager
-        async def factory(*, lease, turn_id):
-            yield OrphanExecutor(driver, lease, turn_id, [], sent)
-
-        async with case(
+        monkeypatch.setattr(ActionExecutor, "prepare_remediation", crash_before_binding)
+        async with action_case(
             tmp_path,
+            action_session_ids,
             responses=_preamble(),
-            executor_factory=factory,
-            namespace="vigil-shop",
-        ) as (driver, sid):
-            await enqueue(driver, sid, "排查异常")
+            controlled=True,
+        ) as action:
+            driver, sid = action.driver, action.session_id
             async with driver.claim(sid) as old:
                 with pytest.raises(LeaseLost, match="工具绑定前"):
                     await old.drive()
+            (proposal_id,) = proposals
+            assert (await driver.store.get_proposal(proposal_id)).status is (
+                ProposalStatus.PENDING_APPROVAL
+            )
             driver.model.responses[:] = [_valid_report]
             async with driver.claim(sid) as main:
                 done = await main.drive()
                 assert done.exit_code == 0 and done.card is None
-            assert (await driver.store.get_proposal(proposals[0])).status is ProposalStatus.REJECTED
-            assert not sent
-            assert (await driver.store.get_attempt(proposals[0])) is None
+            assert (await driver.store.get_proposal(proposal_id)).status is ProposalStatus.VOIDED
+            assert action.remediation.kube.writes == []
+            assert action.remediation.kube.dry_runs == []
+            assert await driver.store.get_attempt(proposal_id) is None
             request = await driver.store.get_tool_request(
                 done.result.payload["investigation_id"], "call-action"
             )
+            assert request.state is ToolRequestState.REJECTED
             assert request.error_code == "prepare_interrupted"
 
     asyncio.run(run())
 
 
-def test_takeover_replays_committed_action_receipt_without_executing_again(tmp_path, monkeypatch):
+def test_takeover_replays_committed_action_receipt_without_executing_again(
+    tmp_path, action_session_ids, monkeypatch
+):
     async def run():
-        sent = []
         finish_request = agent_tools._finish_request
-        crashed = False
+        interrupted_attempt = None
 
         async def crash_after_receipt(context, call_id, **fields):
-            nonlocal crashed
-            if not crashed and fields.get("action_attempt_id") is not None:
-                crashed = True
+            nonlocal interrupted_attempt
+            if interrupted_attempt is None and fields.get("action_attempt_id") is not None:
+                interrupted_attempt = fields["action_attempt_id"]
                 raise LeaseLost("模拟动作已结束但 Agent 尚未落反馈")
             return await finish_request(context, call_id, **fields)
 
-        @asynccontextmanager
-        async def factory(*, lease, turn_id):
-            yield CardExecutor(driver, lease, turn_id, [], sent)
-
         monkeypatch.setattr(agent_tools, "_finish_request", crash_after_receipt)
-        async with case(
+        async with action_case(
             tmp_path,
+            action_session_ids,
             responses=_preamble(),
-            executor_factory=factory,
-            namespace="vigil-shop",
-        ) as (driver, sid):
-            await enqueue(driver, sid, "排查异常")
+            controlled=True,
+        ) as action:
+            driver, sid = action.driver, action.session_id
             async with driver.claim(sid) as main:
                 paused = await main.drive()
                 proposal_id = paused.card.payload["card_id"]
-                await persist_decision(proposal_id)
+                await persist_decision(paused.card)
+                receipt = await drive_replica(action.remediation, proposal_id)
                 with pytest.raises(LeaseLost, match="尚未落反馈"):
                     await main.drive()
-            assert crashed and sent == [proposal_id]
+            assert interrupted_attempt == receipt.id
+            assert action.remediation.kube.writes == [{"replicas": 2}]
 
             def confirm_receipt(messages):
                 feedback = json.loads(messages[-1].content)
                 assert feedback["status"] == "replayed"
                 assert feedback["proposal_id"] == proposal_id
+                assert feedback["attempt_id"] == receipt.id
                 return _valid_report(messages)
 
             driver.model.responses[:] = [confirm_receipt]
             async with driver.claim(sid) as new:
                 done = await new.drive()
                 assert done.exit_code == 0
-            assert sent == [proposal_id]
+            assert action.remediation.kube.writes == [{"replicas": 2}]
             saved = await driver.store.get_tool_request(
                 done.result.payload["investigation_id"], "call-action"
             )
             assert saved.state is ToolRequestState.ACTION_EXECUTED
-            assert saved.action_attempt_id is not None
+            assert saved.action_attempt_id == receipt.id
 
     asyncio.run(run())
 
 
-def test_side_started_before_approval_finishes_without_changing_main(tmp_path):
+def test_side_started_before_approval_finishes_without_changing_main(tmp_path, action_session_ids):
     async def run():
         side_toolbox = BlockingToolbox()
-        sent = []
 
-        @asynccontextmanager
-        async def factory(*, lease, turn_id):
-            yield CardExecutor(driver, lease, turn_id, [], sent)
-
-        async with case(
+        async with action_case(
             tmp_path,
+            action_session_ids,
             responses=_preamble(),
-            executor_factory=factory,
-            namespace="vigil-shop",
-        ) as (driver, sid):
-            await enqueue(driver, sid, "排查异常")
+            controlled=True,
+        ) as action:
+            driver, sid = action.driver, action.session_id
             async with driver.claim(sid) as main:
                 paused = await main.drive()
                 await enqueue(driver, sid, "有几个副本？")
@@ -902,10 +850,13 @@ def test_side_started_before_approval_finishes_without_changing_main(tmp_path):
                     running = asyncio.create_task(side.drive())
                     await asyncio.wait_for(side_toolbox.called.wait(), 5)
                     proposal_id = paused.card.payload["card_id"]
-                    await persist_decision(proposal_id)
+                    await persist_decision(paused.card)
+                    assert action.remediation.kube.writes == []
+                    await drive_replica(action.remediation, proposal_id)
                     driver.model.responses[:] = [_valid_report]
                     done = await main.drive()
-                    assert done.exit_code == 0 and sent == [proposal_id]
+                    assert done.exit_code == 0
+                    assert action.remediation.kube.writes == [{"replicas": 2}]
                     side_toolbox.reply.set()
                     answer = await running
                 assert answer.result.payload["summary"] == "旁路完成" and answer.exit_code == 3
@@ -935,6 +886,6 @@ def test_side_started_before_approval_finishes_without_changing_main(tmp_path):
                 await enqueue(driver, sid, "后续追问")
                 driver.model.responses[:] = [later]
                 assert (await main.drive()).exit_code == 0
-            assert sent == [proposal_id]
+            assert action.remediation.kube.writes == [{"replicas": 2}]
 
     asyncio.run(run())

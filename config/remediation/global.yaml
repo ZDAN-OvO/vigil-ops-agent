@@ -1,0 +1,6 @@
+schema_version: 1
+revision: controlled-remediation-v1
+forbidden_config_keys:
+  - GOOGLE_APPLICATION_CREDENTIALS
+  - REDIS_ADDR
+  - PORT

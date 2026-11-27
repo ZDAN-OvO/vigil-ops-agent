@@ -1,0 +1,52 @@
+namespace: vigil-experiment
+kind: Deployment
+name: vigil-config-fixture
+containers: [app]
+probe:
+  promql: 'probe_success{job="vigil-config-probe",signal="business",source="configmap"}'
+config_fields:
+  - source: config_map
+    key: mode
+    config_map: vigil-config-fixture
+    allowed_values: [healthy, degraded, limited, worsen]
+    auto_values: [worsen]
+    load_signal_promql: 'vigil_config_fixture_loaded_mode{job="vigil-config-state",source="configmap",mode="{value}"}'
+  - source: env
+    key: VIGIL_MODE
+    container: app
+    allowed_values: [healthy, degraded, limited]
+    auto_values: [healthy]
+    load_signal_promql: 'vigil_config_fixture_loaded_mode{job="vigil-config-state",source="env",mode="{value}"}'
+rules:
+  - id: isolated-config-worsening
+    alertname: VigilServiceConfigDegraded
+    labels: {source: configmap}
+    kind: update_config
+    parameters:
+      source: config_map
+      key: mode
+      config_map: vigil-config-fixture
+      value: worsen
+    max_evidence_age_seconds: 120
+    evidence:
+      - {key: current_value, source: current, value: degraded}
+      - key: gate_failed
+        value: 0
+        promql: 'probe_success{job="vigil-config-probe",signal="gate",source="configmap"}'
+  - id: config-env-mode
+    alertname: VigilServiceConfigDegraded
+    labels: {source: env}
+    kind: update_config
+    parameters:
+      source: env
+      key: VIGIL_MODE
+      container: app
+      value: healthy
+    max_evidence_age_seconds: 120
+    probe:
+      promql: 'probe_success{job="vigil-config-probe",signal="business",source="env"}'
+    evidence:
+      - {key: current_value, source: current, value: degraded}
+      - key: gate_failed
+        value: 0
+        promql: 'probe_success{job="vigil-config-probe",signal="gate",source="env"}'

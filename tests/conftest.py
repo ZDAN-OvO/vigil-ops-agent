@@ -40,10 +40,16 @@ def cleanup():
             conn.execute("DELETE FROM action_attempts WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM approvals WHERE proposal_id = %s", (proposal_id,))
             conn.execute("DELETE FROM audit_events WHERE correlation_id = %s", (proposal_id,))
+            _delete_remediation_job(conn, proposal_id)
             conn.execute("DELETE FROM action_proposals WHERE id = %s", (proposal_id,))
 
         for session_id in ids.sessions:
             _delete_session(conn, session_id)
+
+
+def _delete_remediation_job(conn, proposal_id):
+    if conn.execute("SELECT to_regclass('remediation_jobs')").fetchone()[0] is not None:
+        conn.execute("DELETE FROM remediation_jobs WHERE proposal_id = %s", (proposal_id,))
 
 
 def _delete_session(conn, session_id):
@@ -103,6 +109,7 @@ def _delete_investigation(conn, values):
         conn.execute("DELETE FROM approvals WHERE proposal_id = %s", (proposal_id,))
         conn.execute("DELETE FROM action_locks WHERE proposal_id = %s", (proposal_id,))
         conn.execute("DELETE FROM audit_events WHERE correlation_id = %s", (proposal_id,))
+        _delete_remediation_job(conn, proposal_id)
         conn.execute("DELETE FROM action_proposals WHERE id = %s", (proposal_id,))
     conn.execute(
         "DELETE FROM investigation_tasks WHERE investigation_id = %s",

@@ -10,6 +10,7 @@ from contextlib import ExitStack, contextmanager
 
 import uvicorn
 
+from aiops.actions.remediation_service import drive_remediation, open_remediation
 from aiops.actions.safety import ActionSafety
 from aiops.agent.conversation import AwaitingActionReceipt, ConversationDriver
 from aiops.config import WEB_HOST, Settings
@@ -121,6 +122,7 @@ async def _listen(
     settings: Settings,
     *,
     interactive: bool,
+    remediation=None,
 ) -> None:
     stop = asyncio.Event()
     auth = BrowserAuth(interactive=interactive)
@@ -130,7 +132,12 @@ async def _listen(
     )
     listeners = [(web, WEB_HOST, settings.web_port)]
     if settings.webhook_host is not None:
-        webhook = build_app(settings, sessions=driver.sessions, safety=safety)
+        webhook = build_app(
+            settings,
+            sessions=driver.sessions,
+            safety=safety,
+            remediation_available=remediation is not None,
+        )
         listeners.append((webhook, settings.webhook_host, settings.webhook_port))
 
     with ExitStack() as stack, _shutdown_signals(stop):
@@ -164,6 +171,8 @@ async def _listen(
             for server, sock in bindings:
                 tasks.create_task(serve(server, sock))
             tasks.create_task(drive_queue(driver, safety, stop))
+            if remediation is not None:
+                tasks.create_task(drive_remediation(remediation, stop))
             try:
                 while not stop.is_set() and not all(server.started for server, _ in bindings):
                     await asyncio.sleep(0.01)
@@ -192,5 +201,21 @@ async def run_serve(settings: Settings, *, interactive: bool) -> None:
             web_url=settings.web_url,
             approval_ttl_seconds=settings.action_approval_ttl_seconds,
         )
-        async with open_conversation(settings=settings, store=store) as driver:
-            await _listen(driver, safety, settings, interactive=interactive)
+        async with open_remediation(settings, store) as remediation:
+            if remediation is None:
+                # 兼容只装配调查、不配置写入的本地服务。
+                async with open_conversation(settings=settings, store=store) as driver:
+                    await _listen(driver, safety, settings, interactive=interactive)
+            else:
+                async with open_conversation(
+                    settings=settings,
+                    store=store,
+                    remediation=remediation,
+                ) as driver:
+                    await _listen(
+                        driver,
+                        safety,
+                        settings,
+                        interactive=interactive,
+                        remediation=remediation,
+                    )

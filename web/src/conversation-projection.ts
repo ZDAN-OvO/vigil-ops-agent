@@ -1,5 +1,5 @@
 import type {
-  CardEvent, CardUpdate, DeliveryEvent, ObservationEvent, SessionEvent,
+  CardEvent, CardUpdate, DeliveryEvent, ObservationEvent, RemediationProgress, SessionEvent,
 } from "./api";
 
 export type MessageEvent = Extract<SessionEvent, { type: "message" }>;
@@ -65,6 +65,7 @@ export function projectConversation(events: readonly SessionEvent[]) {
   const hypotheses = new Map<string, Hypothesis>();
   const references = new Map<string, Map<string, EvidenceEvent>>();
   const cardUpdates = new Map<string, { update: CardUpdate; expiresAt?: string | null }>();
+  const remediationProgress = new Map<string, RemediationProgress>();
   const assistantTexts = new Set<string>();
   const interimReplies = new Map<string, number>();
   const completedTurns = new Set<string>();
@@ -135,6 +136,9 @@ export function projectConversation(events: readonly SessionEvent[]) {
       case "action_result":
         cardUpdates.set(event.card_id, { update: event, expiresAt: cardUpdates.get(event.card_id)?.expiresAt });
         break;
+      case "remediation_progress":
+        remediationProgress.set(event.card_id, event);
+        break;
       case "message": {
         if (event.role === "assistant") {
           assistantTexts.add(scoped(event, event.text));
@@ -200,6 +204,7 @@ export function projectConversation(events: readonly SessionEvent[]) {
   return {
     rows: visible,
     cardUpdates,
+    remediationProgress,
     observationFor: (event: EvidenceEvent, id: string) => observations.get(scoped(event, id)),
     cardObservationFor: (event: CardEvent, id: string) => {
       const reference = scoped(event, id);

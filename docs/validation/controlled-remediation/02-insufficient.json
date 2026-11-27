@@ -1,0 +1,172 @@
+{
+  "case": {
+    "status": "pending_approval",
+    "sent_at": null,
+    "evidence": {
+      "oom_killed": false,
+      "pod_evidence": [],
+      "business_failed": 0.0,
+      "container_restarts": 0,
+      "limit_memory_bytes": "16777216",
+      "limit_cpu_millicores": "200.000",
+      "request_memory_bytes": "8388608",
+      "request_cpu_millicores": "100.000",
+      "prometheus_sample_times": {
+        "business_failed": 1795798175.422
+      }
+    },
+    "parameters": {
+      "container": "server",
+      "limit_memory": "128Mi"
+    },
+    "session_id": "0e82df9168334a89931427065ffbd368",
+    "target_uid": "947e97ee-1eaf-4481-a098-c39e2234c53c",
+    "fingerprint": "bbdcd6b0d9d44340",
+    "proposal_id": "act-c49b3fba5b964e37a9299394cde7c701",
+    "evaluated_at": "2026-11-27T16:49:36.213682+00:00",
+    "manual_message": "规则证据不足，已转人工核对：oom_killed、container_restarts",
+    "policy_version": "controlled-remediation-v1-8f5dcece25ec1c30e97b837ec5bec5b7726f785c4e50a3838b733fbe676a832e",
+    "risk_disposition": "approval"
+  },
+  "kubernetes_and_probe": "2026-11-27T16:45:29Z memory=16Mi cpu=200m probe=0 http=500 frontend_alert=1 cpu_alert=none throttle=none pods=[{\"name\": \"currencyservice-84bb644b4f-qkjm8\", \"uid\": \"dc857e24-e8b5-4b3b-ac75-f92f2117624f\", \"restarts\": 0, \"ready\": true, \"running\": true, \"last_reason\": null}]",
+  "audit": {
+    "since": "2026-11-27T16:45:32Z",
+    "until": "2026-11-27T16:49:37Z",
+    "summary": {
+      "system:serviceaccount:vigil-monitoring:vigil-remediation": {
+        "real": {
+          "success": 3
+        },
+        "dry_run": {
+          "success": 1
+        }
+      }
+    },
+    "requests": [
+      {
+        "audit_id": "b6598b3c-9dbc-4a65-a50e-2122c3edc3be",
+        "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+        "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+        "verb": "create",
+        "uri": "/apis/authentication.k8s.io/v1/selfsubjectreviews",
+        "target": {
+          "resource": "selfsubjectreviews",
+          "apiGroup": "authentication.k8s.io",
+          "apiVersion": "v1"
+        },
+        "started_at": "2026-11-27T16:47:07.553806Z",
+        "dry_run": false,
+        "outcome": "success",
+        "status_code": 201,
+        "stages": [
+          {
+            "stage": "RequestReceived",
+            "at": "2026-11-27T16:47:07.553806Z",
+            "code": null,
+            "reason": null
+          },
+          {
+            "stage": "ResponseComplete",
+            "at": "2026-11-27T16:47:07.573772Z",
+            "code": 201,
+            "reason": null
+          }
+        ]
+      },
+      {
+        "audit_id": "cead6daf-e6dd-4358-a30f-a51e6da18aec",
+        "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+        "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+        "verb": "create",
+        "uri": "/apis/authentication.k8s.io/v1/selfsubjectreviews",
+        "target": {
+          "resource": "selfsubjectreviews",
+          "apiGroup": "authentication.k8s.io",
+          "apiVersion": "v1"
+        },
+        "started_at": "2026-11-27T16:47:07.557382Z",
+        "dry_run": false,
+        "outcome": "success",
+        "status_code": 201,
+        "stages": [
+          {
+            "stage": "RequestReceived",
+            "at": "2026-11-27T16:47:07.557382Z",
+            "code": null,
+            "reason": null
+          },
+          {
+            "stage": "ResponseComplete",
+            "at": "2026-11-27T16:47:07.571379Z",
+            "code": 201,
+            "reason": null
+          }
+        ]
+      },
+      {
+        "audit_id": "b9dc6cf5-62a3-477f-bc30-944c2fd2f6d3",
+        "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+        "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+        "verb": "patch",
+        "uri": "/apis/apps/v1/namespaces/vigil-experiment/deployments/vigil-replica-fixture?dryRun=All",
+        "target": {
+          "resource": "deployments",
+          "namespace": "vigil-experiment",
+          "name": "vigil-replica-fixture",
+          "apiGroup": "apps",
+          "apiVersion": "v1"
+        },
+        "started_at": "2026-11-27T16:49:27.760493Z",
+        "dry_run": true,
+        "outcome": "success",
+        "status_code": 200,
+        "stages": [
+          {
+            "stage": "RequestReceived",
+            "at": "2026-11-27T16:49:27.760493Z",
+            "code": null,
+            "reason": null
+          },
+          {
+            "stage": "ResponseComplete",
+            "at": "2026-11-27T16:49:27.784096Z",
+            "code": 200,
+            "reason": null
+          }
+        ]
+      },
+      {
+        "audit_id": "7702ea27-2f8c-4cea-a1a7-0c1bc892ac2d",
+        "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+        "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+        "verb": "patch",
+        "uri": "/apis/apps/v1/namespaces/vigil-experiment/deployments/vigil-replica-fixture",
+        "target": {
+          "resource": "deployments",
+          "namespace": "vigil-experiment",
+          "name": "vigil-replica-fixture",
+          "apiGroup": "apps",
+          "apiVersion": "v1"
+        },
+        "started_at": "2026-11-27T16:49:27.997340Z",
+        "dry_run": false,
+        "outcome": "success",
+        "status_code": 200,
+        "stages": [
+          {
+            "stage": "RequestReceived",
+            "at": "2026-11-27T16:49:27.997340Z",
+            "code": null,
+            "reason": null
+          },
+          {
+            "stage": "ResponseComplete",
+            "at": "2026-11-27T16:49:28.011755Z",
+            "code": 200,
+            "reason": null
+          }
+        ]
+      }
+    ]
+  }
+}

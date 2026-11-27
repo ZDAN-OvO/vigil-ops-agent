@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { Access, CardEvent, CardUpdate, Decision, Verification } from "./api";
+import type { Access, CardEvent, CardUpdate, Decision, RemediationProgress, Verification } from "./api";
 import { errorMessage } from "./api";
 import type { ObservationJump } from "./investigation-details";
 import { display, duration, Spinner, Stamp, time } from "./ui";
@@ -10,6 +10,8 @@ const states: Record<string, [label: string, color: string, note?: string]> = {
   intent: ["准备写入", "gold", "已取得动作锁 · 尚未取得发送权"],
   executing: ["执行中", "gold", "已取得发送权 · 结果待定"],
   verified: ["已验证", "ok"],
+  observing: ["观察中", "gold"],
+  compensated: ["已补偿", "warn", "已恢复原值，原故障待人工处理"],
   failed: ["失败", "danger"],
   unknown: ["不确定", "danger", "结果不确定 · 目标保持锁定，等待人工核实"],
   rejected: ["已拒绝", "muted", "未写入集群"],
@@ -38,12 +40,14 @@ function viewState(proposal?: string, attempt?: string): string {
 const verificationMethods: Record<string, string> = {
   prometheus: "Prometheus 探针",
   pod_http_and_service_endpoints: "Pod HTTP 与 Service 端点",
+  business_probe_window: "业务探针观察",
 };
 
 function verificationPlan(plan?: Verification) {
   if (typeof plan !== "object" || !plan?.method) return display(plan);
   const method = verificationMethods[plan.method] ?? plan.method;
-  return method + (plan.window_seconds == null ? "" : ` · 验证窗口 ${plan.window_seconds} 秒`);
+  const window = plan.window_seconds ?? plan.duration_seconds;
+  return method + (window == null ? "" : ` · 验证窗口 ${window} 秒`);
 }
 
 function verificationText(result?: Record<string, unknown> | null, plan?: Verification) {
@@ -99,6 +103,7 @@ function Countdown({ expiresAt }: { expiresAt: string }) {
 interface CardProps {
   card: CardEvent;
   update?: CardUpdate;
+  progress?: RemediationProgress;
   expiresAt?: string | null;
   access: Access;
   anchored: boolean;
@@ -107,22 +112,37 @@ interface CardProps {
   reveal: (jump: ObservationJump) => void;
 }
 
-const titles: Record<string, string> = { rollout_undo: "回滚 ", restart_pod: "重建 Pod ", scale_replicas: "调整副本数 " };
+const titles: Record<string, string> = {
+  rollout_undo: "回滚 ", restart_pod: "重建 Pod ", scale_replicas: "调整副本数 ",
+  adjust_resources: "调整资源规格 ", update_config: "修改普通配置 ",
+};
+const fieldLabels: Record<string, string> = {
+  replicas: "副本数", request_cpu: "CPU request", limit_cpu: "CPU limit",
+  request_memory: "内存 request", limit_memory: "内存 limit",
+};
 
-export function Card({ card, update, expiresAt, access, anchored, decide, observationFor, reveal }: CardProps) {
+export function Card({ card, update, progress, expiresAt, access, anchored, decide, observationFor, reveal }: CardProps) {
   const { target = {}, parameters = {} } = card;
   const plan = card.verification && typeof card.verification === "object" && "verification_plan" in card.verification
     ? card.verification.verification_plan : card.verification as Verification | undefined;
   const receipt = update?.type === "action_result" ? update : undefined;
   const proposal = receipt ? receipt.proposal_status : update?.status ?? card.status;
-  const state = viewState(proposal, receipt?.attempt_id ? receipt.status : undefined);
+  const current = viewState(proposal, receipt?.attempt_id ? receipt.status : undefined);
+  const state = receipt?.compensated ? "compensated"
+    : progress && current === "executing" ? "observing" : current;
   const [label, color, note] = states[state] ?? ["状态未取到", "dim", "等待服务端回执"];
   const pending = state === "pending_approval";
   const [risk, riskClass] = (card.risk && riskLabels[card.risk.disposition]) ?? ["风险决策未提供", "dim"];
   const targetText = [target.cluster, target.namespace, target.kind, target.name].filter(Boolean).join(" / ");
-  const replicas = parameters.replicas == null ? "" : ` · 当前 ${parameters.replicas} 副本`;
-  const footer = state === "failed" ? `${receipt?.reason || "失败原因未提供"} · 目标状态见第 9 节`
-    : state === "verified" ? `结果 · ${verificationText(receipt?.verification, plan)}` : note;
+  const legacyReplicas = !card.before && parameters.replicas != null
+    ? ` · 当前 ${parameters.replicas} 副本` : "";
+  const fields = card.before
+    ? Object.entries(parameters).filter(([key]) => key in fieldLabels || key === "value") : [];
+  const footer = state === "failed" ? (receipt?.reason || "失败原因未提供")
+      + (card.before ? "" : " · 目标状态见第 9 节")
+    : state === "verified" ? `结果 · ${verificationText(receipt?.verification, plan)}`
+    : state === "observing" ? `已取得 ${progress?.slots_collected ?? 0} / ${progress?.slots_required ?? "—"} 个时段的业务样本`
+    : note;
   const countdown = expiresAt && ["approved", "intent", "executing"].includes(state)
     && Number.isFinite(Date.parse(expiresAt));
   const animation = update ? " card-status-change" : "";
@@ -177,10 +197,18 @@ export function Card({ card, update, expiresAt, access, anchored, decide, observ
     <div className="card-body">
       <h3 className="card-title">{titles[card.action] ?? "动作提案 "}<span className="mono">{display(target.name)}</span></h3>
       <dl className="fields">
-        <Field label="目标" value={targetText + replicas} mono />
+        <Field label="目标" value={targetText + legacyReplicas} mono />
         <Field label="依据" value={card.reason} />
         <Field label="验证方式" value={verificationPlan(plan)} />
       </dl>
+      {fields.length > 0 && <dl className="fields card-change">
+        {parameters.container && <Field label="容器" value={parameters.container} mono />}
+        {parameters.config_map && <Field label="ConfigMap" value={parameters.config_map} mono />}
+        {fields.map(([key, value]) => <Field key={key} label={fieldLabels[key] ?? parameters.key ?? "配置值"}
+          value={`${display(card.before?.[key])} → ${display(value)}`} mono />)}
+        {card.automatic_compensation && <Field label="补偿条件" value="明确恶化且字段仍为本次写入值时恢复原值" />}
+        {card.compensates && <Field label="对应处置" value={card.compensates} mono />}
+      </dl>}
       {card.action === "rollout_undo" && <Rollback changes={card.template_diff} />}
       {card.action === "restart_pod" && <dl className="fields card-change">
         <Field label="Pod" value={target.name} mono />

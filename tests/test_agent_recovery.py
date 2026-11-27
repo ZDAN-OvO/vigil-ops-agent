@@ -1,10 +1,11 @@
-"""恢复与故障边界：关闭、未发送意图、查询重放和动作回执。"""
+"""恢复与故障边界：关闭、发送授权、查询重放和动作回执。"""
 
 import asyncio
 import json
 from datetime import UTC, datetime
 
 import pytest
+from controlled_action_support import drive_replica, expire_job
 from db_env import DSN
 from investigation_support import action_case, agent_case, report_call
 from test_agent_actions import (
@@ -18,6 +19,7 @@ from test_agent_actions import (
 )
 
 from aiops.actions.policy import target_key
+from aiops.actions.remediation_store import RemediationStore
 from aiops.actions.rollout_undo import ActionError
 from aiops.actions.safety import ActionSafety
 from aiops.agent import tools as agent_tools
@@ -102,7 +104,7 @@ def test_close_while_waiting_ends_turn_without_write(tmp_path, action_session_id
             tmp_path,
             action_session_ids,
             responses=_preamble(),
-            namespace="vigil-shop",
+            controlled=True,
         ) as case:
             pause, proposal = await _paused(case)
             if approved:
@@ -136,78 +138,93 @@ def test_close_while_waiting_ends_turn_without_write(tmp_path, action_session_id
             assert event.payload["card_id"] == proposal.id
             assert event.payload["proposal_status"] == "voided"
             assert event.payload["written"] is False
-            assert case.restart.deleted == []
+            await case.remediation.drive(proposal.id)
+            assert case.remediation.kube.dry_runs == []
+            assert case.remediation.kube.writes == []
 
     asyncio.run(run())
 
 
 class SimulatedDriverExit(BaseException):
-    """模拟进程在事务提交后退出，让后续驱动接手。"""
+    """模拟原执行进程在授予发送权前后退出。"""
 
 
-@pytest.mark.parametrize("may_have_sent", [False, True], ids=["intent", "send-granted"])
+@pytest.mark.parametrize("may_have_sent", [False, True], ids=["before-grant", "send-granted"])
 def test_takeover_converges_attempt_without_replay(
     tmp_path, action_session_ids, monkeypatch, may_have_sent
 ):
-    boundary = "grant_send" if may_have_sent else "save_intent"
-    original = getattr(ActionSafety, boundary)
+    original = RemediationStore.grant_send
+    stale = None
 
-    async def exit_after_commit(self, *args):
-        await original(self, *args)
+    async def exit_at_grant(self, claim, attempt, *, authorize):
+        nonlocal stale
+        if stale is not None:
+            return await original(self, claim, attempt, authorize=authorize)
+        stale = (claim, attempt, authorize)
+        if may_have_sent:
+            await original(self, claim, attempt, authorize=authorize)
         raise SimulatedDriverExit
 
-    monkeypatch.setattr(ActionSafety, boundary, exit_after_commit)
+    monkeypatch.setattr(RemediationStore, "grant_send", exit_at_grant)
 
     async def run():
         async with action_case(
             tmp_path,
             action_session_ids,
             responses=[*_preamble(), _valid_report],
-            namespace="vigil-shop",
+            controlled=True,
         ) as case:
+            runtime = case.remediation
+            kube = runtime.kube
             pause, proposal = await _paused(case)
             await _decide(case.safety, pause.card)
             with pytest.raises(SimulatedDriverExit):
-                await _drive(case)
+                await runtime.drive(proposal.id)
             initial = await case.store.get_attempt(proposal.id)
-            assert initial.status is (
-                AttemptStatus.EXECUTING if may_have_sent else AttemptStatus.INTENT
-            )
-            assert (initial.send_granted_at is not None) is may_have_sent
-            assert case.restart.dry_runs == [proposal.target.uid]
-            assert case.restart.deleted == []
-
             if may_have_sent:
-                model_calls = len(case.model.seen)
-                with pytest.raises(AwaitingActionReceipt, match=initial.id):
-                    await _drive(case)
-                assert len(case.model.seen) == model_calls
-                assert case.restart.deleted == []
-                # 模拟原发送者停止续锁，接手后应记录未知回执。
-                async with case.store.transaction() as conn:
-                    await conn.execute(
-                        "UPDATE action_locks SET expires_at = clock_timestamp() "
-                        "WHERE proposal_id = %s",
-                        (proposal.id,),
-                    )
+                assert initial.status is AttemptStatus.EXECUTING
+                assert initial.send_granted_at is not None
+            else:
+                # 受控动作将尝试和发送权一起提交。
+                assert initial is None
+            assert kube.dry_runs == [{"replicas": 2}]
+            assert kube.writes == []
+            model_calls = len(case.model.seen)
+            with pytest.raises(
+                AwaitingActionReceipt, match=initial.id if may_have_sent else proposal.id
+            ):
+                await _drive(case)
+            assert len(case.model.seen) == model_calls
+            await runtime.drive(proposal.id)
+            assert kube.dry_runs == [{"replicas": 2}]
+            assert kube.writes == []
 
+            await expire_job(case.store, proposal.id)
+            stale_claim, stale_attempt, authorize = stale
+            with pytest.raises(LeaseLost):
+                await original(runtime.ledger, stale_claim, stale_attempt, authorize=authorize)
+            await drive_replica(runtime, proposal.id)
             done = await _drive(case)
             assert done.exit_code == 0
             assert done.result.turn_id == pause.card.turn_id
-            assert case.restart.dry_runs == [proposal.target.uid]
-            assert case.restart.deleted == []
+            assert kube.dry_runs == [{"replicas": 2}] * (1 if may_have_sent else 2)
+            assert kube.writes == ([] if may_have_sent else [{"replicas": 2}])
             target = proposal.target
             key = target_key(target.cluster, target.namespace, target.kind, target.name)
-            recovered_status = AttemptStatus.UNKNOWN if may_have_sent else AttemptStatus.VOIDED
-            recovered_proposal = ProposalStatus.UNKNOWN if may_have_sent else ProposalStatus.VOIDED
+            recovered_status = AttemptStatus.UNKNOWN if may_have_sent else AttemptStatus.VERIFIED
+            recovered_proposal = (
+                ProposalStatus.UNKNOWN if may_have_sent else ProposalStatus.SUCCEEDED
+            )
             assert (await case.store.get_proposal(proposal.id)).status is recovered_proposal
             assert await case.safety.target_is_locked(key) is may_have_sent
             receipt = await case.store.get_attempt(proposal.id)
-            assert receipt.id == initial.id
-            assert receipt.send_granted_at == initial.send_granted_at
             assert receipt.status is recovered_status
-            if not may_have_sent:
-                assert (await case.store.get_approval(proposal.id)).revoked_at is not None
+            if may_have_sent:
+                assert receipt.id == initial.id
+                assert receipt.send_granted_at == initial.send_granted_at
+            else:
+                assert receipt.id != stale_attempt.id
+                assert receipt.send_granted_at is not None
 
             investigation_id = _investigation_id(done)
             assert await case.store.count_attempts_for_investigation(investigation_id) == 1
@@ -217,11 +234,13 @@ def test_takeover_converges_attempt_without_replay(
             feedback = json.loads(request.result["tool_message"])
             assert feedback["status"] == "replayed"
             assert feedback["attempt_id"] == receipt.id
-            written = None if may_have_sent else False
+            written = None if may_have_sent else True
             assert feedback["write_sent"] is written
             events = await case.events("action_result")
             assert [event.payload["status"] for event in events] == (
-                ["intent", "executing", "unknown"] if may_have_sent else ["intent", "voided"]
+                ["executing", "unknown"]
+                if may_have_sent
+                else ["executing", "executing", "verified"]
             )
             assert all(event.payload["attempt_id"] == receipt.id for event in events)
             assert all(event.turn_id == pause.card.turn_id for event in events)
@@ -251,7 +270,7 @@ def test_query_replays_saved_observation_before_action(tmp_path, action_session_
             tmp_path,
             action_session_ids,
             responses=_preamble(),
-            namespace="vigil-shop",
+            controlled=True,
         ) as case:
             with pytest.raises(LeaseLost, match="图保存工具回复前"):
                 await _drive(case)
@@ -270,7 +289,7 @@ def test_query_replays_saved_observation_before_action(tmp_path, action_session_
             )
             assert [request.tool for request in case.toolbox.requests] == [
                 "kubernetes.list_pods",
-                "kubernetes.list_logs",
+                "prometheus.query_range",
             ]
             query_events = [
                 event
@@ -313,7 +332,11 @@ def test_replayed_action_request_returns_saved_feedback(tmp_path, action_session
             tmp_path,
             action_session_ids,
             responses=[*_preamble(), report_on_receipt],
+            controlled=True,
         ) as case:
+            pause, proposal = await _paused(case)
+            await _decide(case.safety, pause.card)
+            await drive_replica(case.remediation, proposal.id)
             with pytest.raises(LeaseLost, match="回执后失租"):
                 await _drive(case)
             assert interrupted_attempt is not None

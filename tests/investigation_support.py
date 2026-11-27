@@ -11,12 +11,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from controlled_action_support import replica_runtime
 from db_env import DSN, TEST_REASON
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from aiops.actions.executor import ActionExecutor
+from aiops.actions.remediation_runtime import RemediationRuntime
 from aiops.actions.restart_pod import PodPlan
 from aiops.actions.rollout_undo import ActionError, RolloutPlan
 from aiops.actions.safety import ActionSafety
@@ -453,6 +455,7 @@ class ActionCase:
     model: ScriptedChatModel
     toolbox: FakeToolbox
     restart: FakeRestartAdapter
+    remediation: RemediationRuntime | None
 
     async def events(self, event_type: str) -> list[SessionEvent]:
         return [
@@ -471,6 +474,8 @@ async def action_case(
     namespace: str = "vigil-experiment",
     rollout: FakeRolloutAdapter | None = None,
     restart: FakeRestartAdapter | None = None,
+    controlled: bool = False,
+    post_probe: float = 1.0,
     **config,
 ) -> AsyncIterator[ActionCase]:
     """模型与集群 I/O 用替身，会话、审批和执行账本使用真实实现。"""
@@ -485,6 +490,7 @@ async def action_case(
     async with Store.open(DSN) as store:
         await store.migrate()
         await setup_checkpoints(store)
+        remediation = replica_runtime(store, after=post_probe) if controlled else None
 
         @asynccontextmanager
         async def executor_factory(*, lease, turn_id):
@@ -504,6 +510,7 @@ async def action_case(
                 io_timeout_seconds=1,
                 session_lease=lease,
                 session_turn_id=turn_id,
+                remediation=remediation,
             )
 
         driver = ConversationDriver(
@@ -525,6 +532,7 @@ async def action_case(
             model=model,
             toolbox=toolbox,
             restart=restart,
+            remediation=remediation,
         )
 
 

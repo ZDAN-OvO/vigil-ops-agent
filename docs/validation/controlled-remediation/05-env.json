@@ -1,0 +1,220 @@
+{
+  "audit_source": "k3s API Server Metadata",
+  "audit_identity": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+  "requests": [
+    {
+      "audit_id": "362e2aca-1791-48ed-a8e7-9eb3a70e54b3",
+      "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-experiment/deployments/vigil-config-fixture?dryRun=All",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-experiment",
+        "name": "vigil-config-fixture",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T15:48:16.537061Z",
+      "dry_run": true,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T15:48:16.537061Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T15:48:16.558653Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    },
+    {
+      "audit_id": "82dea22b-1296-429b-bcb6-2a315f420743",
+      "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-experiment/deployments/vigil-config-fixture",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-experiment",
+        "name": "vigil-config-fixture",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T15:48:16.748752Z",
+      "dry_run": false,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T15:48:16.748752Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T15:48:16.764784Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    }
+  ],
+  "vigil_ledger": [
+    {
+      "after": {
+        "value": "healthy"
+      },
+      "alerts": [
+        {
+          "source": "env",
+          "starts_at": "2026-11-27T15:44:56.43+00:00",
+          "fingerprint": "02b823c496923906",
+          "resolved_at": "2026-11-27T15:49:15.053101+00:00"
+        }
+      ],
+      "before": {
+        "value": "degraded"
+      },
+      "status": "succeeded",
+      "target": "vigil-experiment/Deployment/vigil-config-fixture",
+      "sent_at": "2026-11-27T15:48:16.694589+00:00",
+      "baseline": {
+        "method": "business_probe_window",
+        "samples": [
+          [
+            [
+              1795794221.988,
+              true
+            ]
+          ],
+          [
+            [
+              1795794281.945,
+              false
+            ]
+          ],
+          [
+            [
+              1795794341.919,
+              false
+            ]
+          ],
+          [
+            [
+              1795794401.901,
+              false
+            ]
+          ],
+          [
+            [
+              1795794461.889,
+              false
+            ]
+          ]
+        ],
+        "started_at": "2026-11-27T15:43:16.513366+00:00",
+        "failed_slots": 4,
+        "slot_seconds": 60,
+        "slots_required": 5,
+        "slots_collected": 5
+      },
+      "followups": null,
+      "applied_at": "2026-11-27T15:48:16.784561+00:00",
+      "parameters": {
+        "key": "VIGIL_MODE",
+        "value": "healthy",
+        "source": "env",
+        "container": "app"
+      },
+      "session_id": "77fc9501f66e4024bb4ab61420f7944b",
+      "target_uid": "682d38bc-38ac-4c4a-a13a-e35fc5734606",
+      "compensated": false,
+      "finished_at": "2026-11-27T15:59:22.454725+00:00",
+      "proposal_id": "act-c93e875cd43e4933b6da2fdfbb492381",
+      "effective_at": "2026-11-27T15:49:05.736065+00:00",
+      "verification": {
+        "method": "business_probe_window",
+        "outcome": "improved",
+        "samples": [
+          [
+            [
+              1795794581.873,
+              true
+            ]
+          ],
+          [
+            [
+              1795794641.865,
+              true
+            ]
+          ],
+          [
+            [
+              1795794701.823,
+              true
+            ]
+          ],
+          [
+            [
+              1795794761.813,
+              true
+            ]
+          ],
+          [
+            [
+              1795794821.803,
+              true
+            ]
+          ],
+          [
+            [
+              1795794881.794,
+              true
+            ]
+          ],
+          [
+            [
+              1795794941.771,
+              true
+            ]
+          ],
+          [
+            [
+              1795795001.757,
+              true
+            ]
+          ],
+          [
+            [
+              1795795061.746,
+              true
+            ]
+          ],
+          [
+            [
+              1795795121.709,
+              true
+            ]
+          ]
+        ],
+        "started_at": "2026-11-27T15:49:05.736065+00:00",
+        "failed_slots": 0,
+        "slot_seconds": 60,
+        "outcome_reason": "完整观察窗内业务探针全通过，故障已消失",
+        "slots_required": 10,
+        "slots_collected": 10
+      },
+      "policy_version": "controlled-remediation-v1-8f5dcece25ec1c30e97b837ec5bec5b7726f785c4e50a3838b733fbe676a832e",
+      "session_closed_at": "2026-11-27T15:59:22.553726+00:00",
+      "parent_proposal_id": null
+    }
+  ]
+}

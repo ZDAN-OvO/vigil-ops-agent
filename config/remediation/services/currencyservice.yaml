@@ -1,0 +1,38 @@
+namespace: vigil-shop
+kind: Deployment
+name: currencyservice
+containers: [server]
+resources:
+  server:
+    request_cpu: {auto_min: 50m, auto_max: 200m, hard_max: 500m}
+    limit_cpu: {auto_min: 100m, auto_max: 400m, hard_max: "1"}
+    request_memory: {auto_min: 32Mi, auto_max: 128Mi, hard_max: 256Mi}
+    limit_memory: {auto_min: 64Mi, auto_max: 256Mi, hard_max: 512Mi}
+probe:
+  promql: 'probe_success{job="frontend-probe",instance="http://frontend.vigil-shop.svc.cluster.local./"}'
+rules:
+  - id: currency-memory-oom
+    alertname: FrontendProbeFailed
+    labels: {source: frontend}
+    kind: adjust_resources
+    parameters: {container: server, limit_memory: 128Mi}
+    max_evidence_age_seconds: 120
+    evidence:
+      - {key: limit_memory_bytes, source: current, value: 16777216}
+      - {key: oom_killed, value: true}
+      - {key: container_restarts, operator: ge, value: 3}
+      - key: business_failed
+        value: 0
+        promql: 'probe_success{job="frontend-probe",instance="http://frontend.vigil-shop.svc.cluster.local./"}'
+  - id: currency-cpu-limit
+    alertname: VigilCpuLimitDegraded
+    labels: {source: cpu}
+    kind: adjust_resources
+    parameters: {container: server, limit_cpu: 200m}
+    max_evidence_age_seconds: 120
+    evidence:
+      - {key: limit_cpu_millicores, source: current, value: 5}
+      - {key: throttle_ratio, operator: ge, value: 0.5}
+      - key: business_failed
+        value: 0
+        promql: 'probe_success{job="frontend-probe",instance="http://frontend.vigil-shop.svc.cluster.local./"}'

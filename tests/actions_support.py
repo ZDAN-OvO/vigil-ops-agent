@@ -11,14 +11,22 @@ from aiops.actions.executor import (
     ActionExecutor,
     AutoExecutionError,
 )
+from aiops.actions.policy import target_key
 from aiops.actions.restart_pod import PodPlan
 from aiops.actions.rollout_undo import ActionError, RolloutPlan
+from aiops.actions.safety import proposal_hash
 from aiops.contracts import (
+    ActionAttempt,
     ActionKind,
     ActionOrigin,
     ActionProposal,
     ActionTarget,
+    Approval,
     ApprovalDecision,
+    AttemptStatus,
+    ProposalStatus,
+    RiskDecision,
+    RiskDisposition,
     TimeRange,
     ToolResult,
 )
@@ -502,3 +510,110 @@ def read_followup(attempt_id):
             return await store.get_followup_by_attempt(attempt_id)
 
     return asyncio.run(run())
+
+
+def legacy_risk(proposal):
+    return RiskDecision(
+        proposal_id=proposal.id,
+        disposition=RiskDisposition.APPROVAL,
+        policy_version="legacy",
+        reasons=["切换前的人工审批"],
+        requires_compensation=False,
+    )
+
+
+async def seed_legacy_card(store, executor, cleanup, *, proposal_factory=make_proposal, **fields):
+    """模拟升级前已发布的卡片，不走现有审批入口补造旧授权。"""
+    lease, turn_id = executor._scope()
+    proposal = proposal_factory(
+        id=f"act-{uuid4().hex}",
+        idempotency_key=uuid4().hex,
+        created_at=datetime.now(UTC),
+        session_id=lease.session_id,
+        session_turn_id=turn_id,
+        **fields,
+    )
+    cleanup.append(proposal.id)
+    await store.save_proposal(proposal, legacy_risk(proposal))
+    async with store.transaction() as conn:
+        row = await executor._safety._proposal(conn, proposal.id)
+        card = await executor._safety.sessions.append_event(
+            conn,
+            lease.session_id,
+            "approval_required",
+            await executor._safety._card(conn, row),
+            turn_id=turn_id,
+        )
+        await conn.execute(
+            "UPDATE action_proposals SET published_seq = %s WHERE id = %s",
+            (card.seq, proposal.id),
+        )
+    return proposal, card
+
+
+async def seed_legacy_approval(store, proposal):
+    now = datetime.now(UTC)
+    approval = Approval(
+        id=f"apr-{uuid4().hex}",
+        proposal_id=proposal.id,
+        proposal_hash=proposal_hash(proposal),
+        actor="tester",
+        decision=ApprovalDecision.APPROVED,
+        reason="切换前批准",
+        decided_at=now,
+        expires_at=now + timedelta(minutes=15),
+    )
+    await store.save_approval(approval)
+    await store.set_proposal_status(proposal.id, ProposalStatus.APPROVED)
+    return approval
+
+
+async def seed_legacy_attempt(
+    store, proposal, *, status, lock=False, snapshot=None, result=None, verification=None
+):
+    now = datetime.now(UTC)
+    sent = status is not AttemptStatus.INTENT
+    finished = status not in {AttemptStatus.INTENT, AttemptStatus.EXECUTING}
+    attempt = ActionAttempt(
+        id=f"att-{uuid4().hex}",
+        proposal_id=proposal.id,
+        status=status,
+        idempotency_key=proposal.idempotency_key,
+        started_at=now,
+        finished_at=now if finished else None,
+        snapshot={
+            "uid": proposal.target.uid,
+            "resource_version": proposal.target.resource_version,
+            **(snapshot or {}),
+        },
+        request={"kind": proposal.kind.value},
+        result=result,
+        verification=verification,
+    )
+    await store.save_attempt(attempt)
+    async with store.transaction() as conn:
+        if sent:
+            await conn.execute(
+                "UPDATE action_attempts SET send_granted_at = %s, request_timeout_seconds = 5 "
+                "WHERE id = %s",
+                (now, attempt.id),
+            )
+        if lock:
+            target = proposal.target
+            await conn.execute(
+                """
+                INSERT INTO action_locks (
+                    target_key, proposal_id, owner, generation, expires_at,
+                    session_owner, session_generation
+                )
+                SELECT %s, %s, 'legacy', nextval('action_lock_generation'),
+                    clock_timestamp() + interval '1 minute', lease_owner, lease_generation
+                FROM sessions WHERE id = %s
+                """,
+                (
+                    target_key(target.cluster, target.namespace, target.kind, target.name),
+                    proposal.id,
+                    proposal.session_id,
+                ),
+            )
+    return await store.get_attempt(proposal.id)

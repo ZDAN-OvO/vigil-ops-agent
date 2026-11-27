@@ -316,9 +316,21 @@ if (token) {{
         limit = _number(request, "limit", 100, 1, 200)
         events = await sessions.list_events(session.id, after_seq=after_seq, limit=limit + 1)
         page = events[:limit]
+        payloads = []
+        for event in page:
+            payload = event.as_dict()
+            if (
+                event.type == "approval_required"
+                and payload.get("action") in {"restart_pod", "rollout_undo"}
+                and payload.get("status") in {"pending_approval", "approved"}
+            ):
+                card = await safety.get_card(payload["card_id"], session_id=session.id)
+                if card is not None and card["status"] == "voided":
+                    payload["status"] = "voided"
+            payloads.append(project_payload(payload))
         return JSONResponse(
             {
-                "events": [project_payload(event.as_dict()) for event in page],
+                "events": payloads,
                 "next_after_seq": page[-1].seq if page else after_seq,
                 "has_more": len(events) > limit,
             }

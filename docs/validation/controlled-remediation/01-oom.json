@@ -1,0 +1,216 @@
+{
+  "audit_source": "k3s API Server Metadata",
+  "audit_identity": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+  "requests": [
+    {
+      "audit_id": "f08b3925-f209-43ca-97f6-4a71a0e1fddc",
+      "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-shop/deployments/currencyservice?dryRun=All",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-shop",
+        "name": "currencyservice",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T15:58:57.391075Z",
+      "dry_run": true,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T15:58:57.391075Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T15:58:57.418880Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    },
+    {
+      "audit_id": "704c8faf-d83a-4690-9af6-fc9763447da6",
+      "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-shop/deployments/currencyservice",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-shop",
+        "name": "currencyservice",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T15:58:57.684613Z",
+      "dry_run": false,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T15:58:57.684613Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T15:58:57.717568Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    }
+  ],
+  "vigil_ledger": [
+    {
+      "after": {
+        "limit_memory": "128Mi"
+      },
+      "alerts": [
+        {
+          "source": "frontend",
+          "starts_at": "2026-11-27T15:49:41.43+00:00",
+          "fingerprint": "53c8bb6c14a18d73",
+          "resolved_at": null
+        }
+      ],
+      "before": {
+        "limit_memory": "16Mi"
+      },
+      "status": "failed",
+      "target": "vigil-shop/Deployment/currencyservice",
+      "sent_at": "2026-11-27T15:58:57.654002+00:00",
+      "baseline": {
+        "method": "business_probe_window",
+        "samples": [
+          [
+            [
+              1795794844.817,
+              false
+            ],
+            [
+              1795794859.817,
+              false
+            ],
+            [
+              1795794874.811,
+              false
+            ],
+            [
+              1795794889.812,
+              false
+            ]
+          ],
+          [
+            [
+              1795794904.803,
+              false
+            ],
+            [
+              1795794919.802,
+              false
+            ],
+            [
+              1795794934.789,
+              false
+            ],
+            [
+              1795794949.793,
+              false
+            ]
+          ],
+          [
+            [
+              1795794964.784,
+              false
+            ],
+            [
+              1795794979.784,
+              false
+            ],
+            [
+              1795794994.774,
+              false
+            ],
+            [
+              1795795009.774,
+              false
+            ]
+          ],
+          [
+            [
+              1795795024.764,
+              false
+            ],
+            [
+              1795795039.764,
+              false
+            ],
+            [
+              1795795054.748,
+              false
+            ],
+            [
+              1795795069.747,
+              false
+            ]
+          ],
+          [
+            [
+              1795795084.738,
+              false
+            ],
+            [
+              1795795099.731,
+              false
+            ],
+            [
+              1795795114.726,
+              false
+            ],
+            [
+              1795795129.725,
+              false
+            ]
+          ]
+        ],
+        "started_at": "2026-11-27T15:53:57.325991+00:00",
+        "failed_slots": 5,
+        "slot_seconds": 60,
+        "slots_required": 5,
+        "slots_collected": 5
+      },
+      "followups": [
+        {
+          "id": "fol-5997b0f8e04d412995de25a9cb2da31f",
+          "status": "open",
+          "outcome": "unknown"
+        }
+      ],
+      "applied_at": "2026-11-27T15:58:57.761099+00:00",
+      "parameters": {
+        "container": "server",
+        "limit_memory": "128Mi"
+      },
+      "session_id": "1e0808c4e6654ba68535c833e277b832",
+      "target_uid": "947e97ee-1eaf-4481-a098-c39e2234c53c",
+      "compensated": false,
+      "finished_at": "2026-11-27T16:02:02.780151+00:00",
+      "proposal_id": "act-9519e5b9e499451c93b9d0f6d2004619",
+      "effective_at": null,
+      "verification": {
+        "outcome": "unknown",
+        "outcome_reason": "变更生效超时，需人工核实"
+      },
+      "policy_version": "controlled-remediation-v1-8f5dcece25ec1c30e97b837ec5bec5b7726f785c4e50a3838b733fbe676a832e",
+      "session_closed_at": null,
+      "parent_proposal_id": null
+    }
+  ]
+}

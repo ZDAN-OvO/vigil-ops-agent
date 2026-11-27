@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vigil-replica-fixture
+  namespace: vigil-experiment
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vigil-replica-fixture
+  template:
+    metadata:
+      labels:
+        app: vigil-replica-fixture
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: [python, -u, /fixture/app.py]
+          env:
+            - name: VIGIL_ROLE
+              value: worker
+          readinessProbe:
+            httpGet:
+              path: /live
+              port: 8080
+            periodSeconds: 2
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: app
+              mountPath: /fixture
+              readOnly: true
+      volumes:
+        - name: app
+          configMap:
+            name: vigil-replica-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vigil-replica-backends
+  namespace: vigil-experiment
+spec:
+  clusterIP: None
+  selector:
+    app: vigil-replica-fixture
+  ports:
+    - port: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vigil-replica-gateway
+  namespace: vigil-experiment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vigil-replica-gateway
+  template:
+    metadata:
+      labels:
+        app: vigil-replica-gateway
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: gateway
+          image: python:3.12-alpine
+          command: [python, -u, /fixture/app.py]
+          env:
+            - name: VIGIL_ROLE
+              value: gateway
+          readinessProbe:
+            httpGet:
+              path: /live
+              port: 8080
+            periodSeconds: 2
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: app
+              mountPath: /fixture
+              readOnly: true
+      volumes:
+        - name: app
+          configMap:
+            name: vigil-replica-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vigil-replica-gateway
+  namespace: vigil-experiment
+spec:
+  selector:
+    app: vigil-replica-gateway
+  ports:
+    - port: 8080

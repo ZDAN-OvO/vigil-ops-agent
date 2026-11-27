@@ -122,6 +122,9 @@ class ConversationRun:
             scope = RunScope(
                 driver.sessions, self.lease, turn, self._check_heartbeat, driver.project_text
             )
+            if driver.settings.model_name is None and driver.model is None:
+                # 规则后台仍可处置结构化告警，模型调查要等模型可用。
+                return None
             incident, investigation = await self._investigation(scope, turn)
             async with self._open_executor(scope) as executor:
                 engine = LangChainInvestigation(

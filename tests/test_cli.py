@@ -22,7 +22,8 @@ from uuid import uuid4
 
 import psycopg
 import pytest
-from actions_support import make_proposal
+from actions_support import legacy_risk, make_proposal
+from controlled_action_support import REPLICA_TARGET, ReplicaAdapter, drive_replica, replica_runtime
 from investigation_support import (
     FakePrometheus,
     FakeRestartAdapter,
@@ -41,7 +42,7 @@ from psycopg.conninfo import make_conninfo
 
 from aiops import cli
 from aiops.actions.executor import ActionExecutor
-from aiops.actions.policy import decide, target_key
+from aiops.actions.policy import target_key
 from aiops.actions.rollout_undo import ActionError
 from aiops.actions.safety import ActionSafety
 from aiops.agent.conversation import ConversationDriver
@@ -60,6 +61,7 @@ FINISHED = "处置轮次继续完成"
 WEB_URL = "http://127.0.0.1:8123"
 DEPLOYMENTS = call("kubernetes_list_deployments", {"selector": "app=checkout"}, "deployments")
 ASSESS = "assess_evidence"
+REPLICA_PROBE = 'probe_success{job="vigil-replica-probe"}'
 
 
 @pytest.fixture
@@ -264,6 +266,9 @@ def _card_run(env, output="stream-json"):
         (card,) = [event for event in events if event["type"] == "approval_required"]
         result = events[-1]
     assert result["card_id"] == card["card_id"]
+    assert card["action"] == "scale_replicas"
+    assert card["before"] == {"replicas": 1}
+    assert card["parameters"] == {"replicas": 2}
     assert card["url"] == f"{WEB_URL}/sessions/{card['session_id']}#card-{card['card_id']}"
     return card
 
@@ -280,6 +285,25 @@ def _decide(env, card, decision=ApprovalDecision.APPROVED):
             )
 
     asyncio.run(run())
+
+
+def _record_replica_write(fields):
+    with (Path(os.environ["CLI_TEST_FILES"]) / "writes").open("a") as file:
+        print(fields["replicas"], file=file)
+
+
+def _run_approved_job(env, card_id):
+    async def run():
+        async with Store.open(env["VIGIL_DATABASE_URL"]) as store:
+
+            def record(fields):
+                with (Path(env["CLI_TEST_FILES"]) / "writes").open("a") as file:
+                    print(fields["replicas"], file=file)
+
+            runtime = replica_runtime(store, kube=ReplicaAdapter(record_write=record))
+            return await drive_replica(runtime, card_id)
+
+    return asyncio.run(run())
 
 
 def test_paused_once_releases_lease_and_persists_takeover_receipt(child_env, tmp_path):
@@ -304,6 +328,8 @@ def test_paused_once_releases_lease_and_persists_takeover_receipt(child_env, tmp
     assert side["termination_code"] == "budget_exhausted" and side["lane"] == "side"
     assert _sql(child_env, "SELECT count(*) FROM approvals") == [(0,)]
     _decide(child_env, card)
+    assert not (tmp_path / "writes").exists()
+    assert _run_approved_job(child_env, card_id).status is AttemptStatus.VERIFIED
     env = child_env | {"CLI_TEST_MODE": "card"}
     args = ("--resume", session_id, "--output", "stream-json")
     takeover = _stream(_run(env, *args), 0)
@@ -312,8 +338,9 @@ def test_paused_once_releases_lease_and_persists_takeover_receipt(child_env, tmp
     receipts = [
         event for event in replay if event["type"] == "action_result" and event["written"] is True
     ]
-    assert len(receipts) == 1 and receipts[0]["card_id"] == card_id
-    assert (tmp_path / "writes").read_text().splitlines() == ["uid-pod-cli-stable"]
+    assert len(receipts) == 2 and all(event["card_id"] == card_id for event in receipts)
+    assert receipts[-1]["status"] == "verified"
+    assert (tmp_path / "writes").read_text().splitlines() == ["2"]
 
 
 def test_side_json_waits_for_its_own_input_and_keeps_main_card(child_env):
@@ -501,7 +528,7 @@ def test_terminal_holds_main_for_side_questions_and_resumes_on_decision(
         assert not (tmp_path / "writes").exists()
         assert _sql(env, "SELECT decision FROM approvals") == [("rejected",)]
     else:
-        assert (tmp_path / "writes").read_text().splitlines() == ["uid-pod-cli-stable"]
+        assert (tmp_path / "writes").read_text().splitlines() == ["2"]
         assert _sql(env, "SELECT decision FROM approvals") == [("approved",)]
         assert any(result["card_id"] == card_id and result["written"] for result in results)
     assert _sql(env, "SELECT lease_owner FROM sessions WHERE id = %s", session_id) == [(None,)]
@@ -565,7 +592,7 @@ def _legacy_proposal(env, *, unknown=False, owner=None):
         )
         async with Store.open(env["VIGIL_DATABASE_URL"]) as store:
             await store.migrate()
-            await store.save_proposal(proposal, decide(proposal, target_busy=False))
+            await store.save_proposal(proposal, legacy_risk(proposal))
             if unknown:
                 await store.save_attempt(
                     ActionAttempt(
@@ -601,7 +628,9 @@ def _legacy_proposal(env, *, unknown=False, owner=None):
 def test_admin_migrate_runbook_doctor_and_cutover(child_env, tmp_path):
     migration = _run(child_env, "admin", "migrate")
     assert migration.returncode == 0, migration.stderr
-    assert "0013_action_safety" in json.loads(migration.stdout)["applied"]
+    assert {"0013_action_safety", "0016_remediation"} <= set(
+        json.loads(migration.stdout)["applied"]
+    )
     assert _sql(child_env, "SELECT count(*) FROM checkpoint_migrations")[0][0] > 0
     doctor = _run(child_env, "admin", "doctor")
     assert doctor.returncode == 0, doctor.stderr
@@ -863,7 +892,7 @@ def _assess(messages):
     )
 
 
-def _restart(messages):
+def _legacy_restart(messages):
     return call(
         "request_action",
         {
@@ -880,8 +909,51 @@ def _restart(messages):
             "business_target": "target-service:/work",
             "observation_window_seconds": 6,
         },
-        "restart",
+        "request-action",
     )
+
+
+def _legacy_rollback(messages):
+    return call(
+        "request_action",
+        {
+            "action": "rollout_undo",
+            "target_deployment": "target-deploy",
+            "reason": "核对发布差异",
+            "hypothesis_id": hypothesis_id(messages),
+            "evidence_ids": observation_ids(messages)[:2],
+        },
+        "request-action",
+    )
+
+
+def _scale(messages):
+    return call(
+        "request_action",
+        {
+            "action": "scale_replicas",
+            "target_deployment": REPLICA_TARGET,
+            "target_namespace": "vigil-experiment",
+            "parameters": {"replicas": 2},
+            "reason": "容量不足",
+            "hypothesis_id": hypothesis_id(messages),
+            "evidence_ids": observation_ids(messages)[:2],
+        },
+        "request-action",
+    )
+
+
+@pytest.mark.parametrize("action", ["restart_pod", "rollout_undo"])
+def test_legacy_request_is_denied_in_stream_json(child_env, tmp_path, action):
+    env = child_env | {"CLI_TEST_MODE": action}
+    events = _stream(_run(env, "-p", "检查旧写入", "--output", "stream-json"), 0)
+    assert not [
+        event for event in events if event["type"] in {"approval_required", "action_result"}
+    ]
+    assert _sql(env, "SELECT kind, status FROM action_proposals") == [(action, "denied")]
+    assert _sql(env, "SELECT count(*) FROM approvals") == [(0,)]
+    assert _sql(env, "SELECT count(*) FROM action_attempts") == [(0,)]
+    assert not (tmp_path / "writes").exists()
 
 
 class _Model(ScriptedChatModel):
@@ -915,6 +987,26 @@ def _child_main():
         mode = os.environ["CLI_TEST_MODE"]
         toolbox = _BlockingToolbox() if mode == "blocking" else FakeToolbox()
 
+        @asynccontextmanager
+        async def open_test_remediation(settings, store):
+            yield (
+                replica_runtime(store, kube=ReplicaAdapter(record_write=_record_replica_write))
+                if mode == "card"
+                else None
+            )
+
+        async def drive_test_remediation(runtime, stop):
+            while not stop.is_set():
+                for proposal_id in await runtime.ledger.due():
+                    await drive_replica(runtime, proposal_id)
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=0.05)
+                except TimeoutError:
+                    pass
+
+        cli.open_remediation = open_test_remediation
+        cli.drive_remediation = drive_test_remediation
+
         class TestExecutor(ActionExecutor):
             def __init__(self, **kwargs):
                 super().__init__(
@@ -933,17 +1025,25 @@ def _child_main():
         factory.ActionExecutor = TestExecutor
 
         @asynccontextmanager
-        async def open_test_conversation(*, settings, store):
-            async with factory.open_conversation(settings=settings, store=store) as driver:
+        async def open_test_conversation(*, settings, store, remediation=None):
+            async with factory.open_conversation(
+                settings=settings, store=store, remediation=remediation
+            ) as driver:
                 driver.toolbox = toolbox
-                if mode == "card":
+                if mode in {"card", "restart_pod", "rollout_undo"}:
+                    request = {
+                        "card": _scale,
+                        "restart_pod": _legacy_restart,
+                        "rollout_undo": _legacy_rollback,
+                    }[mode]
+
                     # 按轮次历史决定下一步，使同一脚本能在独立进程中从 checkpoint 继续。
                     class CardModel(ScriptedChatModel):
                         def _generate(self, messages, stop=None, run_manager=None, **kwargs):
                             frame = str(messages)
                             if "暂停点之前的会话" in frame and "本轮查询范围" in frame:
                                 self.responses[:] = [AIMessage(content=SIDE)]
-                            elif "restart" in [
+                            elif "request-action" in [
                                 getattr(message, "tool_call_id", None) for message in messages
                             ]:
                                 self.responses[:] = [
@@ -952,18 +1052,31 @@ def _child_main():
                                     )
                                 ]
                             elif not self.seen:
+                                business = (
+                                    call(
+                                        "prometheus_query_range",
+                                        {
+                                            "expression": REPLICA_PROBE,
+                                            "lookback_seconds": 120,
+                                            "step_seconds": 15,
+                                        },
+                                        "probe",
+                                    )
+                                    if mode != "restart_pod"
+                                    else call(
+                                        "kubernetes_list_logs",
+                                        {"selector": "app=target", "pod_name": "target-pod"},
+                                        "logs",
+                                    )
+                                )
                                 self.responses[:] = [
                                     create_hypothesis(),
                                     call(
                                         "kubernetes_list_pods", {"selector": "app=target"}, "pods"
                                     ),
-                                    call(
-                                        "kubernetes_list_logs",
-                                        {"selector": "app=target", "pod_name": "target-pod"},
-                                        "logs",
-                                    ),
+                                    business,
                                     _assess,
-                                    _restart,
+                                    request,
                                 ]
                             return super()._generate(messages, stop, run_manager, **kwargs)
 

@@ -273,6 +273,70 @@ class ActionKind(StrEnum):
     RESTART_POD = "restart_pod"
     SCALE_REPLICAS = "scale_replicas"
     ROLLOUT_UNDO = "rollout_undo"
+    ADJUST_RESOURCES = "adjust_resources"
+    UPDATE_CONFIG = "update_config"
+
+
+class ActionParametersModel(Contract):
+    model_config = ConfigDict(strict=True, frozen=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict) and any(value is None for value in data.values()):
+            raise ValueError("省略未修改的字段")
+        return data
+
+
+class AdjustResourcesParams(ActionParametersModel):
+    container: str = Field(min_length=1)
+    request_cpu: str | None = None
+    limit_cpu: str | None = None
+    request_memory: str | None = None
+    limit_memory: str | None = None
+
+    @model_validator(mode="after")
+    def require_change(self) -> Self:
+        if not (self.request_cpu or self.limit_cpu or self.request_memory or self.limit_memory):
+            raise ValueError("至少提供一项资源规格")
+        return self
+
+
+class ScaleReplicasParams(ActionParametersModel):
+    replicas: int
+
+
+class UpdateConfigParams(ActionParametersModel):
+    source: Literal["env", "config_map"]
+    key: str = Field(min_length=1)
+    value: str
+    container: str | None = Field(default=None, min_length=1)
+    config_map: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def require_source_selector(self) -> Self:
+        if self.source == "env" and (self.container is None or self.config_map is not None):
+            raise ValueError("环境变量需要指定容器")
+        if self.source == "config_map" and (self.config_map is None or self.container is not None):
+            raise ValueError("配置项需要指定 ConfigMap")
+        return self
+
+
+type ActionParameters = AdjustResourcesParams | ScaleReplicasParams | UpdateConfigParams
+
+
+_ACTION_PARAMETERS = {
+    ActionKind.ADJUST_RESOURCES: AdjustResourcesParams,
+    ActionKind.SCALE_REPLICAS: ScaleReplicasParams,
+    ActionKind.UPDATE_CONFIG: UpdateConfigParams,
+}
+
+
+def parse_action_parameters(kind: ActionKind, parameters: dict[str, Any]) -> ActionParameters:
+    model = _ACTION_PARAMETERS.get(kind)
+    if model is None:
+        raise ValueError("该动作不接受新的写入参数")
+    return model.model_validate(parameters)
 
 
 class ActionTarget(Contract):
