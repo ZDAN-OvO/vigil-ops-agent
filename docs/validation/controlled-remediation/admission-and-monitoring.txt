@@ -1,0 +1,30 @@
+=== 服务端 dry-run ===
+前三行分别为副本、资源规格和 ConfigMap allow；余下是准入或授权拒绝。
+deployment.apps/vigil-replica-fixture patched
+deployment.apps/currencyservice patched
+configmap/vigil-config-fixture patched
+pod: The pods "vigil-policy-test" is invalid: : ValidatingAdmissionPolicy 'vigil-remediation-write' with binding 'vigil-remediation-write' denied request: Vigil remediation write exceeds the registered hard bounds
+image: The deployments "currencyservice" is invalid: : ValidatingAdmissionPolicy 'vigil-remediation-write' with binding 'vigil-remediation-write' denied request: Vigil remediation write exceeds the registered hard bounds
+zero: The deployments "vigil-replica-fixture" is invalid: : ValidatingAdmissionPolicy 'vigil-remediation-write' with binding 'vigil-remediation-write' denied request: Vigil remediation write exceeds the registered hard bounds
+over-max: The deployments "vigil-replica-fixture" is invalid: : ValidatingAdmissionPolicy 'vigil-remediation-write' with binding 'vigil-remediation-write' denied request: Vigil remediation write exceeds the registered hard bounds
+unknown-config: The configmaps "vigil-config-fixture" is invalid: : ValidatingAdmissionPolicy 'vigil-remediation-write' with binding 'vigil-remediation-write' denied request: Vigil remediation write exceeds the registered hard bounds
+other-workload: Error from server (Forbidden): deployments.apps "frontend" is forbidden: User "system:serviceaccount:vigil-monitoring:vigil-remediation" cannot patch resource "deployments" in API group "apps" in the namespace "vigil-shop"
+other-namespace: Error from server (Forbidden): deployments.apps "frontend" is forbidden: User "system:serviceaccount:vigil-monitoring:vigil-remediation" cannot get resource "deployments" in API group "apps" in the namespace "default"
+
+=== 专用身份、Pod patch/delete、准入编译、共享消费者 ===
+Username                                            system:serviceaccount:vigil-monitoring:vigil-remediation
+yes
+no
+NAME                                 WARNINGS
+vigil-remediation-config-consumers   <none>
+vigil-remediation-write              <none>
+healthy
+The pods "shared-claim" is invalid: : ValidatingAdmissionPolicy 'vigil-remediation-config-consumers' with binding 'vigil-remediation-config-consumers' denied request: ConfigMap reserved for one remediation workload
+
+=== Prometheus ===
+Checking /etc/prometheus/prometheus.yml
+  SUCCESS: 1 rule files found
+ SUCCESS: /etc/prometheus/prometheus.yml is valid prometheus config file syntax
+
+Checking /etc/prometheus/rules.yml
+  SUCCESS: 5 rules found

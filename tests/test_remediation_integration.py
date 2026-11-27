@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from secrets import token_urlsafe
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -87,6 +88,36 @@ class Metrics:
             ((start + timedelta(seconds=offset)).timestamp(), 1)
             for offset in range(5, int((end - start).total_seconds()), 15)
         ]
+
+
+def test_manual_config_explains_why_enabled_auto_requires_approval():
+    async def run():
+        settings = Settings(_env_file=None, cluster="vigil-lab", remediation_auto_enabled=True)
+        kube = Cluster({"value": "healthy"})
+        ledger = SimpleNamespace(save_manual=AsyncMock())
+        runtime = RemediationRuntime(settings, ledger, load_policy(CONFIG), kube, Metrics())
+        _, risk, _ = await runtime.prepare_manual(
+            lease=SimpleNamespace(session_id="session"),
+            turn_id="turn",
+            kind=ActionKind.UPDATE_CONFIG,
+            target_kind="Deployment",
+            namespace="vigil-experiment",
+            name="vigil-config-fixture",
+            parameters={
+                "source": "env",
+                "container": "app",
+                "key": "VIGIL_MODE",
+                "value": "limited",
+            },
+            investigation_id="investigation",
+            evidence_ids=["evidence"],
+            reason="调整登记的普通配置",
+        )
+        assert risk.disposition.value == "approval"
+        assert risk.reasons == ["参数需人工审查"]
+        ledger.save_manual.assert_awaited_once()
+
+    asyncio.run(run())
 
 
 def test_config_compensation_survives_persisting_the_authorization():

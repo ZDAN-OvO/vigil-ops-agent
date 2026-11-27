@@ -10,6 +10,8 @@ Docker 宿主使用 cgroup v1，实验节点以 `native` snapshotter 运行。�
 的本地副本导入，Prometheus 与 Alertmanager 分别使用 Debian 打包的 2.42.0 和 0.25.0。
 以下证据保留各次运行的动作、会话、目标 UID、样本及对应审计 ID。
 审计包含服务端预检，写入次数只计实际 PATCH。
+准入正反例、专用身份核验和 Prometheus 规则校验输出单独归档。
+[准入和监控证据](validation/controlled-remediation/admission-and-monitoring.txt)
 
 | 场景 | 实际结果 | 证据 |
 | --- | --- | --- |
@@ -19,6 +21,7 @@ Docker 宿主使用 cgroup v1，实验节点以 `native` snapshotter 运行。�
 | 普通环境变量修复 | `VIGIL_MODE: degraded → healthy`，应用加载新值，10 个时段全通过。会话关闭。一次写入。 | [账本与审计](validation/controlled-remediation/05-env.json) |
 | 恶化后补偿 | 失败率从 1/5 升至 5/5。第一次写成 `worsen`，第二次恢复 `degraded`。补偿卡和人工待办均落库。此场景将已采集的告警通过真实 Webhook 重放。 | [网页](validation/controlled-remediation/compensation.png) · [账本与审计](validation/controlled-remediation/03-compensation-fixed.json) |
 | 网页批准普通配置 | Chrome 经一次性链接登录后批准 `VIGIL_MODE: healthy → limited`，后台返回 HTTP 200。API Server 记录一次写入，10 个时段全通过，独立加载信号为 `clear`。通过实验脚本创建待审批卡片。 | [批准前](validation/controlled-remediation/manual-approval.png) · [批准后](validation/controlled-remediation/manual-applying.png) · [已验证](validation/controlled-remediation/manual-verified.png) · [账本与审计](validation/controlled-remediation/05-manual-final.json) |
+| 观察期间复发 | 首个恢复通知到达后会话继续观察。收窄 Service 的后端选择范围后，真实业务探针再次失败，Alertmanager 投递了第二次发作。两个发作最终均恢复，账本仍以无改善结算，十个时段中三个失败。仅初始扩容写入。 | [网页](validation/controlled-remediation/recurrence.png) · [告警、账本与审计](validation/controlled-remediation/06-recurrence-final.json) |
 
 - **内存修复首轮。** 真实首页返回 HTTP 500，现行容器内存限额为 `16Mi`，三次重启，
   最后一次终止原因为 `OOMKilled`。Vigil 写入 `128Mi`，新 Pod 拉取镜像超时。
@@ -31,8 +34,9 @@ Docker 宿主使用 cgroup v1，实验节点以 `native` snapshotter 运行。�
 修复后增加持久化授权的回归用例，并在独立数据库复跑完整正向变更与补偿。
 集群启动、注入和采集命令见[受控自动修复验收步骤](../env/README.md#11-受控自动修复验收)。
 
-在独立 PostgreSQL 上运行 `LANGGRAPH_STRICT_MSGPACK=true make check-all`，Python 485 项、
+在独立 PostgreSQL 上运行 `LANGGRAPH_STRICT_MSGPACK=true make check-all`，Python 487 项、
 Vitest 14 项和 Chrome 15 项全部通过，零跳过。门禁包括前端类型检查、样式检查和 Ruff。
+随后针对迟到跨组告警的时间重叠修复复跑 43 项 PostgreSQL 和 HTTP 回归，全部通过。
 
 ## FastAPI 网页宿主验收
 

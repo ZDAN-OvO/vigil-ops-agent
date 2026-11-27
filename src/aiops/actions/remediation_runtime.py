@@ -426,7 +426,13 @@ class RemediationRuntime:
                 **details,
             }
         )
-        risk = decide(proposal, target_busy=False, policy=self.policy, current=current)
+        risk = decide(
+            proposal,
+            target_busy=False,
+            policy=self.policy,
+            current=current,
+            auto_enabled=self.settings.remediation_auto_enabled,
+        )
         proposal = _set_decision(proposal, risk)
         await self.ledger.save_manual(
             proposal,
