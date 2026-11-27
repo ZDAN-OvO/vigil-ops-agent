@@ -1,0 +1,682 @@
+{
+  "audit_source": "k3s API Server Metadata",
+  "audit_identity": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+  "requests": [
+    {
+      "audit_id": "724b6c16-2f04-4c76-a0df-36b0b64168cd",
+      "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-shop/deployments/currencyservice?dryRun=All",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-shop",
+        "name": "currencyservice",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T17:35:00.097927Z",
+      "dry_run": true,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T17:35:00.097927Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T17:35:00.139435Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    },
+    {
+      "audit_id": "84664e48-bc15-4882-abc7-1cdc326e83d7",
+      "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-shop/deployments/currencyservice",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-shop",
+        "name": "currencyservice",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T17:35:00.249870Z",
+      "dry_run": false,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T17:35:00.249870Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T17:35:00.273141Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    }
+  ],
+  "vigil_ledger": [
+    {
+      "after": {
+        "limit_memory": "128Mi"
+      },
+      "alerts": [
+        {
+          "source": "frontend",
+          "starts_at": "2026-11-27T17:34:41.43+00:00",
+          "fingerprint": "53c8bb6c14a18d73",
+          "resolved_at": "2026-11-27T17:36:55.756026+00:00"
+        }
+      ],
+      "before": {
+        "limit_memory": "16Mi"
+      },
+      "status": "succeeded",
+      "target": "vigil-shop/Deployment/currencyservice",
+      "sent_at": "2026-11-27T17:35:00.229548+00:00",
+      "baseline": {
+        "method": "business_probe_window",
+        "samples": [
+          [
+            [
+              1795800605.196,
+              true
+            ],
+            [
+              1795800620.195,
+              true
+            ],
+            [
+              1795800635.195,
+              true
+            ],
+            [
+              1795800650.192,
+              true
+            ]
+          ],
+          [
+            [
+              1795800665.192,
+              true
+            ],
+            [
+              1795800680.19,
+              true
+            ],
+            [
+              1795800695.19,
+              true
+            ],
+            [
+              1795800710.188,
+              true
+            ]
+          ],
+          [
+            [
+              1795800725.188,
+              true
+            ],
+            [
+              1795800740.187,
+              true
+            ],
+            [
+              1795800755.187,
+              true
+            ],
+            [
+              1795800770.185,
+              true
+            ]
+          ],
+          [
+            [
+              1795800785.185,
+              true
+            ],
+            [
+              1795800800.182,
+              true
+            ],
+            [
+              1795800815.182,
+              false
+            ],
+            [
+              1795800830.175,
+              false
+            ]
+          ],
+          [
+            [
+              1795800845.175,
+              false
+            ],
+            [
+              1795800860.171,
+              false
+            ],
+            [
+              1795800875.172,
+              false
+            ],
+            [
+              1795800890.171,
+              false
+            ]
+          ]
+        ],
+        "started_at": "2026-11-27T17:30:00.072864+00:00",
+        "failed_slots": 2,
+        "slot_seconds": 60,
+        "slots_required": 5,
+        "slots_collected": 5
+      },
+      "followups": null,
+      "applied_at": "2026-11-27T17:35:00.302531+00:00",
+      "parameters": {
+        "container": "server",
+        "limit_memory": "128Mi"
+      },
+      "session_id": "0c5f70c8ea594f948fb861c92f43bf26",
+      "target_uid": "947e97ee-1eaf-4481-a098-c39e2234c53c",
+      "compensated": false,
+      "finished_at": "2026-11-27T17:46:35.580714+00:00",
+      "proposal_id": "act-6eeaac63f42b4ae1a21971c468f0d4fd",
+      "effective_at": "2026-11-27T17:35:19.344841+00:00",
+      "verification": {
+        "method": "business_probe_window",
+        "outcome": "improved",
+        "samples": [
+          [
+            [
+              1795800980.167,
+              true
+            ],
+            [
+              1795800995.168,
+              true
+            ],
+            [
+              1795801010.166,
+              true
+            ],
+            [
+              1795801025.165,
+              true
+            ],
+            [
+              1795801040.164,
+              true
+            ]
+          ],
+          [
+            [
+              1795801055.164,
+              true
+            ],
+            [
+              1795801070.162,
+              true
+            ],
+            [
+              1795801085.162,
+              true
+            ],
+            [
+              1795801100.162,
+              true
+            ]
+          ],
+          [
+            [
+              1795801115.162,
+              true
+            ],
+            [
+              1795801130.16,
+              true
+            ],
+            [
+              1795801145.16,
+              true
+            ],
+            [
+              1795801160.158,
+              true
+            ]
+          ],
+          [
+            [
+              1795801175.159,
+              true
+            ],
+            [
+              1795801190.157,
+              true
+            ],
+            [
+              1795801205.156,
+              true
+            ],
+            [
+              1795801220.155,
+              true
+            ]
+          ],
+          [
+            [
+              1795801235.155,
+              true
+            ],
+            [
+              1795801250.152,
+              true
+            ],
+            [
+              1795801265.153,
+              true
+            ],
+            [
+              1795801280.152,
+              true
+            ]
+          ],
+          [
+            [
+              1795801295.152,
+              true
+            ],
+            [
+              1795801310.15,
+              true
+            ],
+            [
+              1795801325.15,
+              true
+            ],
+            [
+              1795801340.15,
+              true
+            ]
+          ],
+          [
+            [
+              1795801355.15,
+              true
+            ],
+            [
+              1795801370.148,
+              true
+            ],
+            [
+              1795801385.148,
+              true
+            ],
+            [
+              1795801400.146,
+              true
+            ]
+          ],
+          [
+            [
+              1795801415.146,
+              true
+            ],
+            [
+              1795801430.145,
+              true
+            ],
+            [
+              1795801445.145,
+              true
+            ],
+            [
+              1795801460.143,
+              true
+            ]
+          ],
+          [
+            [
+              1795801475.144,
+              true
+            ],
+            [
+              1795801490.142,
+              true
+            ],
+            [
+              1795801505.142,
+              true
+            ],
+            [
+              1795801520.141,
+              true
+            ]
+          ],
+          [
+            [
+              1795801535.142,
+              true
+            ],
+            [
+              1795801550.139,
+              true
+            ],
+            [
+              1795801565.139,
+              true
+            ],
+            [
+              1795801580.138,
+              true
+            ]
+          ]
+        ],
+        "fault_pods": {
+          "777d6cdd-6eb3-4bca-8af5-71255f3b88ad": {
+            "restarts": 0,
+            "container_id": "containerd://d00ebfb7981cbb1de30a6c672814f9f8d81fa8fda10baa1a5fb52ca828126beb"
+          }
+        },
+        "started_at": "2026-11-27T17:36:20.167000+00:00",
+        "failed_slots": 0,
+        "slot_seconds": 60,
+        "fault_signals": [
+          {
+            "pod": "currencyservice-7d8b5c5959-7m87j",
+            "signal": "oom_killed",
+            "status": "clear",
+            "pod_uid": "777d6cdd-6eb3-4bca-8af5-71255f3b88ad",
+            "samples": [
+              [
+                1795800985.081,
+                0.0
+              ],
+              [
+                1795801000.08,
+                0.0
+              ],
+              [
+                1795801015.08,
+                0.0
+              ],
+              [
+                1795801030.079,
+                0.0
+              ],
+              [
+                1795801045.079,
+                0.0
+              ],
+              [
+                1795801060.077,
+                0.0
+              ],
+              [
+                1795801075.076,
+                0.0
+              ],
+              [
+                1795801090.076,
+                0.0
+              ],
+              [
+                1795801105.076,
+                0.0
+              ],
+              [
+                1795801120.074,
+                0.0
+              ],
+              [
+                1795801135.075,
+                0.0
+              ],
+              [
+                1795801150.072,
+                0.0
+              ],
+              [
+                1795801165.073,
+                0.0
+              ],
+              [
+                1795801180.071,
+                0.0
+              ],
+              [
+                1795801195.071,
+                0.0
+              ],
+              [
+                1795801210.069,
+                0.0
+              ],
+              [
+                1795801225.07,
+                0.0
+              ],
+              [
+                1795801240.067,
+                0.0
+              ],
+              [
+                1795801255.066,
+                0.0
+              ],
+              [
+                1795801270.067,
+                0.0
+              ],
+              [
+                1795801285.066,
+                0.0
+              ],
+              [
+                1795801300.065,
+                0.0
+              ],
+              [
+                1795801315.065,
+                0.0
+              ],
+              [
+                1795801330.063,
+                0.0
+              ],
+              [
+                1795801345.064,
+                0.0
+              ],
+              [
+                1795801360.062,
+                0.0
+              ],
+              [
+                1795801375.062,
+                0.0
+              ],
+              [
+                1795801390.061,
+                0.0
+              ],
+              [
+                1795801405.061,
+                0.0
+              ],
+              [
+                1795801420.059,
+                0.0
+              ],
+              [
+                1795801435.06,
+                0.0
+              ],
+              [
+                1795801450.058,
+                0.0
+              ],
+              [
+                1795801465.058,
+                0.0
+              ],
+              [
+                1795801480.057,
+                0.0
+              ],
+              [
+                1795801495.057,
+                0.0
+              ],
+              [
+                1795801510.055,
+                0.0
+              ],
+              [
+                1795801525.056,
+                0.0
+              ],
+              [
+                1795801540.053,
+                0.0
+              ],
+              [
+                1795801555.053,
+                0.0
+              ],
+              [
+                1795801570.052,
+                0.0
+              ]
+            ],
+            "restarts": 0,
+            "selector": "kube_pod_container_status_restarts_total{job=\"kube-state-metrics\",namespace=\"vigil-shop\",container=\"server\",pod=\"currencyservice-7d8b5c5959-7m87j\",uid=\"777d6cdd-6eb3-4bca-8af5-71255f3b88ad\"}",
+            "container": "server"
+          }
+        ],
+        "outcome_reason": "完整观察窗内业务探针全通过，故障信号未复发",
+        "slots_required": 10,
+        "slots_collected": 10,
+        "worsening_window": {
+          "method": "business_probe_window",
+          "samples": [
+            [
+              [
+                1795800920.17,
+                false
+              ],
+              [
+                1795800935.17,
+                false
+              ],
+              [
+                1795800950.168,
+                false
+              ],
+              [
+                1795800965.168,
+                false
+              ]
+            ],
+            [
+              [
+                1795800980.167,
+                true
+              ],
+              [
+                1795800995.168,
+                true
+              ],
+              [
+                1795801010.166,
+                true
+              ],
+              [
+                1795801025.165,
+                true
+              ]
+            ],
+            [
+              [
+                1795801040.164,
+                true
+              ],
+              [
+                1795801055.164,
+                true
+              ],
+              [
+                1795801070.162,
+                true
+              ],
+              [
+                1795801085.162,
+                true
+              ]
+            ],
+            [
+              [
+                1795801100.162,
+                true
+              ],
+              [
+                1795801115.162,
+                true
+              ],
+              [
+                1795801130.16,
+                true
+              ],
+              [
+                1795801145.16,
+                true
+              ]
+            ],
+            [
+              [
+                1795801160.158,
+                true
+              ],
+              [
+                1795801175.159,
+                true
+              ],
+              [
+                1795801190.157,
+                true
+              ],
+              [
+                1795801205.156,
+                true
+              ]
+            ]
+          ],
+          "started_at": "2026-11-27T17:35:19.344841+00:00",
+          "failed_slots": 1,
+          "slot_seconds": 60,
+          "slots_required": 5,
+          "slots_collected": 5
+        },
+        "business_recovered_at": "2026-11-27T17:36:20.167000+00:00"
+      },
+      "policy_version": "controlled-remediation-v1-8f5dcece25ec1c30e97b837ec5bec5b7726f785c4e50a3838b733fbe676a832e",
+      "session_closed_at": "2026-11-27T17:46:35.602476+00:00",
+      "parent_proposal_id": null
+    }
+  ]
+}

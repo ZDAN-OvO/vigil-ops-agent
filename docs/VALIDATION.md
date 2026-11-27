@@ -15,6 +15,7 @@ Docker 宿主使用 cgroup v1，实验节点以 `native` snapshotter 运行。�
 
 | 场景 | 实际结果 | 证据 |
 | --- | --- | --- |
+| OOM 自动修复 | 现行容器内存限额 `16Mi`、三次 OOM 重启，首页 HTTP 500。将采集的 Alertmanager 通知重放至真实 Webhook 后，Vigil 只写一次内存限额到 `128Mi`。工作负载就绪约 61 秒后首页恢复，随后十个时段全通过，独立 OOM 信号为 `clear`，会话关闭。 | [网页](validation/controlled-remediation/oom.png) · [账本与审计](validation/controlled-remediation/01-oom-window.json) |
 | 缺少 OOM 证据 | 首页 HTTP 500，当前容器运行在 `16Mi`、零重启。真实 Webhook 收到新告警身份后，Vigil 指出缺少 OOM 和重启证据，转人工审批。账本未授权发送，审计无目标写入。同时间段的扩容请求也保留在审计中。 | [现场、账本与审计](validation/controlled-remediation/02-insufficient.json) |
 | 容量不足自动扩容 | 副本数从 1 增至 2，业务恢复，10 个时段全通过。会话关闭。一次写入。 | [网页](validation/controlled-remediation/scale.png) · [账本与审计](validation/controlled-remediation/04-scale-replay.json) |
 | 普通 ConfigMap 修复 | `degraded → healthy`，应用加载新值，10 个时段全通过。会话关闭。一次写入。 | [网页](validation/controlled-remediation/configmap.png) · [账本与审计](validation/controlled-remediation/05-config.json) |
@@ -37,7 +38,7 @@ Docker 宿主使用 cgroup v1，实验节点以 `native` snapshotter 运行。�
 修复后增加持久化授权的回归用例，并在独立数据库复跑完整正向变更与补偿。
 集群启动、注入和采集命令见[受控自动修复验收步骤](../env/README.md#11-受控自动修复验收)。
 
-在独立 PostgreSQL 上运行 `LANGGRAPH_STRICT_MSGPACK=true make check-all`，Python 489 项、
+在独立 PostgreSQL 上运行 `LANGGRAPH_STRICT_MSGPACK=true make check-all`，Python 499 项、
 Vitest 14 项和 Chrome 15 项全部通过，零跳过。门禁包括前端类型检查、样式检查和 Ruff。
 迟到跨组告警的时间重叠修复另经 43 项 PostgreSQL 和 HTTP 聚焦回归验证。
 
