@@ -1,6 +1,7 @@
 """按登记规则执行并观察受控处置。所有写入先经过持久发送事务。"""
 
 import asyncio
+import json
 import logging
 import re
 from contextlib import suppress
@@ -445,11 +446,50 @@ class RemediationRuntime:
         )
         return proposal, risk, None
 
+    async def _cpu_evidence(
+        self, target: ActionTarget, container: str, at: datetime, *, max_age: int
+    ) -> tuple[float, float] | None:
+        instances = await asyncio.to_thread(self.kube.running_pod_containers, target, container)
+        selectors = []
+        for pod, runtime_id in instances:
+            runtime, _, container_id = runtime_id.partition("://")
+            if not runtime or not re.fullmatch(r"[0-9a-f]{64}", container_id):
+                return None
+            # cAdvisor 的 id 是 cgroup 路径，末段可以是容器 ID 或 systemd scope。
+            pattern = f"(.*/)?([^/]+-)?{container_id}([.]scope)?"
+            labels = (
+                f'job="kubelet-cadvisor",namespace={json.dumps(target.namespace)},'
+                f"container={json.dumps(container)},pod={json.dumps(pod)},id=~{json.dumps(pattern)}"
+            )
+            selectors.extend(
+                (
+                    f"container_cpu_cfs_periods_total{{{labels}}}",
+                    f"container_cpu_cfs_throttled_periods_total{{{labels}}}",
+                )
+            )
+        if not selectors:
+            return None
+        stamps = await asyncio.gather(
+            *(self.metrics.scalar(f"timestamp({selector})", at) for selector in selectors)
+        )
+        if any(stamp is None or not 0 <= at.timestamp() - stamp <= max_age for stamp in stamps):
+            return None
+        rates = await asyncio.gather(
+            *(self.metrics.scalar(f"rate({selector}[1m])", at) for selector in selectors)
+        )
+        if any(rate is None for rate in rates):
+            return None
+        periods = sum(rate for rate in rates[::2] if rate is not None)
+        throttled = sum(rate for rate in rates[1::2] if rate is not None)
+        if periods <= 0 or not 0 <= throttled <= periods:
+            return None
+        return throttled / periods, min(stamp for stamp in stamps if stamp is not None)
+
     async def _metrics_evidence(self, rule, current: CurrentState, at: datetime) -> dict:
         values = current.evidence_values()
         sample_times = {}
         for predicate in rule.evidence:
-            if predicate.promql:
+            if predicate.promql and predicate.key != "throttle_ratio":
                 result = await self.metrics.fresh(
                     predicate.promql,
                     at,
@@ -480,40 +520,14 @@ class RemediationRuntime:
                 for pod in pods
             ]
         if "throttle_ratio" in keys:
-            pods = await asyncio.to_thread(self.kube.current_pods, current.target, params.container)
-            if pods:
-                pattern = "|".join(re.escape(name) for name in pods)
-                selector = (
-                    f'namespace="{current.target.namespace}",pod=~"{pattern}",'
-                    f'container="{params.container}"'
-                )
-                periods = f"sum(rate(container_cpu_cfs_periods_total{{{selector}}}[1m]))"
-                throttled = (
-                    f"sum(rate(container_cpu_cfs_throttled_periods_total{{{selector}}}[1m]))"
-                )
-                metrics = (
-                    "container_cpu_cfs_periods_total",
-                    "container_cpu_cfs_throttled_periods_total",
-                )
-                stamps = [
-                    await self.metrics.scalar(f"min(timestamp({metric}{{{selector}}}))", at)
-                    for metric in metrics
-                ]
-                if all(
-                    stamp is not None
-                    and 0
-                    <= at.timestamp() - stamp
-                    <= min(
-                        rule.max_evidence_age_seconds,
-                        60,
-                    )
-                    for stamp in stamps
-                ):
-                    values["throttle_ratio"] = await self.metrics.scalar(
-                        f"{throttled} / ({periods} > 0)",
-                        at,
-                    )
-                    sample_times["throttle_ratio"] = min(stamps)
+            cpu = await self._cpu_evidence(
+                current.target,
+                params.container,
+                at,
+                max_age=min(rule.max_evidence_age_seconds, 60),
+            )
+            if cpu is not None:
+                values["throttle_ratio"], sample_times["throttle_ratio"] = cpu
         values["prometheus_sample_times"] = sample_times
         return values
 

@@ -106,7 +106,8 @@ case "${1:-}" in
     [[ $(cpu_limit) == 200m && $(metric "$probe") == 1 && $(metric "$cpu_alert") == none ]]
     [[ $(metric "count($periods) > bool 0") == 1 && $(metric "count($throttled) > bool 0") == 1 ]]
     [[ $(metric "$ratio < bool 0.5") == 1 ]]
-    patch_container '"resources":{"limits":{"cpu":"5m"},"requests":{"cpu":"5m"}}'
+    # 给受限容器留出连续取证时间，保留原就绪检查。
+    patch_container '"resources":{"limits":{"cpu":"5m"},"requests":{"cpu":"5m"}},"livenessProbe":{"failureThreshold":30}'
     restart_at_single_replica
     snapshot
     ;;
@@ -136,6 +137,9 @@ case "${1:-}" in
       || $(cpu_limit) != 200m || $(field resources.requests.cpu) != 100m \
       || $(field image) != "$original_image" ]]; then
       patch_container "\"image\":\"$original_image\",\"resources\":{\"limits\":{\"memory\":\"128Mi\",\"cpu\":\"200m\"},\"requests\":{\"memory\":\"64Mi\",\"cpu\":\"100m\"}}"
+    fi
+    if [[ $(field livenessProbe.failureThreshold) == 30 ]]; then
+      patch_container '"livenessProbe":{"failureThreshold":3}'
     fi
     if [[ $(k -n "$namespace" get deployment "$target" -o 'jsonpath={.spec.replicas}') != 1 ]]; then
       k -n "$namespace" scale "deployment/$target" --replicas=1

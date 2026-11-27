@@ -1118,6 +1118,28 @@ class RemediationKubeAdapter:
         _, _, pods = self._current_pods(target, container)
         return tuple(sorted(_string(_dict(pod.get("metadata")).get("name")) for pod, _ in pods))
 
+    def running_pod_containers(
+        self, target: ActionTarget, container: str
+    ) -> tuple[tuple[str, str], ...]:
+        self._register(target, _WORKLOADS)
+        if not isinstance(container, str) or not container:
+            raise RemediationKubeError("invalid_evidence_query")
+        _, _, pods = self._current_pods(target, container)
+        instances = []
+        for pod, _ in pods:
+            statuses = _list(_optional(pod, "status").get("containerStatuses", []))
+            matches = [status for status in statuses if _dict(status).get("name") == container]
+            if len(matches) > 1:
+                return ()
+            if not matches or not isinstance(_optional(matches[0], "state").get("running"), dict):
+                continue
+            container_id = matches[0].get("containerID")
+            if not isinstance(container_id, str) or not container_id:
+                return ()
+            name = _string(_dict(pod.get("metadata")).get("name"))
+            instances.append((name, container_id))
+        return tuple(sorted(instances))
+
     def observation_pods(
         self, plan: PatchPlan, receipt: WriteReceipt, container: str
     ) -> tuple[ObservedPod, ...]:

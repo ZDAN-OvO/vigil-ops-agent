@@ -2,13 +2,16 @@ import asyncio
 import json
 from copy import deepcopy
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import jsonpatch
 import pytest
 from kubernetes.client import ApiClient, Configuration
 from urllib3.response import HTTPResponse
 
+from aiops.actions.policy import CurrentState
 from aiops.actions.remediation_kube import (
     RECONCILIATION_ANNOTATION,
     PatchPlan,
@@ -19,8 +22,10 @@ from aiops.actions.remediation_kube import (
     WriteRejected,
     WriteUnknown,
 )
+from aiops.actions.remediation_observation import RemediationMetrics
+from aiops.actions.remediation_policy import EvidencePredicate
 from aiops.actions.remediation_runtime import RemediationRuntime
-from aiops.contracts import ActionTarget
+from aiops.contracts import ActionTarget, AdjustResourcesParams
 
 WORKLOAD = ActionTarget(
     cluster="lab",
@@ -629,3 +634,123 @@ def test_deployment_pod_evidence_checks_owner_uid_template_and_age():
         "finishedAt"
     ] = "2026-11-27T10:00:00"
     assert_code("oom_timestamp_unconfirmed", cluster.adapter.observation_pods, plan, receipt, "app")
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [None, "stale_total", "stale_throttled", "missing_rate", "zero", "unconfirmed_id"],
+)
+def test_cpu_rule_queries_only_current_running_container_counters(failure):
+    cluster = Cluster()
+    template = deepcopy(cluster.workload["spec"]["template"])
+    template["metadata"]["labels"]["pod-template-hash"] = "abc"
+    rs = document("ReplicaSet", "web-abc", "rs-uid", spec={"template": template})
+    rs["metadata"]["ownerReferences"] = [ref("Deployment", WORKLOAD.name, WORKLOAD.uid)]
+    cluster.objects["replicasets"] = {"web-abc": rs}
+
+    def pod(name, container_id, state):
+        result = document(
+            "Pod",
+            name,
+            f"{name}-uid",
+            group="v1",
+            spec=template["spec"],
+            status={
+                "containerStatuses": [
+                    {
+                        "name": "app",
+                        "containerID": f"containerd://{container_id}",
+                        "state": state,
+                        "lastState": {"terminated": {"containerID": f"containerd://{'c' * 64}"}},
+                    },
+                ]
+            },
+        )
+        result["metadata"].update(
+            {
+                "labels": template["metadata"]["labels"],
+                "ownerReferences": [ref("ReplicaSet", "web-abc", "rs-uid")],
+            }
+        )
+        return result
+
+    cluster.objects["pods"] = {
+        "web-abc-1": pod("web-abc-1", "a" * 64, {"running": {}}),
+        "web-abc-2": pod("web-abc-2", "b" * 64, {"running": {}}),
+        "web-abc-waiting": pod("web-abc-waiting", "c" * 64, {"waiting": {}}),
+    }
+    if failure == "unconfirmed_id":
+        del cluster.objects["pods"]["web-abc-2"]["status"]["containerStatuses"][0]["containerID"]
+    at = datetime(2026, 11, 27, 10, tzinfo=UTC)
+    now = at.timestamp()
+    answers = {}
+    for pod_name, container_id, periods, throttled in (
+        ("web-abc-1", "a" * 64, 10, 9),
+        ("web-abc-2", "b" * 64, 30, 3),
+    ):
+        labels = (
+            f'job="kubelet-cadvisor",namespace="shop",container="app",pod="{pod_name}",'
+            f'id=~"(.*/)?([^/]+-)?{container_id}([.]scope)?"'
+        )
+        for metric, rate, stale in (
+            ("container_cpu_cfs_periods_total", periods, "stale_total"),
+            ("container_cpu_cfs_throttled_periods_total", throttled, "stale_throttled"),
+        ):
+            selector = f"{metric}{{{labels}}}"
+            age = 61 if failure == stale and pod_name == "web-abc-2" else 15
+            answers[f"timestamp({selector})"] = now - age
+            if (
+                failure == "missing_rate"
+                and pod_name == "web-abc-2"
+                and metric.endswith("throttled_periods_total")
+            ):
+                rate = None
+            answers[f"rate({selector}[1m])"] = 0 if failure == "zero" else rate
+
+    queries = set()
+
+    def prometheus(request):
+        assert request.url.path == "/api/v1/query"
+        assert float(request.url.params["time"]) == now
+        query = request.url.params["query"]
+        queries.add(query)
+        if query not in answers:
+            return httpx.Response(400, json={"error": "unexpected PromQL selector"})
+        value = answers[query]
+        result = [] if value is None else [{"value": [now, str(value)]}]
+        return httpx.Response(
+            200, json={"status": "success", "data": {"resultType": "vector", "result": result}}
+        )
+
+    async def evaluate():
+        transport = httpx.MockTransport(prometheus)
+        async with httpx.AsyncClient(base_url="http://prometheus", transport=transport) as client:
+            runtime = RemediationRuntime(
+                None, None, None, cluster.adapter, RemediationMetrics(client)
+            )
+            current = CurrentState(
+                target=WORKLOAD, parameters=AdjustResourcesParams(container="app", limit_cpu="5m")
+            )
+            rule = SimpleNamespace(
+                evidence=[
+                    EvidencePredicate(
+                        key="throttle_ratio", operator="ge", value=0.5, promql="unscoped_ratio"
+                    )
+                ],
+                max_evidence_age_seconds=90,
+            )
+            return await runtime._metrics_evidence(rule, current, at)
+
+    evidence = asyncio.run(evaluate())
+    if failure is None:
+        assert evidence["throttle_ratio"] == pytest.approx(0.3)
+        assert evidence["prometheus_sample_times"] == {"throttle_ratio": now - 15}
+    else:
+        assert "throttle_ratio" not in evidence
+        assert evidence["prometheus_sample_times"] == {}
+    if failure == "unconfirmed_id":
+        assert not queries
+    elif failure in {"stale_total", "stale_throttled"}:
+        assert queries == {query for query in answers if query.startswith("timestamp(")}
+    else:
+        assert queries == answers.keys()
