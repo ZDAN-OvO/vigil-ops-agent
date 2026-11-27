@@ -1,0 +1,551 @@
+{
+  "audit_source": "k3s API Server Metadata",
+  "audit_identity": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+  "requests": [
+    {
+      "audit_id": "e8c945ef-ef38-45a1-bf8b-8a0883fe6689",
+      "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-experiment/deployments/vigil-config-fixture?dryRun=All",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-experiment",
+        "name": "vigil-config-fixture",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T17:04:44.678465Z",
+      "dry_run": true,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T17:04:44.678465Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T17:04:44.699402Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    },
+    {
+      "audit_id": "acf07523-f281-46e1-907a-61150725e53a",
+      "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "authenticated_actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+      "verb": "patch",
+      "uri": "/apis/apps/v1/namespaces/vigil-experiment/deployments/vigil-config-fixture",
+      "target": {
+        "resource": "deployments",
+        "namespace": "vigil-experiment",
+        "name": "vigil-config-fixture",
+        "apiGroup": "apps",
+        "apiVersion": "v1"
+      },
+      "started_at": "2026-11-27T17:04:44.776784Z",
+      "dry_run": false,
+      "outcome": "success",
+      "status_code": 200,
+      "stages": [
+        {
+          "stage": "RequestReceived",
+          "at": "2026-11-27T17:04:44.776784Z",
+          "code": null,
+          "reason": null
+        },
+        {
+          "stage": "ResponseComplete",
+          "at": "2026-11-27T17:04:44.790038Z",
+          "code": 200,
+          "reason": null
+        }
+      ]
+    }
+  ],
+  "vigil_ledger": [
+    {
+      "after": {
+        "value": "limited"
+      },
+      "alerts": null,
+      "before": {
+        "value": "healthy"
+      },
+      "status": "succeeded",
+      "target": "vigil-experiment/Deployment/vigil-config-fixture",
+      "sent_at": "2026-11-27T17:04:44.753099+00:00",
+      "baseline": {
+        "method": "business_probe_window",
+        "samples": [
+          [
+            [
+              1795798842.326,
+              true
+            ]
+          ],
+          [
+            [
+              1795798902.32,
+              true
+            ]
+          ],
+          [
+            [
+              1795798962.313,
+              true
+            ]
+          ],
+          [
+            [
+              1795799022.308,
+              true
+            ]
+          ],
+          [
+            [
+              1795799082.303,
+              true
+            ]
+          ]
+        ],
+        "started_at": "2026-11-27T16:59:44.658031+00:00",
+        "failed_slots": 0,
+        "slot_seconds": 60,
+        "slots_required": 5,
+        "slots_collected": 5
+      },
+      "followups": null,
+      "applied_at": "2026-11-27T17:04:44.805615+00:00",
+      "parameters": {
+        "key": "VIGIL_MODE",
+        "value": "limited",
+        "source": "env",
+        "container": "app"
+      },
+      "session_id": "e286b8f4387e48e4beffd327941aa6f9",
+      "target_uid": "682d38bc-38ac-4c4a-a13a-e35fc5734606",
+      "compensated": false,
+      "finished_at": "2026-11-27T17:15:43.822218+00:00",
+      "proposal_id": "act-add3cc5906af487987136c2bc34cc8d8",
+      "effective_at": "2026-11-27T17:05:27.791324+00:00",
+      "verification": {
+        "method": "business_probe_window",
+        "outcome": "improved",
+        "samples": [
+          [
+            [
+              1795799142.296,
+              true
+            ]
+          ],
+          [
+            [
+              1795799202.292,
+              true
+            ]
+          ],
+          [
+            [
+              1795799262.286,
+              true
+            ]
+          ],
+          [
+            [
+              1795799322.28,
+              true
+            ]
+          ],
+          [
+            [
+              1795799382.275,
+              true
+            ]
+          ],
+          [
+            [
+              1795799442.268,
+              true
+            ]
+          ],
+          [
+            [
+              1795799502.265,
+              true
+            ]
+          ],
+          [
+            [
+              1795799562.259,
+              true
+            ]
+          ],
+          [
+            [
+              1795799622.254,
+              true
+            ]
+          ],
+          [
+            [
+              1795799682.249,
+              true
+            ]
+          ]
+        ],
+        "fault_pods": {},
+        "started_at": "2026-11-27T17:05:27.791324+00:00",
+        "failed_slots": 0,
+        "slot_seconds": 60,
+        "fault_signals": [
+          {
+            "signal": "config_loaded",
+            "status": "clear",
+            "samples": [
+              [
+                1795799137.45,
+                1.0
+              ],
+              [
+                1795799152.448,
+                1.0
+              ],
+              [
+                1795799167.445,
+                1.0
+              ],
+              [
+                1795799182.449,
+                1.0
+              ],
+              [
+                1795799197.443,
+                1.0
+              ],
+              [
+                1795799212.442,
+                1.0
+              ],
+              [
+                1795799227.439,
+                1.0
+              ],
+              [
+                1795799242.44,
+                1.0
+              ],
+              [
+                1795799257.437,
+                1.0
+              ],
+              [
+                1795799272.438,
+                1.0
+              ],
+              [
+                1795799287.434,
+                1.0
+              ],
+              [
+                1795799302.434,
+                1.0
+              ],
+              [
+                1795799317.432,
+                1.0
+              ],
+              [
+                1795799332.432,
+                1.0
+              ],
+              [
+                1795799347.429,
+                1.0
+              ],
+              [
+                1795799362.429,
+                1.0
+              ],
+              [
+                1795799377.427,
+                1.0
+              ],
+              [
+                1795799392.427,
+                1.0
+              ],
+              [
+                1795799407.424,
+                1.0
+              ],
+              [
+                1795799422.425,
+                1.0
+              ],
+              [
+                1795799437.42,
+                1.0
+              ],
+              [
+                1795799452.42,
+                1.0
+              ],
+              [
+                1795799467.418,
+                1.0
+              ],
+              [
+                1795799482.419,
+                1.0
+              ],
+              [
+                1795799497.416,
+                1.0
+              ],
+              [
+                1795799512.416,
+                1.0
+              ],
+              [
+                1795799527.412,
+                1.0
+              ],
+              [
+                1795799542.412,
+                1.0
+              ],
+              [
+                1795799557.411,
+                1.0
+              ],
+              [
+                1795799572.411,
+                1.0
+              ],
+              [
+                1795799587.408,
+                1.0
+              ],
+              [
+                1795799602.408,
+                1.0
+              ],
+              [
+                1795799617.406,
+                1.0
+              ],
+              [
+                1795799632.405,
+                1.0
+              ],
+              [
+                1795799647.401,
+                1.0
+              ],
+              [
+                1795799662.401,
+                1.0
+              ],
+              [
+                1795799677.4,
+                1.0
+              ],
+              [
+                1795799692.4,
+                1.0
+              ],
+              [
+                1795799707.397,
+                1.0
+              ],
+              [
+                1795799722.397,
+                1.0
+              ]
+            ],
+            "exporter": "up{job=\"vigil-config-state\"}",
+            "selector": "vigil_config_fixture_loaded_mode{job=\"vigil-config-state\",source=\"env\",mode=\"limited\"}"
+          },
+          {
+            "signal": "gate_failed",
+            "status": "clear",
+            "samples": [
+              [
+                1795799140.09,
+                1.0
+              ],
+              [
+                1795799155.09,
+                1.0
+              ],
+              [
+                1795799170.087,
+                1.0
+              ],
+              [
+                1795799185.087,
+                1.0
+              ],
+              [
+                1795799200.084,
+                1.0
+              ],
+              [
+                1795799215.085,
+                1.0
+              ],
+              [
+                1795799230.081,
+                1.0
+              ],
+              [
+                1795799245.081,
+                1.0
+              ],
+              [
+                1795799260.08,
+                1.0
+              ],
+              [
+                1795799275.079,
+                1.0
+              ],
+              [
+                1795799290.076,
+                1.0
+              ],
+              [
+                1795799305.077,
+                1.0
+              ],
+              [
+                1795799320.073,
+                1.0
+              ],
+              [
+                1795799335.074,
+                1.0
+              ],
+              [
+                1795799350.071,
+                1.0
+              ],
+              [
+                1795799365.071,
+                1.0
+              ],
+              [
+                1795799380.069,
+                1.0
+              ],
+              [
+                1795799395.068,
+                1.0
+              ],
+              [
+                1795799410.066,
+                1.0
+              ],
+              [
+                1795799425.065,
+                1.0
+              ],
+              [
+                1795799440.061,
+                1.0
+              ],
+              [
+                1795799455.061,
+                1.0
+              ],
+              [
+                1795799470.061,
+                1.0
+              ],
+              [
+                1795799485.06,
+                1.0
+              ],
+              [
+                1795799500.058,
+                1.0
+              ],
+              [
+                1795799515.058,
+                1.0
+              ],
+              [
+                1795799530.054,
+                1.0
+              ],
+              [
+                1795799545.054,
+                1.0
+              ],
+              [
+                1795799560.053,
+                1.0
+              ],
+              [
+                1795799575.053,
+                1.0
+              ],
+              [
+                1795799590.05,
+                1.0
+              ],
+              [
+                1795799605.049,
+                1.0
+              ],
+              [
+                1795799620.048,
+                1.0
+              ],
+              [
+                1795799635.048,
+                1.0
+              ],
+              [
+                1795799650.043,
+                1.0
+              ],
+              [
+                1795799665.043,
+                1.0
+              ],
+              [
+                1795799680.042,
+                1.0
+              ],
+              [
+                1795799695.042,
+                1.0
+              ],
+              [
+                1795799710.039,
+                1.0
+              ],
+              [
+                1795799725.039,
+                1.0
+              ]
+            ],
+            "selector": "probe_success{job=\"vigil-config-probe\",signal=\"gate\",source=\"env\"}"
+          }
+        ],
+        "outcome_reason": "完整观察窗内业务探针全通过，故障信号未复发",
+        "slots_required": 10,
+        "slots_collected": 10
+      },
+      "policy_version": "controlled-remediation-v1-8f5dcece25ec1c30e97b837ec5bec5b7726f785c4e50a3838b733fbe676a832e",
+      "session_closed_at": null,
+      "parent_proposal_id": null
+    }
+  ]
+}

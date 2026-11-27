@@ -6,7 +6,7 @@ from asyncio import gather
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from math import isfinite
 from typing import Any, Literal
 
@@ -264,10 +264,12 @@ async def check_oom(
     pods: tuple[ObservedPod, ...],
     start: datetime,
     end: datetime,
+    *,
+    recurrence_start: datetime,
 ) -> list[FaultSignal]:
     async def check(pod: ObservedPod) -> FaultSignal:
         evidence = {"pod": pod.name, "pod_uid": pod.uid, "container": container}
-        in_window = [at.isoformat() for at in pod.oom_finished_at if start <= at < end]
+        in_window = [at.isoformat() for at in pod.oom_finished_at if recurrence_start <= at < end]
         if in_window:
             return FaultSignal("oom_killed", "recurred", evidence | {"finished_at": in_window})
         if pod.uid not in initial or initial[pod.uid] != pod.restarts:
@@ -455,6 +457,36 @@ async def collect_window(
         seconds=seconds,
         count=count,
     )
+
+
+async def collect_resource_windows(
+    metrics: RemediationMetrics,
+    selector: str,
+    effective_at: datetime,
+    now: datetime,
+    *,
+    seconds: int,
+    count: int,
+    recovery_deadline: datetime,
+    recovered_at: datetime | None,
+) -> tuple[WindowSamples, WindowSamples | None]:
+    early_end = effective_at + timedelta(seconds=5 * seconds)
+    window_end = (
+        recovery_deadline
+        if recovered_at is None
+        else recovered_at + timedelta(seconds=count * seconds)
+    )
+    points = await metrics.raw_samples(selector, effective_at, min(now, max(early_end, window_end)))
+    early = WindowSamples.collect(points, effective_at, seconds=seconds, count=5)
+    if recovered_at is None:
+        start, deadline = effective_at.timestamp(), recovery_deadline.timestamp()
+        first_success = next(
+            (at for at, value in points if start <= at < deadline and _business_ok(value)), None
+        )
+        if first_success is None:
+            return early, None
+        recovered_at = datetime.fromtimestamp(first_success, UTC)
+    return early, WindowSamples.collect(points, recovered_at, seconds=seconds, count=count)
 
 
 async def latest_healthy_window(

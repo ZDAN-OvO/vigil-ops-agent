@@ -369,7 +369,7 @@ stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 1. **内存自动修复。** 运行 `capture f02 "$case_dir/baseline"`。用 `alert silence FrontendProbeFailed --source frontend` 延迟告警投递。运行 `f02 inject`、`f02 verify`，保存故障快照及 `alert capture FrontendProbeFailed --source frontend >"$case_dir/firing.json"`。解除 silence。核对 Vigil 只改内存 limit 到 `128Mi`，容器就绪、首页重新通过、对应告警恢复后继续观察。10 个新鲜的分钟时段均通过才可记成功。审计仅有一次真实 PATCH。取证后运行 `f02 restore`。
 
-   **CPU 变体。** 创建独立证据目录和审计时间段。暂缓 `FrontendProbeFailed` 投递，运行 `f02 cpu-load`。检查正常规格下探针、实际负载和两条限流计数。运行 `f02 cpu-inject`，随后运行 `f02 cpu-verify`。如需先保存故障状态，也给 `VigilCpuLimitDegraded` 单独设一个 silence，采集后解除这个 CPU silence。等 Vigil 将 CPU limit 改回 `200m`，核对负载仍在、业务恢复、当前容器限流回到阈值以下。只接受一次真实 CPU 规格 PATCH。采完证据才运行 `f02 cpu-stop` 和 `f02 restore`，等首页告警消失后再解除首页 silence。
+   **CPU 变体。** 创建独立证据目录和审计时间段。节点需启用 CPU 配额。暂缓 `FrontendProbeFailed` 投递，运行 `f02 cpu-load`。检查正常规格下探针、实际负载和两条限流计数，确认限流比例稳定低于 0.5。运行 `f02 cpu-inject`，随后运行 `f02 cpu-verify`。如需先保存故障状态，也给 `VigilCpuLimitDegraded` 单独设一个 silence，采集后解除这个 CPU silence。等 Vigil 将 CPU limit 改回 `200m`，核对固定负载仍在、业务恢复、当前容器限流回到阈值以下。只接受一次真实 CPU 规格 PATCH。采完证据才运行 `f02 cpu-stop` 和 `f02 restore`，等首页告警消失后再解除首页 silence。
 
 2. **缺少 OOM 证据。** 保持首页告警被 silence，运行 `f02 inject-insufficient` 和 `f02 verify-insufficient`。捕获未送达的真实通知形状，再用新标识投递。Vigil 应记录低限额及业务故障，指出当前同模板容器缺少 OOM 证据，进入人工处理。保留可能生成的卡片且不批准。审计以专用身份的全部写请求为范围，真实写入为零。
 

@@ -20,7 +20,7 @@ spec:
           command: [python, -u, /load/cpu-load.py]
           env:
             - name: VIGIL_LOAD_RPS
-              value: "40"
+              value: "1"
           volumeMounts:
             - name: load
               mountPath: /load

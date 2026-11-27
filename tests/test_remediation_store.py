@@ -362,7 +362,14 @@ def test_confirmed_write_restarts_in_observation_and_fences_old_owner(
                 await _grant(restarted, second)
             assert refused.value.code == "not_approved"
 
-            sample = {"slots_collected": 3, "failed_slots": 0}
+            sample = {
+                "slots_collected": 3,
+                "failed_slots": 0,
+                "business_recovered_at": (applied_at + timedelta(seconds=102)).isoformat(),
+                "fault_pods": {
+                    "new-pod": {"container_id": "containerd://container", "restarts": 0}
+                },
+            }
             await restarted.reschedule(second, delay=0, effective_at=applied_at, observation=sample)
             observer = await sender.claim(proposal.id)
             assert observer.job["state"] == "observing"
@@ -388,7 +395,14 @@ def test_cross_group_alerts_settle_with_the_correct_fault(isolated_serve_dsn, sc
             await ledger.applied(first, {"receipt": {"resource_version": "11"}})
             applying = await observer.claim(proposal.id)
             effective_at = applying.job["applied_at"]
-            await observer.reschedule(applying, delay=0, effective_at=effective_at)
+            await observer.reschedule(
+                applying,
+                delay=0,
+                effective_at=effective_at,
+                observation={
+                    "business_recovered_at": (effective_at + timedelta(seconds=102)).isoformat(),
+                },
+            )
             previous_clearance = effective_at - timedelta(minutes=4)
             late_session = await ledger.sessions.create_session(title="跨组告警")
             async with ledger.store.transaction() as conn:

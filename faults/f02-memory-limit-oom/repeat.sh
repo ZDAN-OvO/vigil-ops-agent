@@ -35,7 +35,7 @@ patch_container() {
 }
 
 restart_at_single_replica() {
-  # 保证未就绪的低内存版本不会被原健康副本掩盖。
+  # 保证尚未就绪的故障版本不会被原健康副本掩盖。
   k -n "$namespace" scale "deployment/$target" --replicas=0
   k -n "$namespace" wait --for=delete pod -l "app=$target" --timeout=90s
   k -n "$namespace" scale "deployment/$target" --replicas=1
@@ -105,8 +105,10 @@ case "${1:-}" in
     check_operator
     [[ $(cpu_limit) == 200m && $(metric "$probe") == 1 && $(metric "$cpu_alert") == none ]]
     [[ $(metric "count($periods) > bool 0") == 1 && $(metric "count($throttled) > bool 0") == 1 ]]
+    [[ $(metric "$ratio < bool 0.5") == 1 ]]
     patch_container '"resources":{"limits":{"cpu":"5m"},"requests":{"cpu":"5m"}}'
-    deploy_status "$namespace" "$target"
+    restart_at_single_replica
+    snapshot
     ;;
   cpu-verify)
     snapshot

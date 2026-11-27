@@ -47,6 +47,7 @@ from aiops.actions.remediation_observation import (
     check_history,
     check_oom,
     check_replica_capacity,
+    collect_resource_windows,
     collect_window,
     latest_healthy_window,
     worsened,
@@ -272,10 +273,10 @@ class RemediationRuntime:
         plan: PatchPlan,
         receipt: WriteReceipt,
         rules: tuple[RulePolicy, ...],
-        end: datetime,
+        window: WindowSamples,
         load_query: str | None,
     ) -> list[FaultSignal]:
-        start = claim.job["effective_at"]
+        start, end = window.start, window.end
         proposal = claim.proposal
         predicates = {
             predicate.key: predicate
@@ -299,6 +300,7 @@ class RemediationRuntime:
                         pods,
                         start,
                         end,
+                        recurrence_start=claim.job["effective_at"],
                     )
                 )
                 if initial.keys() != {pod.uid for pod in pods}:
@@ -1080,20 +1082,51 @@ class RemediationRuntime:
         seconds = spec["sample_seconds"]
         count = spec["duration_seconds"] // seconds
         start = job["effective_at"]
-        post = await collect_window(
-            self.metrics,
-            spec["probe"],
-            start,
-            now,
-            seconds=seconds,
-            count=count,
-        )
-        progress = post.payload()
-        if "fault_pods" in job["observation"]:
-            progress["fault_pods"] = job["observation"]["fault_pods"]
+        observation = job["observation"]
+        early_end = start + timedelta(seconds=5 * seconds)
+        adjusts_resources = proposal.kind is ActionKind.ADJUST_RESOURCES
+        new_recovery = False
+        if adjusts_resources:
+            recovery_deadline = start + timedelta(
+                seconds=self.settings.action_rollout_timeout_seconds
+            )
+            saved_start = observation.get("business_recovered_at")
+            early, post = await collect_resource_windows(
+                self.metrics,
+                spec["probe"],
+                start,
+                now,
+                seconds=seconds,
+                count=count,
+                recovery_deadline=recovery_deadline,
+                recovered_at=datetime.fromisoformat(saved_start) if saved_start else None,
+            )
+            if post is None:
+                progress = {
+                    "method": "business_probe_window",
+                    "slots_collected": 0,
+                    "slots_required": count,
+                }
+                end = recovery_deadline
+            else:
+                progress = post.payload()
+                progress["business_recovered_at"] = post.start.isoformat()
+                new_recovery = saved_start is None
+                end = post.end
+            progress["worsening_window"] = early.payload()
+            # 收敛超时也要保留完整的五段恶化判定。
+            end = max(end, early_end)
+        else:
+            post = early = await collect_window(
+                self.metrics, spec["probe"], start, now, seconds=seconds, count=count
+            )
+            progress = post.payload()
+            end = post.end
+        if "fault_pods" in observation:
+            progress["fault_pods"] = observation["fault_pods"]
         baseline = attempt.snapshot["baseline"]
         before = SampleSummary(baseline["slots_collected"], baseline["failed_slots"])
-        if now >= start + timedelta(seconds=5 * seconds) and worsened(before, post):
+        if now >= early_end and worsened(before, early):
             compensation = await self._compensation(claim, plan)
             await self._finish(
                 claim,
@@ -1103,12 +1136,25 @@ class RemediationRuntime:
                 compensation=compensation,
             )
             return
-        end = start + timedelta(seconds=count * seconds)
-        if now < end + timedelta(seconds=15):
+        # 首次找到恢复样本时先落账，以便接管时沿用同一窗口。
+        if new_recovery or now < end + timedelta(seconds=15):
             await self.ledger.reschedule(claim, delay=_POLL_SECONDS, observation=progress)
             return
+        if post is None:
+            await self._finish(
+                claim,
+                AttemptOutcome.UNKNOWN,
+                "业务收敛期限内缺少成功探针，需人工核实",
+                progress=progress,
+            )
+            return
         summary = post.summary()
-        if summary.samples != count:
+        if summary.samples != count or (
+            adjusts_resources
+            and (
+                early.summary().samples != 5 or (post.start.timestamp(), True) not in post.slots[0]
+            )
+        ):
             await self._finish(
                 claim, AttemptOutcome.UNKNOWN, "业务探针观察窗缺少样本", progress=progress
             )
@@ -1121,7 +1167,7 @@ class RemediationRuntime:
             )
         else:
             try:
-                signals = await self._fault_signals(claim, plan, receipt, rules, end, load_query)
+                signals = await self._fault_signals(claim, plan, receipt, rules, post, load_query)
             except (RemediationKubeError, httpx.HTTPError, ValueError) as exc:
                 code = getattr(exc, "code", type(exc).__name__)
                 signals = [FaultSignal("fault_signals", "unknown", {"code": code})]

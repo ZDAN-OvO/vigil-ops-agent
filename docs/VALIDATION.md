@@ -20,12 +20,15 @@ Docker 宿主使用 cgroup v1，实验节点以 `native` snapshotter 运行。�
 | 普通 ConfigMap 修复 | `degraded → healthy`，应用加载新值，10 个时段全通过。会话关闭。一次写入。 | [网页](validation/controlled-remediation/configmap.png) · [账本与审计](validation/controlled-remediation/05-config.json) |
 | 普通环境变量修复 | `VIGIL_MODE: degraded → healthy`，应用加载新值，10 个时段全通过。会话关闭。一次写入。 | [账本与审计](validation/controlled-remediation/05-env.json) |
 | 恶化后补偿 | 失败率从 1/5 升至 5/5。第一次写成 `worsen`，第二次恢复 `degraded`。补偿卡和人工待办均落库。此场景将已采集的告警通过真实 Webhook 重放。 | [网页](validation/controlled-remediation/compensation.png) · [账本与审计](validation/controlled-remediation/03-compensation-fixed.json) |
-| 网页批准普通配置 | Chrome 经一次性链接登录后批准 `VIGIL_MODE: healthy → limited`，后台返回 HTTP 200。API Server 记录一次写入，10 个时段全通过，独立加载信号为 `clear`。通过实验脚本创建待审批卡片。 | [批准前](validation/controlled-remediation/manual-approval.png) · [批准后](validation/controlled-remediation/manual-applying.png) · [已验证](validation/controlled-remediation/manual-verified.png) · [账本与审计](validation/controlled-remediation/05-manual-final.json) |
+| 网页批准普通配置 | AUTO 开启，`limited` 超出自动白名单，卡片显示“参数需人工审查”。Chrome 登录后批准 `VIGIL_MODE: healthy → limited`，后台返回 HTTP 200。API Server 记录一次写入，10 个时段全通过，独立加载信号为 `clear`。通过实验脚本调用实际提案入口创建卡片。 | [批准前](validation/controlled-remediation/manual-approval.png) · [批准后](validation/controlled-remediation/manual-applying.png) · [已验证](validation/controlled-remediation/manual-verified.png) · [账本与审计](validation/controlled-remediation/05-manual-policy.json) |
 | 观察期间复发 | 首个恢复通知到达后会话继续观察。收窄 Service 的后端选择范围后，真实业务探针再次失败，Alertmanager 投递了第二次发作。两个发作最终均恢复，账本仍以无改善结算，十个时段中三个失败。仅初始扩容写入。 | [网页](validation/controlled-remediation/recurrence.png) · [告警、账本与审计](validation/controlled-remediation/06-recurrence-final.json) |
 
 - **内存修复首轮。** 真实首页返回 HTTP 500，现行容器内存限额为 `16Mi`，三次重启，
   最后一次终止原因为 `OOMKilled`。Vigil 写入 `128Mi`，新 Pod 拉取镜像超时。
   账本记录变更生效超时。 [账本与审计](validation/controlled-remediation/01-oom.json)
+- **内存修复第二轮。** Vigil 写入 `128Mi`，新 Pod 就绪后首页又过约 90 秒才恢复。
+  这段时间造成前两个时段失败，原逻辑结算为无改善。实际首页恢复后持续返回 HTTP 200。
+  [账本、探针与审计](validation/controlled-remediation/01-oom-final.json)
 - **观察期间复发首轮。** 容量告警恢复后会话继续观察。实验操作者暂时收窄 Service 的
   后端选择范围，Alertmanager 投递了第二次发作，观察记录中出现两个失败时段。
   Prometheus 连接中断后动作以未知结果结束，只有初始扩容写入。 [账本与审计](validation/controlled-remediation/06-recurrence.json)
@@ -34,9 +37,9 @@ Docker 宿主使用 cgroup v1，实验节点以 `native` snapshotter 运行。�
 修复后增加持久化授权的回归用例，并在独立数据库复跑完整正向变更与补偿。
 集群启动、注入和采集命令见[受控自动修复验收步骤](../env/README.md#11-受控自动修复验收)。
 
-在独立 PostgreSQL 上运行 `LANGGRAPH_STRICT_MSGPACK=true make check-all`，Python 487 项、
+在独立 PostgreSQL 上运行 `LANGGRAPH_STRICT_MSGPACK=true make check-all`，Python 489 项、
 Vitest 14 项和 Chrome 15 项全部通过，零跳过。门禁包括前端类型检查、样式检查和 Ruff。
-随后针对迟到跨组告警的时间重叠修复复跑 43 项 PostgreSQL 和 HTTP 回归，全部通过。
+迟到跨组告警的时间重叠修复另经 43 项 PostgreSQL 和 HTTP 聚焦回归验证。
 
 ## FastAPI 网页宿主验收
 

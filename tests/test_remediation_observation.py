@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -33,6 +34,16 @@ CONFIG_SELECTOR = (
     ("name", "failure", "expect"),
     [
         ("memory", None, AttemptOutcome.IMPROVED),
+        ("memory", "slow_recovery", AttemptOutcome.IMPROVED),
+        ("memory", "business_recurs", AttemptOutcome.NO_IMPROVEMENT),
+        ("memory", "alert_recurs", AttemptOutcome.NO_IMPROVEMENT),
+        ("memory", "oom_before_recovery", AttemptOutcome.NO_IMPROVEMENT),
+        ("memory", "settling_timeout", AttemptOutcome.UNKNOWN),
+        ("memory", "missing_settling_probe", AttemptOutcome.UNKNOWN),
+        ("memory", "missing_early_window", AttemptOutcome.UNKNOWN),
+        ("memory", "lost_anchor", AttemptOutcome.UNKNOWN),
+        ("memory", "early_worsening", AttemptOutcome.WORSENED),
+        ("memory", "worsening_after_timeout", AttemptOutcome.WORSENED),
         ("memory", "request_only", AttemptOutcome.IMPROVED),
         ("memory", "oom", AttemptOutcome.NO_IMPROVEMENT),
         ("memory", "oom_at_window_end", AttemptOutcome.IMPROVED),
@@ -64,6 +75,20 @@ def test_resolved_business_does_not_replace_independent_fault_signal(
     expect,
     monkeypatch,
 ):
+    resource = name in {"memory", "cpu"}
+    settles_late = failure in {
+        "slow_recovery",
+        "business_recurs",
+        "alert_recurs",
+        "oom_before_recovery",
+        "missing_early_window",
+        "lost_anchor",
+        "early_worsening",
+    }
+    recovery = START + timedelta(seconds=102 if settles_late else 0)
+    times_out = failure in {"settling_timeout", "missing_settling_probe", "worsening_after_timeout"}
+    worsens = failure in {"early_worsening", "worsening_after_timeout"}
+
     class Clock(datetime):
         at = START
 
@@ -93,10 +118,38 @@ def test_resolved_business_does_not_replace_independent_fault_signal(
                 if failure == "load_wrong_once":
                     samples[5] = (samples[5][0], 0.0)
                 return samples
+            if selector.startswith("probe_success") and resource:
+                # 用固定的原始抓取时刻模拟探针，不随查询窗口的对齐方式变化。
+                first = START.timestamp()
+                first_success = first + 180 if times_out else recovery.timestamp()
+                points = sorted(
+                    {
+                        *(first + offset for offset in range(0, 180, 15)),
+                        *(first_success + offset for offset in range(0, 720, 15)),
+                    }
+                )
+                if failure == "missing_settling_probe":
+                    points = [at for at in points if at >= first_success]
+                if failure == "missing_early_window":
+                    points = [at for at in points if at >= first + 60]
+                if failure == "lost_anchor" and Clock.at > START + timedelta(minutes=4):
+                    points.remove(first_success)
+                return [
+                    (
+                        at,
+                        200.0
+                        if at >= first_success
+                        and not (failure == "business_recurs" and at == first_success + 30)
+                        else 503.0,
+                    )
+                    for at in points
+                    if start.timestamp() <= at < end.timestamp()
+                ]
             if selector.startswith(("probe_success", "up")):
                 return samples
             if selector.startswith("kube_pod_container_status_restarts_total"):
                 assert 'uid="pod-uid"' in selector
+                assert (start, end) == (recovery, recovery + timedelta(minutes=10))
                 return [
                     (at, float(failure == "counter_changed" and i == 5))
                     for i, (at, _) in enumerate(samples)
@@ -147,6 +200,8 @@ def test_resolved_business_does_not_replace_independent_fault_signal(
                     raise RemediationKubeError("api_error", 403)
                 if failure == "oom":
                     finished = (START + timedelta(minutes=2), END + timedelta(seconds=1))
+                if failure == "oom_before_recovery":
+                    finished = (START + timedelta(seconds=45),)
                 if failure == "oom_at_window_end":
                     finished = (END,)
                 if failure == "pod_replaced":
@@ -229,7 +284,7 @@ def test_resolved_business_does_not_replace_independent_fault_signal(
         "effective_at": None,
         "applied_at": START - timedelta(seconds=10),
         "parent_proposal_id": None,
-        "fault_id": None,
+        "fault_id": "fault" if failure == "alert_recurs" else None,
     }
     claim = SimpleNamespace(
         job=job,
@@ -237,16 +292,26 @@ def test_resolved_business_does_not_replace_independent_fault_signal(
         attempt=SimpleNamespace(
             snapshot={
                 "plan": plan.to_dict(),
-                "baseline": {"slots_collected": 5, "failed_slots": 5},
+                "baseline": {"slots_collected": 5, "failed_slots": 0 if worsens else 5},
             },
             result={"receipt": receipt.to_dict()},
         ),
     )
-    ledger = SimpleNamespace(reschedule=AsyncMock())
+
+    @asynccontextmanager
+    async def transaction():
+        yield connection
+
+    connection = object()
+    fault_is_not_clear = AsyncMock(return_value=True)
+    settings = SimpleNamespace(action_rollout_timeout_seconds=180.0)
+    ledger = SimpleNamespace(reschedule=AsyncMock(), store=SimpleNamespace(transaction=transaction))
     monkeypatch.setattr("aiops.actions.remediation_runtime.datetime", Clock)
+    monkeypatch.setattr("aiops.actions.remediation_runtime.fault_is_not_clear", fault_is_not_clear)
 
     async def run():
-        runtime = RemediationRuntime(None, ledger, policy, Kube(), Metrics())
+        runtime = RemediationRuntime(settings, ledger, policy, Kube(), Metrics())
+        runtime._finish = AsyncMock()
         await runtime._observe(claim)
         captured = ledger.reschedule.await_args.kwargs
         job.update(effective_at=captured["effective_at"], observation=captured["observation"])
@@ -256,17 +321,58 @@ def test_resolved_business_does_not_replace_independent_fault_signal(
         Clock.at = START + timedelta(minutes=4)
         await runtime._observe(claim)
         job["observation"] = ledger.reschedule.await_args.kwargs["observation"]
+        runtime._finish.assert_not_awaited()
         if failure == "legacy_observation":
             job["observation"].pop("fault_pods")
+        if resource and not times_out:
+            assert job["observation"]["business_recovered_at"] == recovery.isoformat()
+        else:
+            assert "business_recovered_at" not in job["observation"]
 
-        Clock.at = END + timedelta(seconds=15)
-        restarted = RemediationRuntime(None, ledger, policy, Kube(), Metrics())
+        if times_out or worsens:
+            Clock.at = START + timedelta(minutes=5, seconds=15)
+        else:
+            Clock.at = recovery + timedelta(minutes=10, seconds=15)
+        restarted = RemediationRuntime(settings, ledger, policy, Kube(), Metrics())
         restarted._finish = AsyncMock()
+        compensation = object()
+        restarted._compensation = AsyncMock(return_value=compensation)
         await restarted._observe(claim)
         assert restarted._finish.await_args.args[1] is expect
         progress = restarted._finish.await_args.kwargs["progress"]
-        assert progress["slots_collected"] == 10 and progress["failed_slots"] == 0
-        assert progress["fault_signals"]
+        assert job["effective_at"] == START
+        if resource:
+            assert progress["worsening_window"]["started_at"] == START.isoformat()
+            assert progress.get("fault_pods") == job["observation"].get("fault_pods")
+        if worsens:
+            restarted._compensation.assert_awaited_once_with(claim, plan)
+            assert restarted._finish.await_args.kwargs["compensation"] is compensation
+            assert progress["worsening_window"]["slots_collected"] == 5
+        else:
+            restarted._compensation.assert_not_awaited()
+        if times_out:
+            assert "business_recovered_at" not in progress
+            assert progress["slots_collected"] == 0
+        if not (times_out or worsens):
+            assert progress["slots_collected"] == 10
+            assert progress["failed_slots"] == int(failure == "business_recurs")
+        if failure == "alert_recurs":
+            fault_is_not_clear.assert_awaited_once_with(
+                connection, fault_id="fault", started_at=START
+            )
+        if failure == "business_recurs":
+            assert progress["business_recovered_at"] == recovery.isoformat()
+        if failure not in {
+            "business_recurs",
+            "alert_recurs",
+            "settling_timeout",
+            "missing_settling_probe",
+            "missing_early_window",
+            "lost_anchor",
+            "early_worsening",
+            "worsening_after_timeout",
+        }:
+            assert progress["fault_signals"]
 
     asyncio.run(run())
 

@@ -19,7 +19,7 @@ bash faults/f02-memory-limit-oom/repeat.sh restore
 
 ## CPU 限流
 
-`cpu-load` 创建独立负载 Deployment，每秒计划发送 40 个真实首页请求，最多 80 个在途请求。先确认 limit `200m` 时首页和负载健康。 `cpu-inject` 将 limit 和 request 改成 `5m`。过去 1 分钟限流周期占比达到 0.5 且首页持续失败 1 分钟时触发 `VigilCpuLimitDegraded`。
+`cpu-load` 创建独立负载 Deployment，默认每秒发送 1 个真实首页请求，最多 80 个在途请求。先确认 `200m` 下业务正常、限流周期占比稳定低于 0.5。宿主性能不同，可调整夹具的 `VIGIL_LOAD_RPS`，同一场景从基线到验证结束保持固定。 `cpu-inject` 将 limit 和 request 改成 `5m`，再缩为 0 并恢复为 1 个副本，使故障模板成为唯一运行版本。过去 1 分钟限流周期占比达到 0.5 且首页持续失败 1 分钟时触发 `VigilCpuLimitDegraded`。
 
 ```bash
 bash faults/f02-memory-limit-oom/repeat.sh cpu-load

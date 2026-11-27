@@ -9,7 +9,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 URL = "http://frontend.vigil-shop.svc.cluster.local./"
-RATE = int(os.environ.get("VIGIL_LOAD_RPS", "40"))
+RATE = int(os.environ.get("VIGIL_LOAD_RPS", "1"))
 MAX_IN_FLIGHT = 80
 slots = threading.BoundedSemaphore(MAX_IN_FLIGHT)
 lock = threading.Lock()
