@@ -671,3 +671,47 @@ def test_stale_evidence_is_resampled_and_reviewed_in_same_main_turn(
             assert len(await _rows(ledger, "SELECT * FROM session_turns")) == 1
 
     asyncio.run(run())
+
+
+def test_model_resample_updates_candidate_evidence(isolated_serve_dsn, monkeypatch):
+    async def run():
+        async with _ledgers(isolated_serve_dsn) as (ledger, other):
+            state = Scenario(ledger, other)
+            await state.prepare()
+            original_receipt = state.model.ainvoke
+            updates = []
+
+            async def check_then_confirm(messages):
+                if len(messages) == 2:
+                    return AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": "resample-signal",
+                                "name": "ReadInspectionCheck",
+                                "args": {"ordinal": 1},
+                            }
+                        ],
+                    )
+                result = json.loads(messages[-1].content)
+                updates.extend(result.get("candidate_evidence", []))
+                reply = await original_receipt(messages)
+                [receipt] = reply.tool_calls[0]["args"]["receipts"]
+                for update in updates:
+                    if update["candidate_id"] == receipt["candidate_id"]:
+                        receipt["observation_ids"] = update["observation_ids"]
+                return reply
+
+            monkeypatch.setattr(state.model, "ainvoke", check_then_confirm)
+            finished = await state.execute()
+            assert finished.result["rules"][-1]["status"] == "proposal_created"
+            assert len(state.kube.sent) == 1
+            [review] = await _rows(ledger, "SELECT * FROM remediation_inspection_reviews")
+            [update] = updates
+            assert sorted(review["observation_ids"]) == sorted(update["observation_ids"])
+            assert (
+                update["observation_ids"]
+                != state.model.calls[0]["candidates"][0]["observation_ids"]
+            )
+
+    asyncio.run(run())
