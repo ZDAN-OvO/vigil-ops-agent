@@ -1,13 +1,16 @@
 """两个触发入口共用的目标故障登记和恢复条件。"""
 
+from collections.abc import Iterable
 from datetime import datetime
 from uuid import uuid4
 
 from psycopg import AsyncConnection
+from psycopg.types.json import Jsonb
 
 from aiops.actions.remediation_alerts import fault_is_not_clear
 from aiops.actions.safety import _one
 from aiops.contracts import ActionTarget
+from aiops.inspection.models import Check, InspectionRun, Observation
 
 
 def identity(target: ActionTarget) -> tuple[str, str, str, str]:
@@ -101,6 +104,90 @@ async def create_fault(
     return identifier
 
 
+async def save_inspection_signal(
+    conn: AsyncConnection,
+    run_id: str,
+    fault_id: str,
+    checks: list[Check],
+    observations: Iterable[Observation],
+    abnormal_at: datetime | None,
+    healthy_at: datetime | None,
+) -> None:
+    await conn.execute(
+        """
+        INSERT INTO remediation_inspection_signals
+            (fault_id, run_id, required_checks, observation_ids, abnormal_at, healthy_at)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (fault_id, run_id) DO UPDATE SET
+            abnormal_at = GREATEST(
+                remediation_inspection_signals.abnormal_at, EXCLUDED.abnormal_at),
+            healthy_at = CASE WHEN COALESCE(remediation_inspection_signals.abnormal_at,
+                EXCLUDED.abnormal_at) IS NULL THEN EXCLUDED.healthy_at END,
+            observation_ids = ARRAY(
+                SELECT DISTINCT unnest(
+                    remediation_inspection_signals.observation_ids || EXCLUDED.observation_ids
+                )
+            ),
+            required_checks = EXCLUDED.required_checks
+        """,
+        (
+            fault_id,
+            run_id,
+            Jsonb([check.model_dump(mode="json", exclude={"ordinal"}) for check in checks]),
+            [item.id for item in observations],
+            abnormal_at,
+            healthy_at,
+        ),
+    )
+
+
+async def record_abnormal_observation(
+    conn: AsyncConnection, run: InspectionRun, observation: Observation
+) -> None:
+    # 调用方已按名称、会话和轮次顺序加锁。就绪检查提供 UID，业务指标沿用本轮身份。
+    target = observation.target
+    uid = observation.evidence.get("uid")
+    if observation.check_id == "workload-signal":
+        readiness = await _one(
+            conn,
+            """
+            SELECT evidence->>'uid' AS uid FROM inspection_observations
+            WHERE run_id = %s AND target = %s AND check_id = 'workload-readiness'
+            ORDER BY recorded_order DESC LIMIT 1
+            """,
+            (run.id, Jsonb(target)),
+        )
+        uid = readiness["uid"] if readiness else None
+    if not uid:
+        existing = await _one(
+            conn,
+            """
+            SELECT workload_uid FROM remediation_faults
+            WHERE (cluster, namespace, workload_kind, workload_name) = (%s, %s, %s, %s)
+                AND cleared_at IS NULL
+            ORDER BY opened_at DESC LIMIT 1
+            """,
+            (run.cluster, target["namespace"], target["kind"], target["name"]),
+        )
+        if existing is None:
+            return
+        uid = existing["workload_uid"]
+    workload = ActionTarget(cluster=run.cluster, **target, uid=uid, resource_version="")
+    await lock_fault_uid(conn, workload)
+    fault = await active_fault(conn, workload)
+    if fault is None or await signal_is_late(conn, workload, observation.sampled_at):
+        return
+    await save_inspection_signal(
+        conn,
+        run.id,
+        fault["id"],
+        [check for check in run.checks if check.target == target],
+        (observation,),
+        observation.sampled_at,
+        None,
+    )
+
+
 async def has_inspection_signal(conn: AsyncConnection, fault_id: str) -> bool:
     return (
         await _one(
@@ -124,7 +211,10 @@ async def health_signal(conn: AsyncConnection, fault_id: str) -> dict | None:
             WHERE s.fault_id = %s
             ORDER BY r.scheduled_at DESC LIMIT 1
         )
-        SELECT latest.* FROM latest
+        SELECT latest.*, (
+            SELECT max(s.abnormal_at) FROM remediation_inspection_signals s
+            WHERE s.fault_id = latest.fault_id
+        ) AS last_abnormal_at FROM latest
         WHERE latest.healthy_at IS NOT NULL AND NOT EXISTS (
             SELECT 1 FROM remediation_inspection_signals s
             WHERE s.fault_id = latest.fault_id AND s.abnormal_at IS NOT NULL
@@ -172,6 +262,7 @@ async def inspection_can_clear(
         or window_end > now
         or not jobs["settled"]
         or fault["opened_at"] > window_start
+        or (health["last_abnormal_at"] is not None and health["last_abnormal_at"] >= window_start)
         or (jobs["effective_at"] is not None and jobs["effective_at"] > window_start)
         or any(
             (now - health["healthy_at"]).total_seconds() > check["max_age_seconds"]

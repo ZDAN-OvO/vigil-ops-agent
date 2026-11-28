@@ -7,7 +7,10 @@ from uuid import uuid4
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 
+from aiops.actions.remediation_alerts import lock_workload_alerts
+from aiops.actions.remediation_faults import record_abnormal_observation
 from aiops.db import Store
+from aiops.inspection.evidence import WORKLOAD_CHECKS, fresh
 from aiops.inspection.models import (
     Check,
     InspectionClock,
@@ -197,11 +200,22 @@ class InspectionStore:
     async def save_observation(
         self, run: InspectionRun, check: Check, sample: Sample, *, initial: bool = True
     ) -> Observation:
+        workload_abnormal = (
+            check.check_id in WORKLOAD_CHECKS
+            and sample.status == "abnormal"
+            and sample.sampled_at is not None
+        )
         async with self._store.transaction() as conn:
-            current, _ = await self.require_active(conn, run)
+            if workload_abnormal:
+                await lock_workload_alerts(
+                    conn, run.cluster, check.target["namespace"], check.target["name"]
+                )
+            current, now = await self.require_active(conn, run)
             if check not in current.checks:
                 raise ValueError("检查不属于本轮巡检")
             observation = await self._insert_observation(conn, current, check, sample, initial)
+            if workload_abnormal and fresh(observation, check, now):
+                await record_abnormal_observation(conn, current, observation)
             if not initial:
                 await self._append_summary(conn, current)
             return observation

@@ -6,7 +6,6 @@ from datetime import timedelta
 from uuid import uuid4
 
 import httpx
-from psycopg.types.json import Jsonb
 
 from aiops.actions.kubernetes_write import WRITE_TIMEOUT_SECONDS
 from aiops.actions.policy import CurrentState, TrustedEvidence, decide
@@ -21,6 +20,7 @@ from aiops.actions.remediation_faults import (
     lock_fault,
     lock_fault_uid,
     previous_uid_blocks,
+    save_inspection_signal,
     signal_is_late,
 )
 from aiops.actions.remediation_kube import RemediationKubeError, Snapshot
@@ -39,7 +39,7 @@ from aiops.inspection.evidence import (
     review_samples,
     values,
 )
-from aiops.inspection.models import Check, Observation
+from aiops.inspection.models import Observation
 from aiops.inspection.runtime import InspectionRound
 from aiops.sessions.projection import project_payload, project_text
 
@@ -429,47 +429,10 @@ class InspectionRemediation:
                 ):
                     healthy_at = min(item.sampled_at for item in valid)
                     status = "healthy"
-            await self._save_signal(
-                conn, run.id, fault_id, checks, observations, abnormal_at, healthy_at
+            await save_inspection_signal(
+                conn, run.id, fault_id, checks, observations.values(), abnormal_at, healthy_at
             )
             return fault_id, status
-
-    @staticmethod
-    async def _save_signal(
-        conn,
-        run_id: str,
-        fault_id: str,
-        checks: list[Check],
-        observations: dict[str, Observation],
-        abnormal_at,
-        healthy_at,
-    ) -> None:
-        await conn.execute(
-            """
-            INSERT INTO remediation_inspection_signals
-                (fault_id, run_id, required_checks, observation_ids, abnormal_at, healthy_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (fault_id, run_id) DO UPDATE SET
-                abnormal_at = GREATEST(
-                    remediation_inspection_signals.abnormal_at, EXCLUDED.abnormal_at),
-                healthy_at = CASE WHEN COALESCE(remediation_inspection_signals.abnormal_at,
-                    EXCLUDED.abnormal_at) IS NULL THEN EXCLUDED.healthy_at END,
-                observation_ids = ARRAY(
-                    SELECT DISTINCT unnest(
-                        remediation_inspection_signals.observation_ids || EXCLUDED.observation_ids
-                    )
-                ),
-                required_checks = EXCLUDED.required_checks
-            """,
-            (
-                fault_id,
-                run_id,
-                Jsonb([check.model_dump(mode="json", exclude={"ordinal"}) for check in checks]),
-                [item.id for item in observations.values()],
-                abnormal_at,
-                healthy_at,
-            ),
-        )
 
     async def _close_healthy(self, scope, target: ActionTarget, fault_id: str) -> bool:
         runtime = self.runtime
@@ -535,22 +498,8 @@ class InspectionRemediation:
                 now=now,
             ):
                 return False
-            # 锁内重查完整恢复窗口与最近的异常，避免旧窗口给迟到的信号结案。
-            latest_abnormal = await _one(
-                conn,
-                "SELECT max(abnormal_at) AS at FROM remediation_inspection_signals "
-                "WHERE fault_id = %s",
-                (fault_id,),
-            )
             rechecked = await jobs_settled(conn, fault_id)
-            if any(
-                item is not None and item > window.start
-                for item in (
-                    latest_abnormal["at"],
-                    rechecked["effective_at"],
-                    rechecked["finished_at"],
-                )
-            ):
+            if rechecked["finished_at"] is not None and rechecked["finished_at"] > window.start:
                 return False
             _, now = await scope.store.require_active(conn, scope.run)
             await conn.execute(

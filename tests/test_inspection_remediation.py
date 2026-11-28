@@ -715,3 +715,55 @@ def test_model_resample_updates_candidate_evidence(isolated_serve_dsn, monkeypat
             )
 
     asyncio.run(run())
+
+
+def test_committed_resample_blocks_clearance_in_background_driver(isolated_serve_dsn):
+    from dataclasses import replace
+
+    from aiops.actions.remediation_service import drive_remediation
+    from aiops.serve import drive_queue
+
+    async def run():
+        async with _ledgers(isolated_serve_dsn) as (ledger, other):
+            state = Scenario(ledger, other)
+            await state.prepare()
+            await state.execute()
+            [job] = await _rows(ledger, "SELECT * FROM remediation_jobs")
+            await observe_after(ledger, state, job, 1)
+            scope, _ = await state.begin(healthy=True, advance=620)
+            target = state.kube.target(state.settings.cluster, *TARGET.values())
+            assert await state.handler._track(scope, target) == (job["fault_id"], "healthy")
+
+            async def abnormal(_check, _run_id, _remaining):
+                return Sample("abnormal", "threshold_not_met", state.clock(), {"value": 0})
+
+            resampled = await replace(scope, _sample=abnormal).resample(CHECKS[1])
+            assert (await state.inspections.get_observation(resampled.id)).status == "abnormal"
+
+            async with ledger.store.transaction() as conn:
+                await conn.execute(
+                    "UPDATE remediation_jobs SET run_after = clock_timestamp() "
+                    "WHERE proposal_id = %s",
+                    (job["proposal_id"],),
+                )
+            stop = asyncio.Event()
+            async with asyncio.TaskGroup() as tasks:
+                tasks.create_task(drive_queue(state.handler.driver, ledger.safety, stop))
+                tasks.create_task(drive_remediation(state.runtime, stop))
+                try:
+                    async with asyncio.timeout(8):
+                        while True:
+                            [saved] = await _rows(ledger, "SELECT state FROM remediation_jobs")
+                            if saved["state"] == "finished":
+                                break
+                            await asyncio.sleep(0)
+                finally:
+                    stop.set()
+            [fault] = await _rows(ledger, "SELECT id, cleared_at FROM remediation_faults")
+            assert fault == {"id": job["fault_id"], "cleared_at": None}
+            await state.inspections.finish(scope.run)
+            repeated = await state.execute()
+            assert repeated.result["rules"][-1]["status"] == "fault_already_handled"
+            assert len(state.kube.sent) == 1
+
+    asyncio.run(run())
