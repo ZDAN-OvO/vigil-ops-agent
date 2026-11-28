@@ -10,6 +10,9 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import httpx
+import psycopg
+from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg.types.json import Jsonb
 from test_inspection_remediation import TARGET, ReviewModel, Workload
 from test_inspection_run import Clock
@@ -57,6 +60,25 @@ async def eventually(read, ready=bool):
         while not ready(value := await read()):
             await asyncio.sleep(0.01)
     return value
+
+
+def install_clock(dsn, now):
+    # 仅在用例的隔离 schema 内替换取时函数，保留产品 SQL 和真实事务。
+    options = conninfo_to_dict(dsn)["options"]
+    dsn = make_conninfo(dsn, options=f"{options},pg_catalog")
+    with psycopg.connect(dsn) as conn:
+        conn.execute("CREATE TABLE inspection_test_clock (value timestamptz NOT NULL)")
+        conn.execute("INSERT INTO inspection_test_clock VALUES (%s)", (now,))
+        schema = conn.execute("SELECT current_schema()").fetchone()[0]
+        for name in ("clock_timestamp", "now"):
+            conn.execute(
+                sql.SQL(
+                    "CREATE FUNCTION {}() RETURNS timestamptz LANGUAGE sql VOLATILE "
+                    "AS $$ SELECT value FROM {} $$"
+                ).format(sql.Identifier(name), sql.Identifier(schema, "inspection_test_clock"))
+            )
+        assert conn.execute("SELECT clock_timestamp(), now()").fetchone() == (now, now)
+    return dsn
 
 
 class Probe(Metrics):
@@ -125,9 +147,14 @@ class Scenario:
         )
         monkeypatch.setattr(remediation_service, "RemediationMetrics", lambda _client: self.metrics)
 
-    def step(self, mode, seconds=INTERVAL):
-        self.sample_mode = mode
+    async def advance(self, ledger, seconds):
         self.clock.advance(seconds)
+        async with ledger.store.transaction() as conn:
+            await conn.execute("UPDATE inspection_test_clock SET value = %s", (self.clock(),))
+
+    async def step(self, ledger, mode, seconds=INTERVAL):
+        self.sample_mode = mode
+        await self.advance(ledger, seconds)
 
     @staticmethod
     async def rounds(ledger, count, *, status=None):
@@ -140,16 +167,8 @@ class Scenario:
         )
 
     @staticmethod
-    async def drive_due(runtime, *, after=None):
+    async def drive_due(runtime):
         ledger = runtime.ledger
-        if after is not None:
-            # 保留领取和观察事务，只将这个持久任务移到已到期的队列。
-            async with ledger.store.transaction() as conn:
-                await conn.execute(
-                    "UPDATE remediation_jobs SET run_after = clock_timestamp() "
-                    "WHERE proposal_id = %s",
-                    (after,),
-                )
         [identifier] = await eventually(ledger.due)
         await runtime.drive(identifier)
         return identifier
@@ -177,13 +196,13 @@ async def exercise_lifecycle(state, runtime, web):
     await eventually(lambda: _rows(ledger, "SELECT * FROM inspection_schedules"))
     assert not await ledger.sessions.list_sessions(source="inspection")
 
-    state.step("healthy")
+    await state.step(ledger, "healthy")
     [healthy] = await state.rounds(ledger, 1, status="completed")
     last = (await summaries(web, healthy["session_id"]))[-1]
     assert [item["status"] for item in last["observations"]] == ["healthy"] * 3
     assert not state.model.calls and not state.kube.sent
 
-    state.step("abnormal")
+    await state.step(ledger, "abnormal")
     first = await state.drive_due(runtime)
     abnormal = (await state.rounds(ledger, 2, status="completed"))[-1]
     pending = (await summaries(web, abnormal["session_id"]))[-1]
@@ -202,15 +221,16 @@ async def exercise_lifecycle(state, runtime, web):
     assert set(review["observation_ids"]) <= {item["id"] for item in pending["observations"]}
 
     # 写入后就绪时间须晚于触发它的异常观察。
-    state.clock.advance(1)
+    await state.advance(ledger, 1)
     assert await state.drive_due(runtime) == first
-    state.clock.advance(619)
-    assert await state.drive_due(runtime, after=first) == first
+    assert not await ledger.due()
+    await state.advance(ledger, 619)
+    assert await state.drive_due(runtime) == first
     unchanged = (await summaries(web, abnormal["session_id"]))[-1]
     assert unchanged["seq"] > pending["seq"] and unchanged["status"] == "completed"
     assert unchanged["result"]["actions"][first]["outcome"] == "no_improvement"
 
-    state.step("abnormal", INTERVAL - 620)
+    await state.step(ledger, "abnormal", INTERVAL - 620)
     persistent = (await state.rounds(ledger, 3, status="completed"))[-1]
     assert persistent["result"]["rules"][-1]["status"] == "fault_already_handled"
     [fault] = await _rows(ledger, "SELECT * FROM remediation_faults")
@@ -218,20 +238,20 @@ async def exercise_lifecycle(state, runtime, web):
     assert len(state.model.calls) == 2 and len(state.kube.sent) == 1
 
     state.metrics.healthy = True
-    state.step("healthy")
+    await state.step(ledger, "healthy")
     recovered = (await state.rounds(ledger, 4, status="completed"))[-1]
     assert recovered["result"]["faults"][0]["status"] == "cleared"
     assert len(state.model.calls) == 2 and len(state.kube.sent) == 1
 
-    state.step("abnormal")
+    await state.step(ledger, "abnormal")
     second = await state.drive_due(runtime)
     recurrence = (await state.rounds(ledger, 5, status="completed"))[-1]
     before = (await summaries(web, recurrence["session_id"]))[-1]
     assert second != first and len(state.kube.sent) == 2
-    state.clock.advance(1)
+    await state.advance(ledger, 1)
     assert await state.drive_due(runtime) == second
-    state.clock.advance(619)
-    assert await state.drive_due(runtime, after=second) == second
+    await state.advance(ledger, 619)
+    assert await state.drive_due(runtime) == second
     after = (await summaries(web, recurrence["session_id"]))[-1]
     assert after["seq"] > before["seq"]
     assert after["result"]["actions"][second]["outcome"] == "improved"
@@ -247,17 +267,17 @@ async def exercise_lifecycle(state, runtime, web):
     ]
     assert all(job["sent_at"] is not None for job in jobs)
 
-    state.step("timeout", INTERVAL - 620)
+    await state.step(ledger, "timeout", INTERVAL - 620)
     await state.rounds(ledger, 6)
     async with asyncio.timeout(5):
         await state.blocked.wait()
-    state.clock.advance(DEADLINE)
+    await state.advance(ledger, DEADLINE)
     timed_out = (await state.rounds(ledger, 6, status="timed_out"))[-1]
     timeout_summary = (await summaries(web, timed_out["session_id"]))[-1]
     assert timeout_summary["reason"] == "deadline_exceeded"
     assert any(item.get("reason") == "timeout" for item in timeout_summary["observations"])
 
-    state.step("insufficient", INTERVAL - DEADLINE)
+    await state.step(ledger, "insufficient", INTERVAL - DEADLINE)
     insufficient = (await state.rounds(ledger, 7, status="completed"))[-1]
     last = (await summaries(web, insufficient["session_id"]))[-1]
     incomplete = [item for item in last["observations"] if item["status"] == "insufficient"]
@@ -271,9 +291,11 @@ async def exercise_lifecycle(state, runtime, web):
 def test_serve_drives_inspection_and_reopens_history(isolated_serve_dsn, monkeypatch, tmp_path):
     manifest = tmp_path / "inspection.yaml"
     manifest.write_text(MANIFEST, encoding="utf-8")
+    state = Scenario()
+    dsn = install_clock(isolated_serve_dsn, state.clock())
     settings = Settings(
         _env_file=None,
-        database_url=isolated_serve_dsn,
+        database_url=dsn,
         inspection_enabled=True,
         inspection_config=manifest,
         inspection_interval_seconds=INTERVAL,
@@ -286,7 +308,6 @@ def test_serve_drives_inspection_and_reopens_history(isolated_serve_dsn, monkeyp
     )
 
     async def run():
-        state = Scenario()
         state.use_fixtures(monkeypatch)
         recorded = []
 
@@ -316,12 +337,24 @@ def test_serve_drives_inspection_and_reopens_history(isolated_serve_dsn, monkeyp
         return recorded
 
     recorded = asyncio.run(run())
-    asyncio.run(check_reopened_history(settings, recorded))
-    check_cli_history(isolated_serve_dsn, tmp_path, recorded)
+    expected_order = asyncio.run(check_reopened_history(settings, recorded))
+    check_cli_history(dsn, tmp_path, recorded[-1]["session_id"], expected_order)
 
 
 async def check_reopened_history(settings, recorded):
     async with Store.open(settings.database_url) as store:
+        async with store.transaction() as conn:
+            rows = await conn.execute(
+                "SELECT id, created_at FROM sessions WHERE source = 'inspection'"
+            )
+            sessions = await rows.fetchall()
+        expected_order = [
+            row["id"]
+            for row in sorted(
+                sessions, key=lambda row: (row["created_at"], row["id"]), reverse=True
+            )
+        ]
+        assert sorted(expected_order) == sorted(row["session_id"] for row in recorded)
         auth = BrowserAuth(interactive=True)
         async with _client(settings, store, auth) as web:
             await _login(web, auth, settings.web_origin)
@@ -349,7 +382,7 @@ async def check_reopened_history(settings, recorded):
                     last = page["sessions"][-1]
                     assert before == f"{last['created_at']}|{last['id']}"
             assert before is None
-            assert read == [item["session_id"] for item in reversed(recorded)]
+            assert read == expected_order
             for invalid in (
                 "?source=inspection&before=bad",
                 "?source=inspection&before=2026-11-20T02:14:00%7Cid",
@@ -360,7 +393,7 @@ async def check_reopened_history(settings, recorded):
             ):
                 assert (await web.get("/api/sessions" + invalid)).status_code == 400
 
-            session_id = read[0]
+            session_id = recorded[-1]["session_id"]
             snapshots = await summaries(web, session_id)
             snapshot = snapshots[-1]
             observation = next(
@@ -402,9 +435,10 @@ async def check_reopened_history(settings, recorded):
                 assert rejected.status_code == 409
                 assert rejected.json()["error"] == "inspection_read_only"
             assert (await summaries(web, session_id))[-1] == latest
+    return expected_order
 
 
-def check_cli_history(dsn, tmp_path, recorded):
+def check_cli_history(dsn, tmp_path, session_id, expected_order):
     env = {
         **os.environ,
         "VIGIL_DATABASE_URL": dsn,
@@ -435,13 +469,10 @@ def check_cli_history(dsn, tmp_path, recorded):
             assert value not in result.stdout + result.stderr
         return result.stdout
 
-    session_id = recorded[-1]["session_id"]
     default = cli("sessions")
     assert "\tuser\t" in default and "\tinspection\t" not in default
     history = cli("sessions", "--source", "inspection")
-    assert [line.split("\t")[0] for line in history.splitlines()] == [
-        item["session_id"] for item in reversed(recorded)
-    ]
+    assert [line.split("\t")[0] for line in history.splitlines()] == expected_order
     events = [
         json.loads(line)
         for line in cli("--resume", session_id, "--output", "stream-json").splitlines()
