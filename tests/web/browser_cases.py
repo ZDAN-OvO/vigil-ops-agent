@@ -2,7 +2,7 @@
 
 import unittest
 
-from fixture import CARD, LOCAL_PATH, SECRET, Fixture
+from fixture import CARD, LOCAL_PATH, SECRET, WHEN, Fixture
 from playwright.sync_api import expect, sync_playwright
 
 PATH = "/sessions/alert-demo"
@@ -182,6 +182,78 @@ class BrowserCases(unittest.TestCase):
                     countdown=branch in {"approved", "intent", "executing"},
                 )
                 self.assert_no_errors()
+
+    def test_inspection_history_pages_refreshes_and_updates_receipts(self):
+        for sid, title in (("inspection-z", "入口巡检"), ("inspection-a", "节点巡检")):
+            self.fixture.sessions[sid] = ("inspection", title, "interrupted")
+            self.fixture.events[sid] = []
+            self.fixture.states[sid] = "interrupted"
+            self.fixture.title_origins[sid] = "inspection"
+
+        evidence = "a" * 32
+        action = f"act-{'b' * 32}"
+        fields = {
+            "run_id": "run-demo",
+            "cluster": "demo",
+            "scheduled_at": WHEN.isoformat(),
+            "deadline": WHEN.isoformat(),
+            "observations": [
+                {
+                    "id": evidence,
+                    "check_id": "entry-probe",
+                    "target": {"kind": "Entry", "probe_id": "https://shop.invalid"},
+                    "status": "insufficient",
+                    "reason": "collection_failed",
+                    "evidence_refs": [f"inspection:{evidence}"],
+                },
+            ],
+        }
+        self.fixture.push("inspection_summary", sid="inspection-a", status="failed", **fields)
+        self.fixture.push("inspection_summary", sid="inspection-z", status="running", **fields)
+        self.fixture.push(
+            "inspection_summary",
+            sid="inspection-z",
+            status="timed_out",
+            result={"actions": {action: {"status": "applied"}}},
+            **fields,
+        )
+        self.page.goto(self.fixture.url + PATH)
+        list_panel = self.page.locator("#session-list")
+        expect(list_panel.get_by_text("首页探测失败")).to_be_visible()
+        expect(list_panel.get_by_text("入口巡检")).to_have_count(0)
+        self.page.get_by_role("button", name="巡检历史").click()
+        expect(list_panel.get_by_text("入口巡检")).to_be_visible()
+        expect(list_panel.get_by_text("接手恢复")).to_have_count(0)
+        self.page.get_by_role("button", name="更早").click()
+        list_panel.get_by_role("link", name="节点巡检", exact=False).click()
+        expect(self.page.get_by_text("巡检失败")).to_be_visible()
+        self.page.get_by_role("button", name="较新").click()
+        list_panel.get_by_role("link", name="入口巡检", exact=False).click()
+        summary = self.page.get_by_role("region", name="巡检摘要")
+        expect(summary.get_by_text("整轮超时")).to_be_visible()
+        expect(summary.get_by_text("信息不足")).to_be_visible()
+        expect(summary.get_by_text("采集失败")).to_be_visible()
+        expect(summary.get_by_text(f"inspection:{evidence}")).to_be_visible()
+        expect(self.page.locator("#composer")).to_have_count(0)
+        expect(self.page.get_by_role("button", name="改名")).to_have_count(0)
+        expect(summary.get_by_text("已写入，等待业务验证", exact=False).first).to_be_visible()
+
+        self.fixture.push(
+            "inspection_summary",
+            sid="inspection-z",
+            status="timed_out",
+            result={"actions": {action: {"status": "succeeded", "outcome": "improved"}}},
+            **fields,
+        )
+        expect(summary.get_by_text("验证完成 · 业务恢复", exact=False).first).to_be_visible()
+        summary.get_by_text("巡检记录").click()
+        expect(summary.get_by_text("初始摘要", exact=False)).to_be_visible()
+        expect(summary.get_by_text("已写入，等待业务验证", exact=False)).to_be_visible()
+
+        self.page.reload()
+        expect(summary.get_by_text("验证完成 · 业务恢复", exact=False).first).to_be_visible()
+        expect(list_panel.get_by_text("入口巡检")).to_be_visible()
+        self.assert_no_errors()
 
     def test_layout_styles_and_motion(self):
         for width, height in ((1440, 900), (1280, 800)):

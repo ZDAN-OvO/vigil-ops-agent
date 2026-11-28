@@ -118,6 +118,52 @@ CPU 或内存调整确认工作负载就绪后，业务探针还有一段收敛�
 关闭会话时，尚未取得发送权的动作作废。已取得发送权的动作继续验证并记录回执。
 结果为不确定时保留目标锁，核实后才能再次处置该目标。
 
+## 3.1 主动巡检
+
+### 启用巡检
+
+准备 PostgreSQL、只读 Kubernetes 凭据和 Prometheus。把要检查的目标写入本地 YAML。下面的样例登记一个工作负载、一个节点和一个入口。用实际的资源名、指标和标签替换示例值。入口的 `probe_id` 填 Prometheus 中 `vigil-entry-probe` 任务的 `instance` 标签。
+
+```yaml
+version: 1
+cluster: vigil-lab
+workloads:
+  - namespace: vigil-shop
+    kind: Deployment
+    name: checkoutservice
+    readiness_max_age_seconds: 120
+    signal:
+      metric: checkout_success_ratio
+      labels:
+        service: checkoutservice
+      minimum: 0.99
+      max_age_seconds: 120
+nodes:
+  - name: example-worker
+    max_age_seconds: 120
+entries:
+  - probe_id: https://shop.example.com
+    max_age_seconds: 120
+```
+
+`cluster` 须与 `VIGIL_CLUSTER` 相同。工作负载支持 Deployment 和 StatefulSet。业务指标至少指定一项标签和一个阈值，可设 `minimum`、`maximum` 或两者。采样超过登记的新鲜度时，本项记为信息不足。
+
+设 `VIGIL_INSPECTION_ENABLED=true`，将 `VIGIL_INSPECTION_CONFIG` 指向 YAML，再运行 `vigil admin migrate` 和 `vigil serve`。默认 900 秒后开始首轮，之后每 900 秒调度一次，每轮最多 600 秒。用 `VIGIL_INSPECTION_INTERVAL_SECONDS` 和 `VIGIL_INSPECTION_TIMEOUT_SECONDS` 修改秒数。已有轮次在运行时，Vigil 跳过当前计划时点。清单无效时，Vigil 在启动日志记录原因，网页和其他已配置入口继续运行。
+
+健康轮只采集和记录结果。若要让 Agent 核对异常，还需配置 `VIGIL_MODEL_NAME` 和模型网关。巡检规则的自动写入同时要求 `VIGIL_REMEDIATION_AUTO_ENABLED=true`、有效策略、专用写身份、集群准入和已核对的新鲜证据。处置规则用 `type: inspection` 登记。目标、条件、动作和参数由规则给定，节点和入口只读取证据。副本数规则可参考仓库的实验策略。[巡检副本数处置规则](../config/remediation/isolated-acceptance/services/replica-fixture.yaml)
+
+### 查阅巡检并核实处置
+
+- 在会话侧栏切换到 **巡检历史**。使用 **较新** 和 **更早** 翻页，点一轮查看检查状态、原因、采样时间和证据编号。刷新该轮链接会重新读取账本。
+- 用 `vigil sessions --source inspection` 列出巡检会话。用 `vigil --resume SESSION_ID` 回放；脚本可加 `--output stream-json` 按序读取巡检摘要和回执，或用 `--output json` 取末条巡检摘要。普通 `vigil sessions` 和 `vigil -c` 沿用人工和告警会话。
+- 调用 `GET /api/sessions?source=inspection&limit=50` 后，将响应中的 `next_before` 作为下一页的 `before` 查询参数。传参时对游标做 URL 编码。值为 `null` 时历史已读完。
+- 遇到信息不足时，按摘要的原因检查采集端、指标标签和采样时间。要进一步排查，从 **新会话** 发起调查。巡检会话可供回查。
+- 轮次结束后仍可收到业务验证或补偿回执。如果显示结果待核实或业务尚未恢复，核对动作卡片与人工待办。需要核实结果未知的动作时，按下一节的流程执行。
+
+### 关闭巡检
+
+把 `VIGIL_INSPECTION_ENABLED` 设为 `false`，再重启 `vigil serve`。巡检停止调度，保留已产生的历史。服务继续核实已经取得发送权的动作并追加回执。保留处置配置和数据库账本，直到待核实的任务收尾。需要恢复已调整的参数时，先核对处置记录，再按受控变更流程操作。
+
 ## 4. 人工核实和旧库切换
 
 用 `vigil admin followups` 查待办。在实际管理终端运行

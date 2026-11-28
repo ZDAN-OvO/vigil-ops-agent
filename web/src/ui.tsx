@@ -1,10 +1,19 @@
 import { type ReactNode } from "react";
-import type { SessionState } from "./api";
+import type { Session, SessionState } from "./api";
 
 export const sessionStates: Record<SessionState, string> = {
   idle: "待提问", working: "运行中", awaiting_approval: "待审批",
   interrupted: "已中断", closed: "已关闭",
 };
+
+export const sessionSources: Record<Session["source"], string> = {
+  user: "人工", alert: "告警", inspection: "巡检",
+};
+
+export function sessionState(session: Session) {
+  return session.source === "inspection" && session.state === "closed"
+    ? "已结束" : sessionStates[session.state] ?? "状态未取到";
+}
 
 export function Stamp({ className = "", children }: { className?: string; children: ReactNode }) {
   return <span className={`stamp ${className}`}>{children}</span>;

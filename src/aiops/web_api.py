@@ -27,7 +27,7 @@ from aiops.config import PROJECT_ROOT, SOURCE_CHECKOUT, Settings
 from aiops.contracts import ApprovalDecision
 from aiops.http_api import APIError, http_error, read_body, read_json
 from aiops.sessions.models import Session, SessionClosed
-from aiops.sessions.projection import project_payload, project_text
+from aiops.sessions.projection import project_payload, project_session_event, project_text
 from aiops.sessions.store import SessionStore
 from aiops.web_assets import STATIC_PREFIX, WebAssetsUnavailable, check_web_assets
 
@@ -220,10 +220,14 @@ def build_web_app(
             raise APIError(503, "web_assets_missing", _missing_assets_message())
         return FileResponse(index, headers={"Content-Security-Policy": PAGE_CSP})
 
-    async def require_session(request: Request, *, open_only: bool = False) -> Session:
+    async def require_session(
+        request: Request, *, writable: bool = False, open_only: bool = False
+    ) -> Session:
         session = await sessions.get_session(_id(request, "session_id"))
         if session is None:
             raise APIError(404, "not_found", "会话不存在")
+        if (writable or open_only) and session.source == "inspection":
+            raise APIError(409, "inspection_read_only", "巡检会话仅供回查")
         if open_only and session.closed_at is not None:
             raise APIError(409, "session_closed", "会话已关闭")
         return session
@@ -282,12 +286,35 @@ if (token) {{
 
     async def list_sessions(request: Request) -> JSONResponse:
         limit = _number(request, "limit", 50, 1, 200)
-        rows = await sessions.list_sessions(limit=limit)
+        sources = request.query_params.getlist("source")
+        cursors = request.query_params.getlist("before")
+        if sources not in ([], ["inspection"]) or len(cursors) > 1 or (cursors and not sources):
+            raise APIError(400, "invalid_query", "查询参数无效")
+        pagination = {}
+        if sources:
+            before = cursors[0] if cursors else None
+            if before is not None and (
+                len(before) > 196 or not _ID.fullmatch(before.partition("|")[2])
+            ):
+                raise APIError(400, "invalid_query", "会话游标无效")
+            try:
+                entries = await sessions.list_sessions(
+                    limit=limit + 1, source="inspection", before=before
+                )
+            except ValueError:
+                raise APIError(400, "invalid_query", "会话游标无效") from None
+            rows = entries[:limit]
+            pagination["next_before"] = (
+                f"{rows[-1].created_at.isoformat()}|{rows[-1].id}" if len(entries) > limit else None
+            )
+        else:
+            rows = await sessions.list_sessions(limit=limit)
         pending = await safety.pending_card_sessions([row.id for row in rows])
         reason = auth.disabled_reason(request)
         return JSONResponse(
             {
                 "sessions": [_summary(row, pending) for row in rows],
+                **pagination,
                 "approval_enabled": reason is None,
                 "approval_disabled_reason": reason,
             }
@@ -301,7 +328,9 @@ if (token) {{
     async def session_snapshot(request: Request) -> JSONResponse:
         session = await require_session(request)
         pending = await safety.pending_card_sessions([session.id])
-        reason = auth.disabled_reason(request)
+        reason = (
+            "巡检会话仅供回查" if session.source == "inspection" else auth.disabled_reason(request)
+        )
         return JSONResponse(
             {
                 "session": _summary(session, pending),
@@ -318,7 +347,7 @@ if (token) {{
         page = events[:limit]
         payloads = []
         for event in page:
-            payload = event.as_dict()
+            payload = project_session_event(event)
             if (
                 event.type == "approval_required"
                 and payload.get("action") in {"restart_pod", "rollout_undo"}
@@ -327,7 +356,7 @@ if (token) {{
                 card = await safety.get_card(payload["card_id"], session_id=session.id)
                 if card is not None and card["status"] == "voided":
                     payload["status"] = "voided"
-            payloads.append(project_payload(payload))
+            payloads.append(payload)
         return JSONResponse(
             {
                 "events": payloads,
@@ -354,10 +383,10 @@ if (token) {{
 
     async def rename_session(request: Request) -> JSONResponse:
         require_write(request)
-        session_id = _id(request, "session_id")
+        current = await require_session(request, writable=True)
         body = await read_json(request, TitleBody, limit=_API_LIMIT)
         try:
-            session = await sessions.rename_session(session_id, body.title)
+            session = await sessions.rename_session(current.id, body.title)
         except LookupError:
             raise APIError(404, "not_found", "会话不存在") from None
         pending = await safety.pending_card_sessions([session.id])
@@ -372,7 +401,7 @@ if (token) {{
 
     async def close(request: Request) -> JSONResponse:
         require_write(request)
-        session = await require_session(request)
+        session = await require_session(request, writable=True)
         if session.group_key is None:
             raise APIError(409, "not_alert_session", "仅告警会话可以关闭")
         async with sessions.alert_transaction(session.group_key) as conn:

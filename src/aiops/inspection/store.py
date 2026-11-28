@@ -17,7 +17,7 @@ from aiops.inspection.models import (
     Sample,
 )
 from aiops.sessions.models import LEASE_SECONDS, Lease, LeaseLost, Turn
-from aiops.sessions.projection import project_payload, project_text
+from aiops.sessions.projection import project_inspection_summary, project_payload, project_text
 from aiops.sessions.store import SessionStore, _one
 
 
@@ -301,7 +301,7 @@ class InspectionStore:
             conn,
             run.session_id,
             "inspection_summary",
-            project_payload(
+            project_inspection_summary(
                 {
                     "run_id": run.id,
                     "status": run.status,

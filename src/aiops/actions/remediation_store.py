@@ -398,9 +398,10 @@ class RemediationStore:
         )
         if bound is None:
             raise ActionError("inspection_receipt_unbound", "处置回执缺少持久巡检归属")
-        actions = bound["result"].get("actions", {}) | {
-            row["id"]: {"status": status, "fault_id": job["fault_id"], **details}
-        }
+        receipt = {"status": status, "fault_id": job["fault_id"], **details}
+        if job["parent_proposal_id"] is not None:
+            receipt["parent_id"] = job["parent_proposal_id"]
+        actions = bound["result"].get("actions", {}) | {row["id"]: receipt}
         await self.inspections.record_receipt_result(
             conn, run_id=bound["id"], session_id=row["session_id"], result={"actions": actions}
         )

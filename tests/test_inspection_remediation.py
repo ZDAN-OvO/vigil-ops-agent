@@ -572,6 +572,16 @@ def test_sent_job_survives_round_timeout_and_compensates_once(isolated_serve_dsn
             final = await state.inspections.get_run(scope.run.id)
             assert final.status == "timed_out"
             assert final.result["actions"][compensation["proposal_id"]]["status"] == "succeeded"
+            history = await state.inspections.sessions.list_events(scope.run.session_id)
+            summaries = [event for event in history if event.type == "inspection_summary"]
+            terminal = next(event for event in summaries if event.payload["status"] == "timed_out")
+            assert summaries[-1].seq > terminal.seq
+            assert summaries[-1].payload["result"]["actions"][compensation["proposal_id"]] == {
+                "status": "succeeded",
+                "fault_id": job["fault_id"],
+                "outcome": "worsened",
+                "parent_id": job["proposal_id"],
+            }
             [fault] = await _rows(ledger, "SELECT cleared_at FROM remediation_faults")
             assert fault["cleared_at"] is None
 

@@ -1,5 +1,5 @@
 import type {
-  CardEvent, CardUpdate, DeliveryEvent, ObservationEvent, RemediationProgress, SessionEvent,
+  CardEvent, CardUpdate, DeliveryEvent, InspectionSummaryEvent, ObservationEvent, RemediationProgress, SessionEvent,
 } from "./api";
 
 export type MessageEvent = Extract<SessionEvent, { type: "message" }>;
@@ -26,6 +26,7 @@ interface Row {
   repeatedSummary?: boolean;
   firstTs?: string;
   processScope?: string;
+  inspectionHistory?: InspectionSummaryEvent[];
 }
 
 interface ProcessItem {
@@ -70,6 +71,7 @@ export function projectConversation(events: readonly SessionEvent[]) {
   const interimReplies = new Map<string, number>();
   const completedTurns = new Set<string>();
   const closed = new Set<string>();
+  const inspectionRows = new Map<string, Row>();
 
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
     const key = JSON.stringify([event.session_id, event.seq]);
@@ -164,6 +166,18 @@ export function projectConversation(events: readonly SessionEvent[]) {
           rows.set(key, { key, event, repeatedSummary });
         }
         break;
+      case "inspection_summary": {
+        const current = inspectionRows.get(event.session_id);
+        if (current) {
+          current.inspectionHistory?.push(event);
+          current.event = event;
+        } else {
+          const row = { key, event, firstTs: event.ts, inspectionHistory: [event] };
+          inspectionRows.set(event.session_id, row);
+          rows.set(key, row);
+        }
+        break;
+      }
       case "session_closed":
         closed.add(event.session_id);
         rows.set(key, { key, event });
@@ -199,7 +213,7 @@ export function projectConversation(events: readonly SessionEvent[]) {
     if (event.type === "message" && event.input_id) {
       row.delivery = deliveries.get(JSON.stringify([event.session_id, event.input_id]));
     }
-    append({ row }, row.key, event.ts);
+    append({ row }, row.key, row.firstTs ?? event.ts);
   }
   return {
     rows: visible,
