@@ -8,6 +8,7 @@ import remarkGfm from "remark-gfm";
 import type { Access, CardEvent, Decision, DeliveryEvent, SessionEvent } from "./api";
 import { Card } from "./card";
 import { type ConversationRow, type MessageEvent, projectConversation } from "./conversation-projection";
+import { InspectionSummary } from "./inspection-summary";
 import { Evidence, HypothesisDetails, type ObservationJump, ProcessDetails } from "./investigation-details";
 import { Stamp, time } from "./ui";
 
@@ -140,6 +141,8 @@ export function Conversation({ events, access, anchor, notice, decide }: Convers
           {...projection.cardUpdates.get(event.card_id)} decide={decide}
           progress={projection.remediationProgress.get(event.card_id)}
           observationFor={(id) => projection.cardObservationFor(event, id)} reveal={setJump} />;
+      case "inspection_summary":
+        return <InspectionSummary event={event} history={row.inspectionHistory ?? []} />;
       case "session_closed":
         return <p className="stamp">会话已关闭</p>;
       case "result": {

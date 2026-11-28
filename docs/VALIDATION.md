@@ -1,5 +1,21 @@
 # Vigil 安装与切换验收
 
+## 定时主动巡检验收
+
+在隔离 k3d 集群上运行 `e6cb70f` 的 `vigil serve`，连接独立 PostgreSQL、真实模型、
+Prometheus、Kubernetes 和业务探针。健康轮完成四项检查，调查记录为零。
+[健康轮截图](validation/proactive-inspection/healthy.png)
+
+将测试服务从两个副本降到一个后，业务和入口探针均失败。Vigil 定时发现异常，
+Agent 按 SOP 核对证据，登记规则授权恢复到两个副本。Kubernetes 审计记录一次
+dry-run 和一次实际 PATCH，均返回 HTTP 200。两个探针恢复，业务观察十个时段全部通过，
+结果在巡检轮次结束后写回原会话。[恢复回执截图](validation/proactive-inspection/remediated.png) ·
+[探针、账本与审计](validation/proactive-inspection/experiment.json)
+
+本次集群实测未接入 Alertmanager。告警和巡检竞争同一故障处置名额的行为由真实
+PostgreSQL 和 ASGI Webhook 回归验证。另有后台驱动回归验证异常补采提交后不会早关账，
+以及假时钟端到端用例验证持续异常限次、健康结案、复发、轮次超时和历史回查。
+
 ## 受控自动修复验收
 
 在隔离 Kubernetes `v1.35.5+k3s1` 上运行 Vigil、Alertmanager、Prometheus 和真实业务探针。

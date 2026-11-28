@@ -334,6 +334,35 @@ class KubernetesRead:
             error=ToolError(code=code, message=message, retryable=code == "timeout"),
         )
 
+    async def read_workload_readiness(
+        self, context: ToolContext, time_range: TimeRange, *, kind: str, name: str
+    ) -> ToolResult:
+        query = {"kind": kind, "namespace": context.namespace, "name": name}
+
+        def call() -> tuple[list[dict[str, Any]], bool]:
+            _, apps = self._clients()
+            readers = {
+                "Deployment": apps.read_namespaced_deployment,
+                "StatefulSet": apps.read_namespaced_stateful_set,
+            }
+            try:
+                obj = readers[kind](name, context.namespace, _request_timeout=context.remaining())
+            except ApiException as exc:
+                if exc.status == 404:
+                    return [], False
+                raise
+            return [
+                {
+                    "uid": obj.metadata.uid,
+                    "generation": obj.metadata.generation,
+                    "observed_generation": obj.status.observed_generation if obj.status else None,
+                    "desired_replicas": obj.spec.replicas,
+                    "ready_replicas": (obj.status.ready_replicas or 0) if obj.status else None,
+                }
+            ], False
+
+        return await self._call(context, time_range, query, call)
+
     async def list_pods(
         self,
         context: ToolContext,

@@ -1,11 +1,12 @@
 """会话持久化记录与出站事件外壳。"""
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-TitleOrigin = Literal["pending", "auto", "user", "alert"]
-SessionSource = Literal["user", "alert"]
+TitleOrigin = Literal["pending", "auto", "user", "alert", "inspection"]
+SessionSource = Literal["user", "alert", "inspection"]
 SessionState = Literal["idle", "working", "awaiting_approval", "interrupted", "closed"]
 TurnLane = Literal["main", "side"]
 TurnState = Literal["queued", "running", "awaiting_approval", "completed", "aborted"]
@@ -15,7 +16,7 @@ HEARTBEAT_SECONDS = 30
 
 
 class SessionClosed(RuntimeError):
-    """会话已关闭，不能再接收输入或启动运行。"""
+    """会话已关闭，或此来源不接收公开输入。"""
 
 
 class LeaseLost(RuntimeError):
@@ -67,6 +68,7 @@ class Lease:
     generation: int
     expires_at: datetime
     side_turn_id: str | None = None
+    inspection_clock: Callable[[], datetime] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)

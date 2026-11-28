@@ -6,7 +6,7 @@ from aiops.actions.remediation_policy import (
     ALLOWED_NAMESPACES,
     CONTROLLED_KINDS,
     RESOURCE_FIELDS,
-    RulePolicy,
+    RemediationRule,
     ServicePolicy,
     resource_quantity,
 )
@@ -126,7 +126,7 @@ def _trusted_rule(
     evidence: TrustedEvidence | None,
     current: CurrentState,
     now: datetime,
-) -> RulePolicy | None:
+) -> RemediationRule | None:
     if (
         proposal.origin is not ActionOrigin.RULES
         or not proposal.investigation_id
@@ -138,7 +138,7 @@ def _trusted_rule(
         or now.utcoffset() is None
     ):
         return None
-    rule = policy.match_rule(proposal.target, evidence.labels)
+    rule = policy.rule_for_evidence(proposal.target, evidence)
     if (
         rule is None
         or rule.id != evidence.rule_id

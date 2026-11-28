@@ -8,14 +8,14 @@ export type SessionState = "idle" | "working" | "awaiting_approval" | "interrupt
 export interface Session {
   id: string;
   title: string;
-  title_origin?: "pending" | "auto" | "user" | "alert";
-  source: "user" | "alert";
+  title_origin?: "pending" | "auto" | "user" | "alert" | "inspection";
+  source: "user" | "alert" | "inspection";
   state: SessionState;
   last_seq: number;
   pending_approval: boolean;
 }
 
-export type SessionsResponse = Access & { sessions: Session[] };
+export type SessionsResponse = Access & { sessions: Session[]; next_before?: string | null };
 export type SessionResponse = Access & { session: Session };
 
 interface EventEnvelope {
@@ -97,8 +97,45 @@ export type ObservationEvent = EventOf<"tool_call", {
 
 export type DeliveryEvent = EventOf<"input_delivered", { input_id: string; step?: number; lane: string }>;
 
+export interface InspectionAction {
+  status: string;
+  fault_id?: string;
+  outcome?: string;
+  parent_id?: string;
+  code?: string;
+}
+
+export type InspectionSummaryEvent = EventOf<"inspection_summary", {
+  run_id: string;
+  status: "running" | "completed" | "timed_out" | "interrupted" | "failed";
+  cluster: string;
+  scheduled_at: string;
+  deadline: string;
+  finished_at?: string | null;
+  reason?: string | null;
+  sop_hash?: string;
+  observations: {
+    id: string;
+    check_id: string;
+    target: { kind?: string; namespace?: string; name?: string; probe_id?: string };
+    status: "healthy" | "abnormal" | "insufficient";
+    reason?: string | null;
+    sampled_at?: string | null;
+    evidence_refs: string[];
+  }[];
+  result?: {
+    faults?: { target: string; status: string; fault_id?: string; reason?: string }[];
+    rules?: { target: string; rule_id: string; status: string; review?: string; reason?: string }[];
+    investigation?: { status?: string; reason?: string; explanation?: string };
+    actions?: Record<string, InspectionAction>;
+    manual_review_required?: boolean;
+    remediation_reason?: string;
+  };
+}>;
+
 export type SessionEvent =
   | CardEvent | CardUpdate | ObservationEvent | DeliveryEvent | RemediationProgress
+  | InspectionSummaryEvent
   | EventOf<"session", { title?: string; source?: Session["source"]; resumed?: boolean; renamed?: boolean }>
   | EventOf<"session_closed">
   | EventOf<"message", {

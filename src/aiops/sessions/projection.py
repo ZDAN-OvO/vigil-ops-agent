@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
 from aiops.contracts import ActionAttempt, AttemptStatus
+from aiops.sessions.models import SessionEvent
 
 REDACTED = "[已遮盖]"
 _SENSITIVE = re.compile(
@@ -29,7 +30,7 @@ _TOKEN = re.compile(
 _LOCAL_PATH = re.compile(
     r"(?<![\w/])(?:file://)?(?:~|/+(?:home|root|tmp|var|run|etc|opt|mnt|Users|private"
     r"|workspace|workspaces|proc|srv|usr|dev|sys))(/[^\s'\"<>,;\])}]*)"
-    r"|\b[A-Za-z]:\\[^\s'\"<>,;\])}]+"
+    r"|\b[A-Za-z]:[\\/][^\s'\"<>,;\])}]+"
     r"|(?<![\w/])(?:\.\.?/[\w/.-]+|\.env(?:\.[\w.-]+)?)"
 )
 _URL = re.compile(
@@ -162,6 +163,95 @@ def project_payload(value: Any) -> Any:
     if isinstance(value, str):
         return project_text(value)
     return value
+
+
+def _inspection_fields(value: Any, fields: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        key: value[key]
+        for key in fields.split()
+        if key in value and (value[key] is None or isinstance(value[key], (str, bool)))
+    }
+
+
+def _inspection_rows(value: Any, fields: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [row for item in value if (row := _inspection_fields(item, fields))]
+
+
+_INSPECTION_TARGET_FIELDS = "namespace kind name probe_id"
+
+
+def project_inspection_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """巡检账本只公开结构化结果、状态与内部证据编号。"""
+    summary = _inspection_fields(
+        payload, "run_id status reason cluster scheduled_at deadline finished_at sop_hash"
+    )
+    observations = payload.get("observations")
+    summary["observations"] = [
+        {
+            **_inspection_fields(item, "id check_id status reason sampled_at"),
+            "target": _inspection_fields(item.get("target"), _INSPECTION_TARGET_FIELDS),
+            "evidence_refs": [
+                ref
+                for ref in refs
+                if isinstance(ref, str) and re.fullmatch(r"inspection:[a-f0-9]{32}", ref)
+            ]
+            if isinstance(refs := item.get("evidence_refs"), list)
+            else [],
+        }
+        for item in (observations if isinstance(observations, list) else [])
+        if isinstance(item, Mapping)
+    ]
+    result = payload.get("result")
+    if isinstance(result, Mapping):
+        public = _inspection_fields(result, "remediation_reason manual_review_required")
+        abnormal = result.get("abnormal_targets")
+        if isinstance(abnormal, list):
+            public["abnormal_targets"] = [
+                {
+                    **_inspection_fields(item, "observation_id check_id"),
+                    "target": _inspection_fields(item.get("target"), _INSPECTION_TARGET_FIELDS),
+                }
+                for item in abnormal
+                if isinstance(item, Mapping)
+            ]
+        public["faults"] = _inspection_rows(
+            result.get("faults"), "target uid fault_id status reason"
+        )
+        public["rules"] = _inspection_rows(
+            result.get("rules"), "candidate_id rule_id target status proposal_id review reason"
+        )
+        public["investigation"] = _inspection_fields(
+            result.get("investigation"), "id turn_id status reason explanation"
+        )
+        actions = result.get("actions")
+        public["actions"] = (
+            {
+                key: _inspection_fields(item, "status fault_id outcome code parent_id")
+                for key, item in actions.items()
+                if isinstance(key, str) and re.fullmatch(r"act-[a-f0-9]{32}", key)
+            }
+            if isinstance(actions, Mapping)
+            else {}
+        )
+        summary["result"] = public
+    return project_payload(summary)
+
+
+def project_session_event(event: SessionEvent) -> dict[str, Any]:
+    if event.type == "inspection_summary":
+        return {
+            **project_inspection_summary(event.payload),
+            "type": event.type,
+            "session_id": event.session_id,
+            "seq": event.seq,
+            "ts": event.ts.isoformat(),
+            "turn_id": event.turn_id,
+        }
+    return project_payload(event.as_dict())
 
 
 _TEMPLATE_PRIVATE = re.compile(

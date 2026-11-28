@@ -493,3 +493,9 @@ textarea::placeholder { color: var(--dim); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+.session-filters { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 20px; }
+.session-filters [aria-pressed="true"] { color: var(--gold); border-color: var(--gold-deep); }
+.inspection-summary :is(h2, h3) { font-size: 13px; }
+.inspection-summary :is(p, dd, code) { overflow-wrap: anywhere; }
+.inspection-section { margin-block: 8px; }

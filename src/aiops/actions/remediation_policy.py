@@ -218,10 +218,8 @@ class ProbePolicy(PolicyModel):
         return self
 
 
-class RulePolicy(PolicyModel):
+class BaseRulePolicy(PolicyModel):
     id: str = Field(min_length=1)
-    alertname: str = Field(min_length=1)
-    labels: dict[str, str] = Field(default_factory=dict)
     kind: ActionKind
     parameters: ActionParameters
     evidence: tuple[EvidencePredicate, ...] = Field(min_length=1)
@@ -240,6 +238,18 @@ class RulePolicy(PolicyModel):
 
     @model_validator(mode="after")
     def validate_evidence(self) -> Self:
+        if len({item.key for item in self.evidence}) != len(self.evidence):
+            raise ValueError("规则存在重复证据键")
+        return self
+
+
+class RulePolicy(BaseRulePolicy):
+    type: Literal["alert"] = "alert"
+    alertname: str = Field(min_length=1)
+    labels: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_labels(self) -> Self:
         if any(
             not key
             or not value
@@ -247,10 +257,48 @@ class RulePolicy(PolicyModel):
             for key, value in self.labels.items()
         ):
             raise ValueError("规则标签重复约束了目标标识或为空")
-        keys = {item.key for item in self.evidence}
-        if len(keys) != len(self.evidence):
-            raise ValueError("规则存在重复证据键")
         return self
+
+
+WorkloadCheck = Literal["workload-readiness", "workload-signal"]
+
+
+class InspectionPredicate(EvidencePredicate):
+    check_id: WorkloadCheck
+    source: Literal["observed"] = "observed"
+    promql: None = None
+
+    @model_validator(mode="after")
+    def validate_check_key(self) -> Self:
+        keys = {"value", "desired_replicas", "ready_replicas"}
+        if self.key not in (keys if self.check_id == "workload-readiness" else {"value"}):
+            raise ValueError("观察条件引用未登记的字段")
+        return self
+
+
+class InspectionRulePolicy(BaseRulePolicy):
+    type: Literal["inspection"]
+    check_id: WorkloadCheck
+    priority: PositiveInt
+    observations: tuple[InspectionPredicate, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_inspection(self) -> Self:
+        keys = {(item.check_id, item.key) for item in self.observations}
+        if len(keys) != len(self.observations) or self.check_id not in {
+            item.check_id for item in self.observations
+        }:
+            raise ValueError("巡检规则必须约束触发检查且观察字段不可重复")
+        if any(item.source != "current" for item in self.evidence):
+            raise ValueError("巡检规则的外部观察须引用已登记检查")
+        return self
+
+    @property
+    def required_checks(self) -> set[str]:
+        return {"workload-readiness", *(item.check_id for item in self.observations)}
+
+
+RemediationRule = RulePolicy | InspectionRulePolicy
 
 
 class ServicePolicy(PolicyModel):
@@ -262,7 +310,7 @@ class ServicePolicy(PolicyModel):
     replicas: ReplicaBounds | None = None
     config_fields: tuple[ConfigField, ...] = ()
     probe: ProbePolicy
-    rules: tuple[RulePolicy, ...] = ()
+    rules: tuple[RemediationRule, ...] = ()
 
     @property
     def identity(self) -> tuple[str, str, str]:
@@ -296,18 +344,26 @@ class ServicePolicy(PolicyModel):
         for field in self.config_fields:
             if field.source == "env" and field.container not in self.containers:
                 raise ValueError("环境变量引用未登记的容器")
-        for index, rule in enumerate(self.rules):
-            for former in self.rules[:index]:
-                overlap = not any(
-                    key in former.labels and value != former.labels[key]
-                    for key, value in rule.labels.items()
-                )
-                if rule.alertname == former.alertname and overlap:
-                    raise ValueError("同一告警与目标匹配了多条规则")
+        alerts = []
+        priorities = set()
+        for rule in self.rules:
+            if isinstance(rule, RulePolicy):
+                for former in alerts:
+                    overlap = not any(
+                        key in former.labels and value != former.labels[key]
+                        for key, value in rule.labels.items()
+                    )
+                    if rule.alertname == former.alertname and overlap:
+                        raise ValueError("同一告警与目标匹配了多条规则")
+                alerts.append(rule)
+            else:
+                if rule.priority in priorities:
+                    raise ValueError("同一目标的巡检规则优先级必须唯一")
+                priorities.add(rule.priority)
             self._validate_rule_parameters(rule)
         return self
 
-    def _validate_rule_parameters(self, rule: RulePolicy) -> None:
+    def _validate_rule_parameters(self, rule: RemediationRule) -> None:
         params = rule.parameters
         if isinstance(params, AdjustResourcesParams):
             local = {
@@ -389,10 +445,32 @@ class RemediationPolicy(PolicyModel):
             (
                 rule
                 for rule in service.rules
-                if rule.alertname == labels.get("alertname")
+                if isinstance(rule, RulePolicy)
+                and rule.alertname == labels.get("alertname")
                 and all(labels.get(key) == value for key, value in rule.labels.items())
             ),
             None,
+        )
+
+    def inspection_rules(self, target: ActionTarget) -> tuple[InspectionRulePolicy, ...]:
+        service = self.service_for(target)
+        if service is None:
+            return ()
+        return tuple(
+            sorted(
+                (rule for rule in service.rules if isinstance(rule, InspectionRulePolicy)),
+                key=lambda rule: rule.priority,
+                reverse=True,
+            )
+        )
+
+    def rule_for_evidence(
+        self, target: ActionTarget, evidence: "TrustedEvidence"
+    ) -> RemediationRule | None:
+        if evidence.source == "alert":
+            return self.match_rule(target, evidence.labels)
+        return next(
+            (rule for rule in self.inspection_rules(target) if rule.id == evidence.rule_id), None
         )
 
 
@@ -426,12 +504,23 @@ class TrustedEvidence(PolicyModel):
     evidence_ids: tuple[str, ...]
     observed_at: AwareDatetime
     values: dict[str, Any]
+    source: Literal["alert", "inspection"] = "alert"
+    inspection_values: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
-    def satisfies(self, rule: RulePolicy, now: datetime) -> bool:
+    def satisfies(self, rule: RemediationRule, now: datetime) -> bool:
         age = (now - self.observed_at).total_seconds()
-        return 0 <= age <= rule.max_evidence_age_seconds and all(
+        if not 0 <= age <= rule.max_evidence_age_seconds or not all(
             predicate.matches(self.values.get(predicate.key)) for predicate in rule.evidence
-        )
+        ):
+            return False
+        if isinstance(rule, InspectionRulePolicy):
+            return all(
+                predicate.matches(
+                    self.inspection_values.get(predicate.check_id, {}).get(predicate.key)
+                )
+                for predicate in rule.observations
+            )
+        return True
 
 
 class CompensationContext(PolicyModel):
@@ -500,10 +589,13 @@ def _load_policy(path: Path) -> RemediationPolicy:
                 key = (service.namespace, field.config_map)
                 if owners.setdefault(key, service.identity) != service.identity:
                     raise ValueError("ConfigMap 必须由单一登记服务独占")
-    canonical = {
-        "global": config.model_dump(mode="json"),
-        "services": [service.model_dump(mode="json") for service in services],
-    }
+    canonical_services = [service.model_dump(mode="json") for service in services]
+    # 旧告警策略的准入版本包含原来的完整默认值。
+    for service in canonical_services:
+        for rule in service["rules"]:
+            if rule["type"] == "alert":
+                del rule["type"]
+    canonical = {"global": config.model_dump(mode="json"), "services": canonical_services}
     digest = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
     return RemediationPolicy(
         version=f"{config.revision}-{digest}",

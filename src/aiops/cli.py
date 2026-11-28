@@ -36,7 +36,12 @@ from aiops.investigation.factory import open_conversation
 from aiops.knowledge import load_runbooks
 from aiops.sessions.checkpoint import setup_checkpoints
 from aiops.sessions.models import LeaseLost, Session, SessionClosed, SessionEvent, TurnLane
-from aiops.sessions.projection import project_action_result, project_payload, project_text
+from aiops.sessions.projection import (
+    project_action_result,
+    project_payload,
+    project_session_event,
+    project_text,
+)
 from aiops.sessions.store import SessionStore
 from aiops.skills import SkillLoadError, load_skill_catalog
 
@@ -70,6 +75,8 @@ def _parse_args(argv: list[str], *, terminal: bool) -> argparse.Namespace:
         parser = _Parser(prog=f"vigil {command}")
         if command == "sessions":
             parser.add_argument("--limit", type=_positive, default=50)
+            parser.add_argument("--source", choices=("inspection",))
+            parser.add_argument("--before", help="巡检历史游标，格式为创建时间|会话 ID")
         if command == "admin":
             admin = parser.add_subparsers(dest="operation", required=True)
             admin.add_parser("migrate", help="升级业务库与 checkpoint")
@@ -92,7 +99,10 @@ def _parse_args(argv: list[str], *, terminal: bool) -> argparse.Namespace:
             cutover.add_argument("--old-processes-stopped", action="store_true")
             cutover.add_argument("--restart-disabled", action="store_true")
             cutover.add_argument("--backup-complete", action="store_true")
-        return argparse.Namespace(command=command, **vars(parser.parse_args(rest)))
+        args = parser.parse_args(rest)
+        if command == "sessions" and args.before is not None and args.source is None:
+            parser.error("--before 需要 --source inspection")
+        return argparse.Namespace(command=command, **vars(args))
 
     parser = _Parser(
         prog="vigil",
@@ -206,6 +216,8 @@ def _text_event(event: SessionEvent) -> str | None:
             return f"审批决定 {fields['card_id']}  {fields['status']}"
         case "action_result":
             return "动作回执 " + _json(fields, indent=2)
+        case "inspection_summary":
+            return "巡检摘要 " + _json(project_session_event(event), indent=2)
         case "remediation_progress":
             return f"动作 {fields['card_id']} 观察中，已收集 {fields['slots_collected']} 个时段"
         case "result" if fields["exit_code"] == 1 or (
@@ -230,6 +242,7 @@ class OnceOutput:
         self.cursor = 0
         self.cards: list[SessionEvent] = []
         self.side_card: SessionEvent | None = None
+        self.inspection_summary: dict[str, Any] | None = None
 
     async def attach(self, session: Session, *, resumed: bool) -> None:
         self.session_id = session.id
@@ -251,8 +264,10 @@ class OnceOutput:
     async def emit(self, event: SessionEvent) -> None:
         if event.type == "approval_required":
             self.cards.append(event)
+        if self.mode == "json" and event.type == "inspection_summary":
+            self.inspection_summary = project_session_event(event)
         if self.mode == "stream-json" and event.type != "result":
-            await _write(_json(event.as_dict()))
+            await _write(_json(project_session_event(event)))
         elif self.mode == "text" and event.type != "result":
             await _emit_text(event)
 
@@ -298,6 +313,8 @@ class OnceOutput:
             ]
             if side_card is not None:
                 payload["card_id"] = side_card.payload["card_id"]
+            if self.inspection_summary is not None:
+                payload["inspection_summary"] = self.inspection_summary
         if self.mode != "text":
             await _write(_json(payload))
         elif result is None:
@@ -747,8 +764,16 @@ async def _run(args: argparse.Namespace, terminal: bool, output: OnceOutput | No
         if args.command == "admin":
             return await _admin(store, settings, args)
         if args.command == "sessions":
-            sessions = await SessionStore(store).list_sessions(limit=args.limit)
-            for session in sessions:
+            sessions = SessionStore(store)
+            try:
+                entries = await sessions.list_sessions(
+                    limit=args.limit,
+                    source=getattr(args, "source", None),
+                    before=getattr(args, "before", None),
+                )
+            except ValueError as exc:
+                raise CLIError(str(exc)) from None
+            for session in entries:
                 await _write(
                     project_text(
                         f"{session.id}\t{session.source}\t{session.state}\t{session.title}"
@@ -756,9 +781,19 @@ async def _run(args: argparse.Namespace, terminal: bool, output: OnceOutput | No
                 )
             return 0
         await _migrate(store)
+        if args.message and not settings.model_name and not args.resume:
+            raise CLIError("未配置 VIGIL_MODEL_NAME")
+        sessions = SessionStore(store)
+        session = await _find_session(sessions, args)
+        if session.source == "inspection":
+            if args.message:
+                raise CLIError("巡检会话仅供回查")
+            replay = output or OnceOutput("text")
+            await replay.attach(session, resumed=True)
+            await replay.read(sessions, through=session.last_seq)
+            return await replay.finish(status="read_only", summary="巡检会话仅供回查")
         if args.message and not settings.model_name:
             raise CLIError("未配置 VIGIL_MODEL_NAME")
-        session = await _find_session(SessionStore(store), args)
         async with open_remediation(settings, store) as remediation:
             if remediation is None:
                 async with open_conversation(settings=settings, store=store) as driver:

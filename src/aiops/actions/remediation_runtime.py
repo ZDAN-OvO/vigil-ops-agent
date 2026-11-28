@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+from concurrent.futures import TimeoutError as SendGrantTimeout
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -29,6 +30,13 @@ from aiops.actions.remediation_alerts import (
     lock_workload_alerts,
     recovery_candidate,
 )
+from aiops.actions.remediation_faults import (
+    active_fault,
+    create_fault,
+    lock_fault_uid,
+    previous_uid_blocks,
+    signal_is_late,
+)
 from aiops.actions.remediation_kube import (
     ObservedPod,
     PatchPlan,
@@ -53,7 +61,7 @@ from aiops.actions.remediation_observation import (
     latest_healthy_window,
     worsened,
 )
-from aiops.actions.remediation_policy import RESOURCE_FIELDS, RulePolicy
+from aiops.actions.remediation_policy import RESOURCE_FIELDS, InspectionRulePolicy, RemediationRule
 from aiops.actions.remediation_store import JobClaim, RemediationStore
 from aiops.actions.rollout_undo import ActionError
 from aiops.actions.safety import ACTION_HEARTBEAT_SECONDS, _now, _one
@@ -209,7 +217,7 @@ class RemediationRuntime:
         field = service.config_field(params)
         return field.load_signal_for(params.value) if field is not None else None
 
-    def _observation_rules(self, claim: JobClaim, plan: PatchPlan) -> tuple[RulePolicy, ...]:
+    def _observation_rules(self, claim: JobClaim, plan: PatchPlan) -> tuple[RemediationRule, ...]:
         proposal = claim.proposal
         evidence = claim.job["evidence"]
         service = self.policy.service_for(proposal.target)
@@ -217,7 +225,7 @@ class RemediationRuntime:
             raise ActionError("policy_changed", "无法确认动作绑定的观察规则")
         if "trusted" in evidence:
             trusted = TrustedEvidence.model_validate(evidence["trusted"])
-            rule = self.policy.match_rule(proposal.target, trusted.labels)
+            rule = self.policy.rule_for_evidence(proposal.target, trusted)
             if (
                 rule is None
                 or rule.id != trusted.rule_id
@@ -237,7 +245,7 @@ class RemediationRuntime:
         }
         rules = []
         for rule in service.rules:
-            if rule.kind is not proposal.kind:
+            if isinstance(rule, InspectionRulePolicy) or rule.kind is not proposal.kind:
                 continue
             known = rule.parameters
             if isinstance(params, AdjustResourcesParams) and (
@@ -259,7 +267,11 @@ class RemediationRuntime:
         return tuple(rules)
 
     async def _observation_pods(
-        self, claim: JobClaim, plan: PatchPlan, receipt: WriteReceipt, rules: tuple[RulePolicy, ...]
+        self,
+        claim: JobClaim,
+        plan: PatchPlan,
+        receipt: WriteReceipt,
+        rules: tuple[RemediationRule, ...],
     ) -> tuple[ObservedPod, ...]:
         params = parse_action_parameters(claim.proposal.kind, claim.proposal.parameters)
         if not isinstance(params, AdjustResourcesParams) or not any(
@@ -273,7 +285,7 @@ class RemediationRuntime:
         claim: JobClaim,
         plan: PatchPlan,
         receipt: WriteReceipt,
-        rules: tuple[RulePolicy, ...],
+        rules: tuple[RemediationRule, ...],
         window: WindowSamples,
         load_query: str | None,
     ) -> list[FaultSignal]:
@@ -639,30 +651,11 @@ class RemediationRuntime:
         alert: dict,
         recovery: tuple[dict, WindowSamples] | None = None,
     ) -> str | None:
-        key = f"{target.cluster}/{target.namespace}/{target.uid}"
-        await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 1))", (key,))
-        identity = (target.cluster, target.namespace, target.uid)
-        last_clearance = await _one(
-            conn,
-            """
-            SELECT cleared_at FROM remediation_faults
-            WHERE (cluster, namespace, workload_uid) = (%s, %s, %s) AND cleared_at IS NOT NULL
-            ORDER BY cleared_at DESC LIMIT 1
-            """,
-            identity,
-        )
+        await lock_fault_uid(conn, target)
         starts_at = alert["starts_at"]
-        if last_clearance and starts_at < last_clearance["cleared_at"]:
+        if await signal_is_late(conn, target, starts_at) or await previous_uid_blocks(conn, target):
             return None
-        fault = await _one(
-            conn,
-            """
-            SELECT id FROM remediation_faults
-            WHERE (cluster, namespace, workload_uid) = (%s, %s, %s)
-                AND cleared_at IS NULL FOR UPDATE
-            """,
-            identity,
-        )
+        fault = await active_fault(conn, target)
         if fault is not None:
             if recovery is None or fault["id"] != recovery[0]["fault_id"]:
                 return fault["id"]
@@ -691,15 +684,7 @@ class RemediationRuntime:
                     "window": window.payload(),
                 },
             )
-        identifier = uuid4().hex
-        await conn.execute(
-            """
-            INSERT INTO remediation_faults (id, cluster, namespace, workload_kind,
-                workload_name, workload_uid) VALUES (%s, %s, %s, %s, %s, %s)
-            """,
-            (identifier, target.cluster, target.namespace, target.kind, target.name, target.uid),
-        )
-        return identifier
+        return await create_fault(conn, target)
 
     async def _record_rule(
         self, alert, rule, snapshot, current, values, at, missing, recovery=None
@@ -921,6 +906,11 @@ class RemediationRuntime:
             with suppress(asyncio.CancelledError, LeaseLost):
                 await heartbeat
 
+    async def _job_time(self, claim: JobClaim) -> datetime:
+        if claim.job.get("inspection_review_id"):
+            return await self.ledger.inspections.now()
+        return datetime.now(UTC)
+
     async def _send(self, claim: JobClaim) -> None:
         proposal = claim.proposal
         data = claim.job["evidence"]
@@ -934,7 +924,7 @@ class RemediationRuntime:
             plan = await asyncio.to_thread(self.kube.prepare, snapshot)
         current = await self._current(plan.before, proposal.target)
         spec = proposal.observation_conditions["verification_plan"]
-        at = datetime.now(UTC)
+        at = await self._job_time(claim)
         baseline = await collect_window(
             self.metrics,
             spec["probe"],
@@ -964,18 +954,27 @@ class RemediationRuntime:
             compensation = CompensationContext.model_validate(data["compensation"])
         elif claim.job["automated"] and "trusted" in data:
             trusted = TrustedEvidence.model_validate(data["trusted"])
-            rule = self.policy.match_rule(proposal.target, trusted.labels)
+            rule = self.policy.rule_for_evidence(proposal.target, trusted)
             if rule is None:
                 raise ActionError("policy_changed", "当前规则与已持久化授权不一致")
-            fresher = datetime.now(UTC)
-            values = await self._metrics_evidence(rule, current, fresher)
-            trusted = trusted.model_copy(
-                update={
-                    "observed_at": _oldest_evidence_time(values, fresher),
-                    "values": values,
-                }
-            )
-        at = datetime.now(UTC)
+            if isinstance(rule, InspectionRulePolicy):
+                if not self.settings.inspection_enabled or not claim.job.get(
+                    "inspection_review_id"
+                ):
+                    raise ActionError("inspection_disabled", "巡检自动处置已关闭")
+                if set(trusted.inspection_values) != rule.required_checks:
+                    raise ActionError("inspection_scope_changed", "巡检规则的证据登记已变化")
+                trusted = trusted.model_copy(update={"values": current.evidence_values()})
+            else:
+                fresher = await self._job_time(claim)
+                values = await self._metrics_evidence(rule, current, fresher)
+                trusted = trusted.model_copy(
+                    update={
+                        "observed_at": _oldest_evidence_time(values, fresher),
+                        "values": values,
+                    }
+                )
+        at = await self._job_time(claim)
         attempt = ActionAttempt(
             id=f"att-{uuid4().hex}",
             proposal_id=proposal.id,
@@ -1009,7 +1008,11 @@ class RemediationRuntime:
                 self.ledger.grant_send(claim, attempt, authorize=authorize),
                 loop,
             )
-            future.result(timeout=30)
+            try:
+                future.result(timeout=30)
+            except SendGrantTimeout:
+                future.cancel()
+                raise ActionError("send_grant_timeout", "等待发送授权超过预检期限") from None
 
         try:
             receipt = await asyncio.to_thread(self.kube.send, preflight, authorize=grant)
@@ -1041,7 +1044,7 @@ class RemediationRuntime:
         plan = PatchPlan.from_dict(attempt.snapshot["plan"])
         receipt = WriteReceipt.from_dict(attempt.result["receipt"])
         state = await asyncio.to_thread(self.kube.verify, plan, receipt)
-        now = datetime.now(UTC)
+        now = await self._job_time(claim)
         if state.state == "drift":
             await self._finish(claim, AttemptOutcome.UNKNOWN, "目标或已写字段发生变化，需人工核对")
             return
@@ -1081,7 +1084,7 @@ class RemediationRuntime:
             await self.ledger.reschedule(
                 claim,
                 delay=_POLL_SECONDS,
-                effective_at=datetime.now(UTC),
+                effective_at=await self._job_time(claim),
                 observation={
                     "method": "business_probe_window",
                     "slots_collected": 0,
@@ -1215,9 +1218,7 @@ class RemediationRuntime:
             return False
         async with self.ledger.store.transaction() as conn:
             return await fault_is_not_clear(
-                conn,
-                fault_id=job["fault_id"],
-                started_at=job["effective_at"],
+                conn, fault_id=job["fault_id"], started_at=job["effective_at"]
             )
 
     async def _compensation(self, claim: JobClaim, plan: PatchPlan):

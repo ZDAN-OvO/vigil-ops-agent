@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import fields, replace
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -21,6 +22,7 @@ from aiops.sessions.models import (
     SessionClosed,
     SessionEvent,
     SessionInput,
+    SessionSource,
     TitleOrigin,
     Turn,
     TurnLane,
@@ -34,7 +36,7 @@ if TYPE_CHECKING:
 # 等待行锁期间可能过期，租约必须在取得行锁后按数据库时钟核对。
 SESSION_COLUMNS = """
     id, source, title, title_origin, group_key, last_seq, created_at, updated_at, closed_at,
-    CASE WHEN state = 'working'
+    CASE WHEN source <> 'inspection' AND state = 'working'
          AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
          THEN 'interrupted' ELSE state END AS state
 """
@@ -55,13 +57,19 @@ class SessionStore:
     async def create_session(self, *, title: str, title_origin: TitleOrigin = "user") -> Session:
         async with self._store.transaction() as conn:
             session = await self._insert_session(
-                conn, title=title, title_origin=title_origin, group_key=None
+                conn, source="user", title=title, title_origin=title_origin, group_key=None
             )
             assert session is not None
             return session
 
     async def _insert_session(
-        self, conn: AsyncConnection, *, title: str, title_origin: TitleOrigin, group_key: str | None
+        self,
+        conn: AsyncConnection,
+        *,
+        source: SessionSource,
+        title: str,
+        title_origin: TitleOrigin,
+        group_key: str | None,
     ) -> Session | None:
         row = await _one(
             conn,
@@ -73,7 +81,7 @@ class SessionStore:
             """,
             (
                 uuid4().hex,
-                "alert" if group_key is not None else "user",
+                source,
                 title,
                 title_origin,
                 group_key,
@@ -89,6 +97,14 @@ class SessionStore:
             {"source": session.source, "title": title, "resumed": False},
         )
         return Session(**{**row, "last_seq": event.seq, "updated_at": event.ts})
+
+    async def create_inspection_session(self, conn: AsyncConnection, *, title: str) -> Session:
+        session = await self._insert_session(
+            conn, source="inspection", title=title, title_origin="inspection", group_key=None
+        )
+        assert session is not None
+        await self._set_session_state(conn, session.id, "working")
+        return replace(session, state="working")
 
     async def rename_session(self, session_id: str, title: str) -> Session:
         async with self._store.transaction() as conn:
@@ -125,12 +141,32 @@ class SessionStore:
             )
         return Session(**row) if row else None
 
-    async def list_sessions(self, *, limit: int = 50) -> list[Session]:
+    async def list_sessions(
+        self, *, limit: int = 50, source: SessionSource | None = None, before: str | None = None
+    ) -> list[Session]:
+        """巡检游标取上页末条的 created_at.isoformat() + "|" + id。"""
+        time_key = "created_at" if source == "inspection" else "updated_at"
+        filters = ["source <> 'inspection'"] if source is None else []
+        params = []
+        if source is not None:
+            filters.append("source = %s")
+            params.append(source)
+        if before is not None:
+            timestamp, _, session_id = before.partition("|")
+            try:
+                cursor_time = datetime.fromisoformat(timestamp)
+            except ValueError:
+                raise ValueError("会话游标格式无效") from None
+            if cursor_time.tzinfo is None or not session_id or "|" in session_id:
+                raise ValueError("会话游标格式无效")
+            filters.append(f"({time_key}, id) < (%s, %s)")
+            params.extend((cursor_time, session_id))
+        where = f" WHERE {' AND '.join(filters)}" if filters else ""
         async with self._store.transaction() as conn:
             rows = await conn.execute(
-                f"SELECT {SESSION_COLUMNS} FROM sessions "
-                "ORDER BY updated_at DESC, id DESC LIMIT %s",
-                (limit,),
+                f"SELECT {SESSION_COLUMNS} FROM sessions{where} "
+                f"ORDER BY {time_key} DESC, id DESC LIMIT %s",
+                (*params, limit),
             )
             return [Session(**row) for row in await rows.fetchall()]
 
@@ -161,7 +197,7 @@ class SessionStore:
                 SELECT s.id FROM sessions s
                 LEFT JOIN session_turns t
                     ON t.session_id = s.id AND t.lane = 'main' AND t.finished_at IS NULL
-                WHERE s.closed_at IS NULL
+                WHERE s.closed_at IS NULL AND s.source <> 'inspection'
                   AND (s.lease_expires_at IS NULL OR s.lease_expires_at <= clock_timestamp())
                   AND (t.state IN ('queued', 'running') OR (
                       t.id IS NULL AND EXISTS (
@@ -247,10 +283,13 @@ class SessionStore:
         *,
         alert_names: tuple[str, ...] = (),
         alert_origin: bool = False,
+        inspection_origin: bool = False,
     ) -> SessionInput:
         session = await self.lock_session(conn, session_id)
         if session.state == "closed":
             raise SessionClosed(session_id)
+        if (session.source == "inspection") != inspection_origin:
+            raise SessionClosed("巡检会话仅接收其轮次内部输入")
         input_id = input_id or uuid4().hex
         row = await _one(conn, "SELECT * FROM session_inputs WHERE id = %s", (input_id,))
         if row is not None:
@@ -260,6 +299,8 @@ class SessionStore:
         payload = {"role": "user", "text": display_text, "input_id": input_id}
         if alert_origin:
             payload["source"] = "alert"
+        elif inspection_origin:
+            payload["source"] = "inspection"
         event = await self.append_event(conn, session_id, "message", payload)
         row = await _one(
             conn,
@@ -275,6 +316,22 @@ class SessionStore:
                 title = title[:119] + "…"
             await self._set_title(conn, session, title, "auto")
         return SessionInput(**row)
+
+    async def enqueue_inspection_turn(
+        self, conn: AsyncConnection, session_id: str, text: str
+    ) -> Turn:
+        """巡检存储持有会话行锁并核对轮次所有权后，可创建一条主线。"""
+        existing = await _one(
+            conn,
+            "SELECT * FROM session_turns WHERE session_id = %s AND lane = 'main'",
+            (session_id,),
+        )
+        if existing is not None:
+            return _turn(existing)
+        incoming = await self._enqueue_input(
+            conn, session_id, text, project_text(text), inspection_origin=True
+        )
+        return await self._new_turn(conn, incoming, lane="main")
 
     @asynccontextmanager
     async def alert_transaction(self, group_key: str) -> AsyncIterator[AsyncConnection]:
@@ -312,7 +369,7 @@ class SessionStore:
         session = await self.get_open_alert_session(conn, group_key)
         if session is None:
             session = await self._insert_session(
-                conn, title=title, title_origin="alert", group_key=group_key
+                conn, source="alert", title=title, title_origin="alert", group_key=group_key
             )
             if session is not None:
                 incoming = await self._enqueue_input(
@@ -379,6 +436,8 @@ class SessionStore:
             session = await self.lock_session(conn, session_id)
             if session.state == "closed":
                 raise SessionClosed(session_id)
+            if session.source == "inspection":
+                return None
             return await self._acquire_lease(conn, session_id, owner)
 
     async def acquire_side_lease(self, session_id: str, owner: str) -> Lease | None:
@@ -386,6 +445,8 @@ class SessionStore:
             session = await self.lock_session(conn, session_id)
             if session.state == "closed":
                 raise SessionClosed(session_id)
+            if session.source == "inspection":
+                return None
             turn = await self._active_turn(conn, session_id, "side")
             if turn is None:
                 if session.state != "awaiting_approval":
@@ -404,7 +465,7 @@ class SessionStore:
                 SELECT s.id FROM sessions s
                 LEFT JOIN session_turns t
                     ON t.session_id = s.id AND t.lane = 'side' AND t.finished_at IS NULL
-                WHERE s.closed_at IS NULL AND (
+                WHERE s.closed_at IS NULL AND s.source <> 'inspection' AND (
                     (t.id IS NOT NULL AND (
                         t.lease_expires_at IS NULL OR t.lease_expires_at <= clock_timestamp()
                     ))
@@ -420,17 +481,25 @@ class SessionStore:
             return [row["id"] for row in await rows.fetchall()]
 
     async def _acquire_lease(
-        self, conn: AsyncConnection, session_id: str, owner: str, *, side_turn_id: str | None = None
+        self,
+        conn: AsyncConnection,
+        session_id: str,
+        owner: str,
+        *,
+        side_turn_id: str | None = None,
+        inspection_clock: Callable[[], datetime] | None = None,
     ) -> Lease | None:
         table = sql.Identifier("session_turns" if side_turn_id else "sessions")
+        now = inspection_clock() if inspection_clock else None
         params = (side_turn_id or session_id,)
         row = await _one(
             conn,
             sql.SQL("""
                 SELECT lease_owner, lease_generation, lease_expires_at,
-                       lease_expires_at > clock_timestamp() AS valid FROM {} WHERE id = %s
+                       lease_expires_at > COALESCE(%s, clock_timestamp()) AS valid
+                FROM {} WHERE id = %s
             """).format(table),
-            params,
+            (now, *params),
         )
         if row["valid"]:
             if row["lease_owner"] != owner:
@@ -440,37 +509,40 @@ class SessionStore:
                 conn,
                 sql.SQL("""
                     UPDATE {} SET lease_owner = %s, lease_generation = lease_generation + 1,
-                                  lease_expires_at = clock_timestamp() + make_interval(secs => %s)
+                        lease_expires_at = COALESCE(%s, clock_timestamp())
+                            + make_interval(secs => %s)
                     WHERE id = %s RETURNING lease_generation, lease_expires_at
                 """).format(table),
-                (owner, LEASE_SECONDS, *params),
+                (owner, now, LEASE_SECONDS, *params),
             )
         return Lease(
-            session_id, owner, row["lease_generation"], row["lease_expires_at"], side_turn_id
+            session_id,
+            owner,
+            row["lease_generation"],
+            row["lease_expires_at"],
+            side_turn_id,
+            inspection_clock,
         )
 
     async def renew_lease(self, lease: Lease) -> Lease:
         async with self._store.transaction() as conn:
             await self.require_lease(conn, lease)
             table = sql.Identifier("session_turns" if lease.side_turn_id else "sessions")
+            now = lease.inspection_clock() if lease.inspection_clock else None
             row = await _one(
                 conn,
                 sql.SQL("""
-                    UPDATE {} SET lease_expires_at = clock_timestamp() + make_interval(secs => %s)
-                    WHERE id = %s AND lease_expires_at > clock_timestamp()
+                    UPDATE {}
+                       SET lease_expires_at = COALESCE(%s, clock_timestamp())
+                            + make_interval(secs => %s)
+                    WHERE id = %s AND lease_expires_at > COALESCE(%s, clock_timestamp())
                     RETURNING lease_expires_at
                 """).format(table),
-                (LEASE_SECONDS, lease.side_turn_id or lease.session_id),
+                (now, LEASE_SECONDS, lease.side_turn_id or lease.session_id, now),
             )
             if row is None:
                 raise LeaseLost(lease.session_id)
-            return Lease(
-                lease.session_id,
-                lease.owner,
-                lease.generation,
-                row["lease_expires_at"],
-                lease.side_turn_id,
-            )
+            return replace(lease, expires_at=row["lease_expires_at"])
 
     async def release_lease(self, lease: Lease) -> bool:
         async with self._store.transaction() as conn:
@@ -506,10 +578,22 @@ class SessionStore:
             row = await _one(
                 conn,
                 """
-                SELECT 1 FROM sessions WHERE id = %s AND lease_owner = %s
-                  AND lease_generation = %s AND lease_expires_at > clock_timestamp()
+                SELECT 1 FROM sessions s
+                LEFT JOIN inspection_runs r ON r.session_id = s.id
+                CROSS JOIN (SELECT COALESCE(%s, clock_timestamp()) AS checked_at) t
+                WHERE s.id = %s AND s.lease_owner = %s AND s.lease_generation = %s
+                  AND s.lease_expires_at > t.checked_at
+                  AND (s.source <> 'inspection' OR (
+                      r.status = 'running' AND r.deadline > t.checked_at
+                      AND r.lease_expires_at > t.checked_at
+                  ))
                 """,
-                (lease.session_id, lease.owner, lease.generation),
+                (
+                    lease.inspection_clock() if lease.inspection_clock else None,
+                    lease.session_id,
+                    lease.owner,
+                    lease.generation,
+                ),
             )
         else:
             row = await _one(

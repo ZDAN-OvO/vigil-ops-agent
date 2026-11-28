@@ -18,8 +18,10 @@ _UNLINKED_FAULT_ALERT = sql.SQL("""
     AND COALESCE(a.labels->>'workload_kind', f.workload_kind) = f.workload_kind
     AND a.starts_at >= COALESCE((
         SELECT max(previous.cleared_at) FROM remediation_faults previous
-        WHERE (previous.cluster, previous.namespace, previous.workload_uid) =
-              (f.cluster, f.namespace, f.workload_uid)
+        WHERE (previous.cluster, previous.namespace) = (f.cluster, f.namespace)
+          AND (previous.workload_uid = f.workload_uid
+               OR (previous.workload_kind, previous.workload_name) =
+                  (f.workload_kind, f.workload_name))
           AND previous.id <> f.id AND previous.cleared_at <= f.opened_at
     ), '-infinity'::timestamptz)
     AND (a.resolved_at IS NULL OR GREATEST(a.starts_at, a.resolved_at) >= LEAST(f.opened_at, (
@@ -228,6 +230,10 @@ async def recovery_candidate(
                 AND original.probe IS NOT NULL AND alerts.settled AND alerts.has_linked_alert
                 AND jobs.settled
                 AND NOT EXISTS (
+                    SELECT 1 FROM remediation_inspection_signals s
+                    WHERE s.fault_id = f.id AND s.abnormal_at IS NOT NULL
+                )
+                AND NOT EXISTS (
                     SELECT 1 FROM remediation_jobs j
                     JOIN action_locks l ON l.target_key = ANY(j.resource_keys)
                     WHERE j.fault_id = f.id
@@ -248,17 +254,24 @@ async def fault_is_not_clear(
     *,
     fault_id: str,
     started_at: datetime,
+    recovered_by: datetime | None = None,
 ) -> bool:
     row = await (
         await conn.execute(
             sql.SQL("""
-            SELECT 1
-            FROM remediation_faults f JOIN remediation_alerts a ON a.cluster = f.cluster
-            WHERE f.id = %s AND (a.fault_id = f.id OR ({}))
-            AND (a.resolved_at IS NULL OR a.starts_at >= %s)
-            LIMIT 1
+            SELECT 1 FROM remediation_faults f WHERE f.id = %(fault)s AND (
+                EXISTS (
+                    SELECT 1 FROM remediation_alerts a WHERE a.cluster = f.cluster
+                    AND (a.fault_id = f.id OR ({}))
+                    AND (a.resolved_at IS NULL OR a.starts_at >= %(start)s
+                         OR a.resolved_at > %(recovered)s::timestamptz)
+                ) OR EXISTS (
+                    SELECT 1 FROM remediation_inspection_signals s
+                    WHERE s.fault_id = f.id AND s.abnormal_at >= %(start)s
+                )
+            )
             """).format(_UNLINKED_FAULT_ALERT),
-            (fault_id, started_at),
+            {"fault": fault_id, "start": started_at, "recovered": recovered_by},
         )
     ).fetchone()
     return row is not None

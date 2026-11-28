@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -14,14 +14,27 @@ from langchain_core.language_models import BaseChatModel
 
 from aiops.actions.executor import ActionExecutor
 from aiops.agent.engine import LangChainInvestigation
+from aiops.agent.inspection import InspectionReviewer, SubmitInspectionReview
 from aiops.agent.session_runtime import AwaitingActionReceipt, CardActions, RunScope, redact_text
 from aiops.config import Settings
-from aiops.contracts import Budget, Incident, Investigation, InvestigationStatus, TimeRange
+from aiops.contracts import (
+    Budget,
+    Incident,
+    Investigation,
+    InvestigationStatus,
+    SkillTrigger,
+    SkillUsage,
+    TimeRange,
+)
 from aiops.db import Store
+from aiops.inspection.models import Observation
+from aiops.inspection.runtime import InspectionRound
 from aiops.investigation.toolbox import ToolboxProtocol
 from aiops.sessions.checkpoint import SessionCheckpointer
 from aiops.sessions.models import HEARTBEAT_SECONDS, Lease, LeaseLost, SessionEvent, Turn, TurnLane
 from aiops.sessions.store import SessionStore
+
+InspectionReviewRefresh = Callable[[], Awaitable[tuple[tuple[Observation, ...], list[dict]] | None]]
 
 
 class ExecutorFactory(Protocol):
@@ -58,6 +71,138 @@ class ConversationDriver:
         self.executor_factory = executor_factory
         self.model = model
         self.project_text = project_text
+
+    async def review_inspection(
+        self,
+        scope: InspectionRound,
+        observations: tuple[Observation, ...],
+        candidates: list[dict],
+        *,
+        timeout: float,
+        refresh: InspectionReviewRefresh | None = None,
+    ) -> tuple[SubmitInspectionReview | None, Turn, str, str | None]:
+        """调查只持有巡检主线租约，动作提交由独立的规则入口处理。"""
+        turn = await scope.store.enqueue_investigation(scope.run, "核对本轮巡检异常及登记规则")
+        lease = await scope.store.claim_investigation(scope.run, f"inspection-agent-{uuid4().hex}")
+        if turn is None or lease is None:
+            raise LeaseLost(scope.run.id)
+        heartbeat = asyncio.create_task(ConversationRun(self, lease).heartbeat())
+        try:
+            return await self._review_inspection(
+                scope, observations, candidates, timeout, lease, refresh
+            )
+        finally:
+            heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat
+            await self.sessions.release_lease(lease)
+
+    async def _review_inspection(
+        self,
+        scope,
+        observations,
+        candidates,
+        timeout: float,
+        lease: Lease,
+        refresh: InspectionReviewRefresh | None,
+    ) -> tuple[SubmitInspectionReview | None, Turn, str, str | None]:
+        turn = await self.sessions.start_main_turn(lease)
+        if turn is None:
+            raise LeaseLost(scope.run.id)
+        settings = self.settings
+        budget = Budget(
+            max_tool_calls=settings.investigation_budget_tool_calls,
+            max_model_calls=settings.investigation_budget_model_calls,
+            max_wall_clock_seconds=max(1, int(timeout)),
+            max_action_seconds=settings.investigation_budget_action_seconds,
+        )
+        skill = scope.sop.skill
+        started = await scope.store.now()
+        incident = Incident(
+            id=f"inc-{turn.id}",
+            environment=settings.environment,
+            cluster=scope.run.cluster,
+            namespace=settings.namespace,
+            service="",
+            trigger="scheduled",
+            symptoms="本轮巡检发现异常",
+            time_range=TimeRange(
+                start=min(scope.run.scheduled_at, started - timedelta(seconds=1)), end=started
+            ),
+            context=[scope.run.id, scope.run.sop_hash],
+        )
+        investigation = Investigation(
+            id=f"inv-{turn.id}",
+            incident_id=incident.id,
+            status=InvestigationStatus.RUNNING,
+            model=settings.model_name or (self.model._llm_type if self.model else "unavailable"),
+            policy_version=scope.run.sop_hash,
+            budget=budget,
+            started_at=started,
+            skills=[
+                SkillUsage(
+                    name=skill.name, content_hash=skill.content_hash, trigger=SkillTrigger.SIGNAL
+                )
+            ],
+        )
+        async with self.sessions.run(lease, turn.id) as tx:
+            await scope.store.require_active(tx.conn, scope.run)
+            await tx.ledger.save_incident(incident)
+            await tx.ledger.create_investigation(investigation)
+        review = reviewer = None
+        reason = "model_unavailable"
+        if timeout <= 0:
+            reason = "insufficient_investigation_budget"
+        elif self.model is not None or settings.model_name:
+            try:
+                async with asyncio.timeout(timeout):
+                    model = self.model or LangChainInvestigation.build_model(settings)
+                    reviewer = InspectionReviewer(model, scope, budget)
+                    review = await reviewer.review(observations, candidates)
+                    if review and refresh and reviewer.model_calls < budget.max_model_calls:
+                        updated = await refresh()
+                        if updated is not None:
+                            review = await reviewer.review(*updated)
+                reason = None if review is not None else "invalid_review"
+            except LeaseLost:
+                raise
+            except TimeoutError:
+                review = None
+                reason = "investigation_budget_exhausted"
+            except Exception:
+                review = None
+                reason = "investigation_failed"
+        summary = self.project_text(review.explanation) if review else "巡检核对未完成，需人工核对"
+        async with self.sessions.run(lease, turn.id) as tx:
+            _, finished = await scope.store.require_active(tx.conn, scope.run)
+            if reviewer is not None:
+                await tx.ledger.add_usage(
+                    investigation.id,
+                    tool_calls=reviewer.tool_calls,
+                    model_calls=reviewer.model_calls,
+                )
+            await tx.ledger.set_investigation_status(
+                investigation.id,
+                InvestigationStatus.COMPLETED if review else InvestigationStatus.INCONCLUSIVE,
+                conclusion=summary if review else None,
+                termination_reason=reason,
+                finished_at=finished,
+            )
+            await tx.append_event("message", {"role": "assistant", "text": summary, "lane": "main"})
+            await tx.append_event(
+                "result",
+                {
+                    "schema_version": 1,
+                    "status": "completed",
+                    "summary": summary,
+                    "exit_code": 0,
+                    "investigation_id": investigation.id,
+                    "termination_code": reason or "inspection_reviewed",
+                    "lane": "main",
+                },
+            )
+            await tx.set_turn_state("completed")
+        return review, turn, investigation.id, reason
 
     @asynccontextmanager
     async def claim(

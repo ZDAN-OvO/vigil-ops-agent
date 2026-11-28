@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from aiops.config import PROJECT_ROOT
 from aiops.sessions.models import SessionEvent
-from aiops.sessions.projection import project_payload, project_template_diff
+from aiops.sessions.projection import project_payload, project_session_event, project_template_diff
 from aiops.web_api import PAGE_CSP
 
 STATIC = PROJECT_ROOT / "web" / "dist"
@@ -279,9 +279,9 @@ class Fixture:
         sid = sid or self.session_id
         log = self.events[sid]
         seq = len(log) + 1
-        event = SessionEvent(
-            kind, sid, seq, WHEN + timedelta(seconds=seq), turn_id, project_payload(payload)
-        ).as_dict()
+        event = project_session_event(
+            SessionEvent(kind, sid, seq, WHEN + timedelta(seconds=seq), turn_id, payload)
+        )
         log.append(event)
         return event
 
@@ -393,13 +393,25 @@ class Fixture:
                     else:
                         self.error(404, "not_found", "资源不存在")
                 elif url.path == "/api/sessions":
-                    self.send(
-                        200,
-                        {
-                            "sessions": [fixture.session(sid) for sid in fixture.sessions.copy()],
-                            **fixture.access(),
-                        },
-                    )
+                    query = parse_qs(url.query)
+                    inspection = query.get("source") == ["inspection"]
+                    rows = [
+                        fixture.session(sid)
+                        for sid, (source, _, _) in fixture.sessions.copy().items()
+                        if (source == "inspection") == inspection
+                    ]
+                    data = fixture.access()
+                    if inspection:
+
+                        def cursor(row):
+                            return row["created_at"] + "|" + row["id"]
+
+                        before = query.get("before", [""])[0]
+                        rows = sorted(rows, key=cursor, reverse=True)
+                        rows = [row for row in rows if not before or cursor(row) < before]
+                        data["next_before"] = cursor(rows[0]) if len(rows) > 1 else None
+                        rows = rows[:1]
+                    self.send(200, {"sessions": rows, **data})
                 elif url.path == "/api/monitoring":
                     self.send(200, project_payload(fixture.snapshot))
                 elif parts[:2] == ["api", "sessions"] and len(parts) in {3, 4}:
@@ -407,7 +419,13 @@ class Fixture:
                     if sid not in fixture.sessions:
                         self.error(404, "not_found", "会话不存在")
                     elif len(parts) == 3:
-                        self.send(200, {"session": fixture.session(sid), **fixture.access()})
+                        access = fixture.access()
+                        if fixture.sessions[sid][0] == "inspection":
+                            access = {
+                                "approval_enabled": False,
+                                "approval_disabled_reason": "巡检会话仅供回查",
+                            }
+                        self.send(200, {"session": fixture.session(sid), **access})
                     elif parts[3] == "events":
                         query = parse_qs(url.query)
                         after = int(query["after_seq"][0])

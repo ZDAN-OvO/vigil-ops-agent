@@ -177,16 +177,19 @@ class LangChainInvestigation:
         self._callbacks = tracing_callbacks(settings)
 
     def _build_model(self, settings: Settings) -> ChatOpenAI:
+        return self.build_model(
+            settings,
+            dialog=self._scope is not None and self._incident.trigger != "alert",
+        )
+
+    @staticmethod
+    def build_model(settings: Settings, *, dialog: bool = False) -> ChatOpenAI:
         api_key = (
             settings.model_api_key.get_secret_value().strip()
             if settings.model_api_key is not None
             else ""
         )
-        model = (
-            _ConversationChatOpenAI
-            if self._scope is not None and self._incident.trigger != "alert"
-            else ChatOpenAI
-        )
+        model = _ConversationChatOpenAI if dialog else ChatOpenAI
         return model(
             model=settings.model_name or "",
             base_url=settings.model_base_url,

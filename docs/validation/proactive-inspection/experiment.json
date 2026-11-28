@@ -1,0 +1,162 @@
+{
+  "tested_revision": "e6cb70f6ca71dcf2d34e92567f8a6c7f28a77591",
+  "healthy_round": {
+    "session_id": "8e046ca8db1b4612be13ba511e76b222",
+    "healthy_checks": 4,
+    "investigations": 0
+  },
+  "baseline": {
+    "phase": "baseline",
+    "captured_at": "2026-11-28T15:16:43.875066+00:00",
+    "target": {
+      "namespace": "vigil-experiment",
+      "name": "vigil-replica-fixture",
+      "uid": "e822b6a3-7a2f-4c9b-825f-a7566ef01f5f",
+      "replicas": 2,
+      "ready_replicas": 2
+    },
+    "samples": {
+      "business_probe": {
+        "sampled_at": "2026-11-28T15:16:29.055000+00:00",
+        "value": 1.0
+      },
+      "entry_probe": {
+        "sampled_at": "2026-11-28T15:16:31.034000+00:00",
+        "value": 1.0
+      },
+      "ready_endpoints": {
+        "sampled_at": "2026-11-28T15:16:40.727000+00:00",
+        "value": 2.0
+      },
+      "rejected_requests": {
+        "sampled_at": "2026-11-28T15:16:40.727000+00:00",
+        "value": 0.0
+      }
+    }
+  },
+  "degraded": {
+    "phase": "degraded",
+    "captured_at": "2026-11-28T15:17:12.845456+00:00",
+    "target": {
+      "namespace": "vigil-experiment",
+      "name": "vigil-replica-fixture",
+      "uid": "e822b6a3-7a2f-4c9b-825f-a7566ef01f5f",
+      "replicas": 1,
+      "ready_replicas": 1
+    },
+    "samples": {
+      "business_probe": {
+        "sampled_at": "2026-11-28T15:16:59.051000+00:00",
+        "value": 0.0
+      },
+      "entry_probe": {
+        "sampled_at": "2026-11-28T15:17:01.032000+00:00",
+        "value": 0.0
+      },
+      "ready_endpoints": {
+        "sampled_at": "2026-11-28T15:17:10.725000+00:00",
+        "value": 1.0
+      },
+      "rejected_requests": {
+        "sampled_at": "2026-11-28T15:17:10.725000+00:00",
+        "value": 1.0
+      }
+    }
+  },
+  "recovered": {
+    "phase": "recovered",
+    "captured_at": "2026-11-28T15:18:27.379133+00:00",
+    "target": {
+      "namespace": "vigil-experiment",
+      "name": "vigil-replica-fixture",
+      "uid": "e822b6a3-7a2f-4c9b-825f-a7566ef01f5f",
+      "replicas": 2,
+      "ready_replicas": 2
+    },
+    "samples": {
+      "business_probe": {
+        "sampled_at": "2026-11-28T15:18:14.043000+00:00",
+        "value": 1.0
+      },
+      "entry_probe": {
+        "sampled_at": "2026-11-28T15:18:16.025000+00:00",
+        "value": 1.0
+      },
+      "ready_endpoints": {
+        "sampled_at": "2026-11-28T15:18:25.719000+00:00",
+        "value": 2.0
+      },
+      "rejected_requests": {
+        "sampled_at": "2026-11-28T15:18:25.719000+00:00",
+        "value": 0.0
+      }
+    }
+  },
+  "action_ledger": {
+    "state": "finished",
+    "alerts": 0,
+    "run_id": "dc5e0cd7fb824fc5a74323f63076599c",
+    "receipt": {
+      "status": "succeeded",
+      "outcome": "improved",
+      "fault_id": "e87b74600b624a618f03b20fa90a80d6"
+    },
+    "rule_id": "inspection-replica-capacity",
+    "sent_at": "2026-11-28T15:18:00.277092+00:00",
+    "fault_id": "e87b74600b624a618f03b20fa90a80d6",
+    "sop_hash": "eb842eaa9634407424873b803ff83bba0cf2602eba7e13774d9af0b357d2fb5a",
+    "applied_at": "2026-11-28T15:18:00.41306+00:00",
+    "run_status": "completed",
+    "session_id": "a7785e2695264ef0a1a234be391b3169",
+    "finished_at": "2026-11-28T15:28:23.410277+00:00",
+    "proposal_id": "act-f28b95c5620148aeb919e635f43381d1",
+    "effective_at": "2026-11-28T15:18:07.190635+00:00",
+    "failed_slots": "0",
+    "scheduled_at": "2026-11-28T15:17:39.179454+00:00",
+    "workload_uid": "e822b6a3-7a2f-4c9b-825f-a7566ef01f5f",
+    "attempt_status": "verified",
+    "evidence_count": 2,
+    "policy_version": "controlled-remediation-v1-b0cd55a84f03feaa1defed500d41487cfcba4b59c71d4c1211bdc61673290197",
+    "slots_required": "10",
+    "run_finished_at": "2026-11-28T15:18:00.357286+00:00",
+    "slots_collected": "10"
+  },
+  "kubernetes_audit": {
+    "since": "2026-11-28T15:16:43Z",
+    "until": "2026-11-28T15:29:59Z",
+    "dry_run_patches": 1,
+    "actual_patches": 1,
+    "requests": [
+      {
+        "audit_id": "d3a0091e-b792-47ad-9fd6-a1c28ea5f4fa",
+        "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+        "verb": "patch",
+        "target": {
+          "resource": "deployments",
+          "namespace": "vigil-experiment",
+          "name": "vigil-replica-fixture",
+          "apiGroup": "apps",
+          "apiVersion": "v1"
+        },
+        "started_at": "2026-11-28T15:18:00.155870Z",
+        "dry_run": true,
+        "status_code": 200
+      },
+      {
+        "audit_id": "62b05777-8c74-412f-b343-935f4d68ede0",
+        "actor": "system:serviceaccount:vigil-monitoring:vigil-remediation",
+        "verb": "patch",
+        "target": {
+          "resource": "deployments",
+          "namespace": "vigil-experiment",
+          "name": "vigil-replica-fixture",
+          "apiGroup": "apps",
+          "apiVersion": "v1"
+        },
+        "started_at": "2026-11-28T15:18:00.331367Z",
+        "dry_run": false,
+        "status_code": 200
+      }
+    ]
+  }
+}

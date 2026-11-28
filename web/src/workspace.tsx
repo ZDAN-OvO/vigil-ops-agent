@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link, Outlet, useLocation, useMatch, useNavigate, useOutletContext, useParams } from "react-router";
+import { Link, Outlet, useLocation, useMatch, useNavigate, useOutletContext, useParams, useSearchParams } from "react-router";
 import type { CardEvent, Decision, Session, SessionsResponse } from "./api";
 import { errorMessage, request, sessionPath } from "./api";
 import { Conversation } from "./conversation";
@@ -9,7 +9,7 @@ import { usePolling } from "./polling";
 import { mergeSession, useSessionLedger } from "./session-ledger";
 import { SessionTitle } from "./session-title";
 import { WorkspaceLayout } from "./workspace-layout";
-import { sessionStates, Spinner, Stamp } from "./ui";
+import { sessionSources, sessionState, Spinner, Stamp } from "./ui";
 
 interface SessionControls {
   ask: (text: string) => void;
@@ -38,7 +38,16 @@ export function Workspace() {
   const locationKey = useRef(location.key);
   useLayoutEffect(() => { locationKey.current = location.key; }, [location.key]);
 
-  const [list, setList] = useState<SessionsResponse>();
+  const [search, setSearch] = useSearchParams();
+  const inspection = search.get("source") === "inspection";
+  const [cursors, setCursors] = useState<string[]>([]);
+  const query = new URLSearchParams();
+  if (inspection) query.set("source", "inspection");
+  const before = inspection ? cursors.at(-1) : undefined;
+  if (before) query.set("before", before);
+  const listPath = inspection ? `/api/sessions?${query}` : "/api/sessions";
+  const [page, setPage] = useState<{ path: string; result: SessionsResponse }>();
+  const list = page?.path === listPath ? page.result : undefined;
   const [listError, setListError] = useState("");
   const [listNotice, setListNotice] = useState("");
   const [pending, setPending] = useState<{ type: "create" } | { type: "resume"; id: string }>();
@@ -50,28 +59,28 @@ export function Workspace() {
   const decisions = useRef<WorkspaceContext["decisions"]>(new Map());
   const poll = useCallback(async (signal: AbortSignal) => {
     try {
-      const result = await request<SessionsResponse>("/api/sessions", { signal });
+      const result = await request<SessionsResponse>(listPath, { signal });
       if (!signal.aborted) {
         const sessions = result.sessions.map((item) => {
           const latest = mergeSession(knownSessions.current.get(item.id), item);
           knownSessions.current.set(item.id, latest);
           return latest;
         });
-        setList({ ...result, sessions });
+        setPage({ path: listPath, result: { ...result, sessions } });
         setListError("");
       }
     } catch (error) {
       if (!signal.aborted) setListError(errorMessage(error));
     }
-  }, []);
+  }, [listPath]);
   const refreshList = usePolling(poll, 3000);
   const rememberSession = useCallback((session: Session) => {
     if ((knownSessions.current.get(session.id)?.last_seq ?? -1) >= session.last_seq) return;
     knownSessions.current.set(session.id, session);
-    setList((current) => current && {
-      ...current,
-      sessions: current.sessions.map((item) => item.id === session.id ? mergeSession(item, session) : item),
-    });
+    setPage((current) => current && { ...current, result: {
+      ...current.result,
+      sessions: current.result.sessions.map((item) => item.id === session.id ? mergeSession(item, session) : item),
+    } });
   }, []);
 
   async function changeSession(id?: string) {
@@ -109,32 +118,47 @@ export function Workspace() {
             disabled={!list?.approval_enabled || pending?.type === "create"}
             onClick={() => { closeOverlay(); void changeSession(); }}>新会话</button>
         </header>
+        <div className="session-filters" role="group" aria-label="会话来源">
+          <button type="button" className="session-control" aria-pressed={!inspection}
+            onClick={() => { setCursors([]); setListError(""); setSearch({}); }}>调查会话</button>
+          <button type="button" className="session-control" aria-pressed={inspection}
+            onClick={() => { setCursors([]); setListError(""); setSearch({ source: "inspection" }); }}>巡检历史</button>
+        </div>
         <p id="sessions-access" className="notice">
           {list && !list.approval_enabled && `只读 · ${list.approval_disabled_reason || "当前无法创建会话"}`}
         </p>
         <p id="sessions-notice" className="notice" role="status">
-          {listNotice || listError || (list?.sessions.length === 0 ? "暂无会话" : "")}
+          {listNotice || listError || (list?.sessions.length === 0 ? (inspection ? "暂无巡检记录" : "暂无会话") : "")}
         </p>
-        <nav id="session-list" aria-label="会话列表">
+        <nav id="session-list" aria-label={inspection ? "巡检历史列表" : "会话列表"}>
           {list?.sessions.map((item) => {
             const selected = item.id === activeId;
             return <div className={selected ? "session-row selected" : "session-row"} key={item.id}>
               {item.pending_approval && <span className="flag" aria-label="有待审批卡片" />}
-              <Link className="session-link" to={sessionPath(item.id)} aria-current={selected ? "page" : undefined}
+              <Link className="session-link" to={sessionPath(item.id) + (inspection ? "?source=inspection" : "")} aria-current={selected ? "page" : undefined}
                 onClick={closeOverlay}>
                 <span className="session-name">{item.title || item.id}</span>
-                <Stamp className="stamp-small">{item.source === "alert" ? "告警" : "人工"}</Stamp>
+                <Stamp className="stamp-small">{sessionSources[item.source]}</Stamp>
                 <Stamp className={item.state === "working" ? "stamp-small gold" : "stamp-small"}>
-                  {sessionStates[item.state] ?? "状态未取到"}
+                  {sessionState(item)}
                 </Stamp>
               </Link>
-              {item.state === "interrupted" && <button type="button" className="stamp stamp-small session-resume"
+              {item.source !== "inspection" && item.state === "interrupted" && <button type="button" className="stamp stamp-small session-resume"
                 disabled={!list.approval_enabled || (pending?.type === "resume" && pending.id === item.id)}
                 onClick={() => { closeOverlay(); void changeSession(item.id); }}>接手恢复</button>}
               {item.state === "working" && <Spinner />}
             </div>;
           })}
         </nav>
+        {inspection && <div className="session-filters" role="group" aria-label="巡检历史分页">
+          <button type="button" className="session-control" disabled={!cursors.length}
+            onClick={() => { setListError(""); setCursors((current) => current.slice(0, -1)); }}>较新</button>
+          <button type="button" className="session-control" disabled={!list?.next_before}
+            onClick={() => {
+              const next = list?.next_before;
+              if (next) { setListError(""); setCursors((current) => [...current, next]); }
+            }}>更早</button>
+        </div>}
       </aside>} monitoring={(collapsed, toggle, closeOverlay) => <Monitoring collapsed={collapsed} toggle={toggle} openSession={closeOverlay}
         ask={(text) => { closeOverlay(); sessionControls.current?.ask(text); }} />}>
       <Outlet context={{
@@ -172,14 +196,20 @@ function ActiveSession({ id, connection, sessionControls, attempts, decisions, r
   const { session, access, events } = state;
   useEffect(() => { if (session) rememberSession(session); }, [session, rememberSession]);
   const closed = session?.state === "closed";
+  const inspection = session?.source === "inspection";
+  const canWrite = !inspection && access.approval_enabled;
   const api = id ? `/api${sessionPath(id)}` : null;
   const ready = !!session && !state.hasMore && state.cursor >= session.last_seq;
   const anchorMissing = anchor && ready && !events.some((event) =>
     event.type === "approval_required" && `card-${event.card_id}` === anchor);
-  const sendDisabled = !session || closed || !access.approval_enabled || !draft.trim() || sending;
+  const sendDisabled = !session || closed || !canWrite || !draft.trim() || sending;
 
   useImperativeHandle(sessionControls, () => ({
     ask(text) {
+      if (inspection) {
+        setNotice("请在调查会话中发送问题");
+        return;
+      }
       setDraft(text);
       setQueued(undefined);
       setNotice(!session ? "选择会话后可发送" : closed ? "此会话已关闭"
@@ -193,7 +223,7 @@ function ActiveSession({ id, connection, sessionControls, attempts, decisions, r
       setNotice("已提交恢复");
       refresh();
     },
-  }), [session, closed, access.approval_enabled, id, dispatch, refresh]);
+  }), [session, closed, inspection, access.approval_enabled, id, dispatch, refresh]);
 
   async function send(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -295,22 +325,24 @@ function ActiveSession({ id, connection, sessionControls, attempts, decisions, r
     <header className="conversation-head">
       <div className="session-heading">
         <p id="session-meta" className="stamp" data-state={session?.state}>{session && <>
-          {`SESSION ${session.id} · ${session.source === "alert" ? "告警" : "人工"} · `}
+          {`SESSION ${session.id} · ${sessionSources[session.source]} · `}
           <span className={session.state === "awaiting_approval" ? "warn" : undefined}>
-            {sessionStates[session.state] ?? "状态未取到"}
+            {sessionState(session)}
           </span>
         </>}</p>
-        <SessionTitle session={session} canWrite={access.approval_enabled} save={saveTitle} />
+        <SessionTitle session={session} canWrite={canWrite} save={saveTitle} />
       </div>
       <div id="session-actions">
         {session?.source === "alert" && !closed && <button className="session-control" type="button"
           disabled={closing || !access.approval_enabled} onClick={() => void close()}>关闭告警会话</button>}
-        {session && !access.approval_enabled && <Stamp>{access.approval_disabled_reason || "只读"}</Stamp>}
+        {session && !canWrite && <Stamp>
+          {inspection ? "巡检会话仅供回查" : access.approval_disabled_reason || "只读"}
+        </Stamp>}
       </div>
     </header>
-    <Conversation events={events} access={access} anchor={anchor} decide={decide}
-      notice={state.error || (anchorMissing ? "此会话中找不到链接指向的卡片" : "")} />
-    <form id="composer" className="composer" onSubmit={(event) => void send(event)}>
+    <Conversation events={events} access={{ ...access, approval_enabled: canWrite }} anchor={anchor} decide={decide}
+      notice={state.error || (inspection && notice) || (anchorMissing ? "此会话中找不到链接指向的卡片" : "")} />
+    {!inspection && <form id="composer" className="composer" onSubmit={(event) => void send(event)}>
       <p id="compose-notice" className="notice" role="status">{composeNotice}</p>
       <div className="compose-row">
         <label className="visually-hidden" htmlFor="question">输入调查问题</label>
@@ -318,6 +350,6 @@ function ActiveSession({ id, connection, sessionControls, attempts, decisions, r
           value={draft} onChange={(event) => setDraft(event.currentTarget.value)} />
         <button id="send" type="submit" disabled={sendDisabled}>发送</button>
       </div>
-    </form>
+    </form>}
   </section>;
 }
