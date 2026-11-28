@@ -158,6 +158,16 @@ class InspectionStore:
             raise LeaseLost(run.id)
         return run, now
 
+    async def require_active_for_send(
+        self, conn: AsyncConnection, *, run_id: str, session_id: str
+    ) -> tuple[InspectionRun, datetime]:
+        # 账本引用的轮次 ID 不会转交给其他调度者，崩溃接管只会中断旧轮次。
+        current = await self._lock(conn, run_id, session_id)
+        now = await self.now(conn)
+        if current.status != "running" or self._expired(current, now) is not None:
+            raise LeaseLost(run_id)
+        return current, now
+
     async def remaining(self, run: InspectionRun) -> float:
         async with self._store.transaction() as conn:
             current, now = await self.require_active(conn, run)
@@ -370,6 +380,16 @@ class InspectionStore:
         await conn.execute(
             "UPDATE inspection_runs SET status = %s, reason = %s, finished_at = %s WHERE id = %s",
             (status, reason, now, run.id),
+        )
+        await conn.execute(
+            """
+            UPDATE investigations i
+            SET status = 'aborted', finished_at = GREATEST(i.started_at, %s),
+                termination_reason = %s
+            FROM session_turns t
+            WHERE t.id = i.session_turn_id AND t.session_id = %s AND i.status = 'running'
+            """,
+            (now, reason or "inspection_ended", run.session_id),
         )
         await conn.execute(
             "UPDATE session_turns SET state = 'aborted', finished_at = %s "

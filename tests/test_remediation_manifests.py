@@ -24,7 +24,15 @@ def test_remediation_manifests_reproduce_byte_for_byte():
     admission = generator["render_admission"](policy)
     assert (MANIFESTS / "remediation-admission.yaml").read_bytes() == admission.encode()
 
-    isolated = generator["render_admission"](load_policy(CONFIG / "isolated-acceptance"))
+    isolated_policy = load_policy(CONFIG / "isolated-acceptance")
+    assert isolated_policy.version != policy.version
+    assert generator["render_rbac"](isolated_policy) == generator["render_rbac"](policy)
+    isolated = generator["render_admission"](isolated_policy)
+    for document in yaml.safe_load_all(isolated):
+        if document["kind"] == "ValidatingAdmissionPolicy":
+            assert document["metadata"]["annotations"]["vigil.aiops/policy-version"] == (
+                isolated_policy.version
+            )
     assert "worsen" not in admission
     assert "worsen" in isolated
 

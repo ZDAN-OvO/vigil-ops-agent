@@ -12,6 +12,12 @@ from psycopg.types.json import Jsonb
 from aiops.actions.kubernetes_write import WRITE_TIMEOUT_SECONDS
 from aiops.actions.policy import target_key
 from aiops.actions.remediation_alerts import fault_is_not_clear, lock_workload_alerts
+from aiops.actions.remediation_faults import (
+    has_inspection_signal,
+    inspection_can_clear,
+    lock_fault,
+    previous_uid_blocks,
+)
 from aiops.actions.rollout_undo import ActionError
 from aiops.actions.safety import ACTION_LOCK_SECONDS, ActionSafety, _now, _one, proposal_hash
 from aiops.contracts import (
@@ -26,6 +32,8 @@ from aiops.contracts import (
     RiskDisposition,
 )
 from aiops.db import Store, _attempt_from_row, _proposal_from_row
+from aiops.inspection.evidence import latest_target_observations, review_samples, values
+from aiops.inspection.store import InspectionStore
 from aiops.sessions.models import Lease, LeaseLost
 from aiops.sessions.projection import project_payload, project_text
 
@@ -50,7 +58,10 @@ class JobClaim:
 
 
 class RemediationStore:
-    def __init__(self, store: Store, safety: ActionSafety) -> None:
+    def __init__(
+        self, store: Store, safety: ActionSafety, *, inspections: InspectionStore | None = None
+    ) -> None:
+        self.inspections = inspections or InspectionStore(store)
         self.store = store
         self.safety = safety
         self.sessions = safety.sessions
@@ -64,6 +75,7 @@ class RemediationStore:
         *,
         fault_id: str | None = None,
         parent_id: str | None = None,
+        inspection_review_id: str | None = None,
     ) -> None:
         await self.store._insert_proposal(conn, proposal, risk)
         if risk.disposition is RiskDisposition.DENY:
@@ -81,8 +93,8 @@ class RemediationStore:
             """
             INSERT INTO remediation_jobs
                 (proposal_id, fault_id, parent_proposal_id, automated,
-                 resource_keys, state, evidence)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                 resource_keys, state, evidence, inspection_review_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 proposal.id,
@@ -92,6 +104,7 @@ class RemediationStore:
                 resource_keys(proposal),
                 "ready" if automatic else "awaiting_approval",
                 Jsonb(evidence),
+                inspection_review_id,
             ),
         )
 
@@ -148,6 +161,7 @@ class RemediationStore:
                         code="target_busy",
                         reason="目标已有另一项未完成的处置，本次未写入",
                     )
+                    await self._inspection_receipt(conn, row, job, "failed", code="target_busy")
 
     async def due(self, limit: int = 20) -> list[str]:
         async with self.store.transaction() as conn:
@@ -198,14 +212,28 @@ class RemediationStore:
             if job["state"] == "sending":
                 await self.safety.mark_unknown(conn, row, attempt)
                 await self._done(conn, proposal_id)
+                await self._inspection_receipt(conn, row, job, "unknown")
                 return None
             if job["sent_at"] is None and row["status"] != "approved":
                 await self._done(conn, proposal_id)
+                await self._inspection_receipt(conn, row, job, row["status"])
                 return None
+            if (
+                job["inspection_review_id"]
+                and job["sent_at"] is None
+                and not job["parent_proposal_id"]
+            ):
+                try:
+                    await self._active_inspection(conn, _proposal_from_row(row), job)
+                except ActionError as exc:
+                    await self.safety._end_unsent(conn, row, attempt, "voided", code=exc.code)
+                    await self._inspection_receipt(conn, row, job, "voided", code=exc.code)
+                    return None
             if any(lock["proposal_id"] != proposal_id for lock in locks):
                 if job["sent_at"] is not None:
                     raise ActionError("lock_corrupt", "写入后锁组不完整")
                 await self.safety._end_unsent(conn, row, attempt, "failed", code="target_busy")
+                await self._inspection_receipt(conn, row, job, "failed", code="target_busy")
                 return None
             keys = job["resource_keys"]
             if (job["sent_at"] is not None or job["parent_proposal_id"] is not None) and len(
@@ -218,6 +246,9 @@ class RemediationStore:
                         raise ActionError("lock_corrupt", "目标有未结案的旧动作")
                     await self.safety._end_unsent(
                         conn, row, attempt, "failed", code="legacy_target_busy"
+                    )
+                    await self._inspection_receipt(
+                        conn, row, job, "failed", code="legacy_target_busy"
                     )
                     return None
             owner = uuid4().hex
@@ -293,6 +324,87 @@ class RemediationStore:
                 (deadline, claim.proposal.id),
             )
 
+    async def _active_inspection(self, conn, proposal, job):
+        review = await _one(
+            conn,
+            """
+            SELECT r.* FROM remediation_inspection_reviews r
+            JOIN investigations i ON i.id = r.investigation_id
+            JOIN incidents n ON n.id = i.incident_id
+            WHERE r.id = %s AND r.fault_id = %s AND r.turn_id = %s
+              AND i.session_turn_id = r.turn_id AND i.status = 'completed'
+              AND n.trigger = 'scheduled'
+            """,
+            (job["inspection_review_id"], job["fault_id"], proposal.session_turn_id),
+        )
+        if review is None or review["investigation_id"] != proposal.investigation_id:
+            raise ActionError("inspection_review_missing", "缺少本次巡检核对回执")
+        try:
+            run, now = await self.inspections.require_active_for_send(
+                conn, run_id=review["run_id"], session_id=proposal.session_id
+            )
+        except LeaseLost:
+            raise ActionError("inspection_expired", "巡检轮次已结束或超过期限") from None
+        if run.sop_hash != review["sop_hash"] or run.cluster != proposal.target.cluster:
+            raise ActionError("inspection_scope_changed", "巡检回执归属不一致")
+        return review, run, now
+
+    async def _verify_inspection(self, conn, proposal, job) -> datetime:
+        review, run, _ = await self._active_inspection(conn, proposal, job)
+        trusted = job["evidence"]["trusted"]
+        required = set(trusted["inspection_values"])
+        target = proposal.target
+        observations = await latest_target_observations(
+            conn, run.id, {"namespace": target.namespace, "kind": target.kind, "name": target.name}
+        )
+        now = await self.inspections.now(conn)
+        if now >= min(run.deadline, run.lease_expires_at):
+            raise ActionError("inspection_expired", "巡检轮次已结束或超过期限")
+        samples = review_samples(
+            run,
+            observations,
+            uid=target.uid,
+            trigger=review["trigger_check"],
+            required=required,
+            max_age=review["max_evidence_age_seconds"],
+            now=now,
+        )
+        if (
+            not samples
+            or trusted["source"] != "inspection"
+            or trusted["rule_id"] != review["rule_id"]
+            or trusted["policy_version"] != review["policy_version"]
+            or set(review["observation_ids"]) != {item.id for item in samples}
+            or set(proposal.evidence_ids) != set(review["observation_ids"])
+            or trusted["inspection_values"] != {item.check_id: values(item) for item in samples}
+            or datetime.fromisoformat(trusted["observed_at"])
+            != min(item.sampled_at for item in samples)
+        ):
+            raise ActionError("inspection_evidence_changed", "巡检证据已更新、缺失或过期")
+        return now
+
+    async def _inspection_receipt(self, conn, row: dict, job: dict, status: str, **details) -> None:
+        if job["inspection_review_id"] is None:
+            return
+        bound = await _one(
+            conn,
+            """
+            SELECT r.id, r.result
+            FROM remediation_inspection_reviews v JOIN inspection_runs r ON r.id = v.run_id
+            JOIN remediation_jobs j ON j.inspection_review_id = v.id AND j.fault_id = v.fault_id
+            WHERE j.proposal_id = %s AND r.session_id = %s
+            """,
+            (row["id"], row["session_id"]),
+        )
+        if bound is None:
+            raise ActionError("inspection_receipt_unbound", "处置回执缺少持久巡检归属")
+        actions = bound["result"].get("actions", {}) | {
+            row["id"]: {"status": status, "fault_id": job["fault_id"], **details}
+        }
+        await self.inspections.record_receipt_result(
+            conn, run_id=bound["id"], session_id=row["session_id"], result={"actions": actions}
+        )
+
     async def grant_send(
         self,
         claim: JobClaim,
@@ -308,7 +420,11 @@ class RemediationStore:
                 raise ActionError("not_approved", "已执行或无有效批准")
             proposal = _proposal_from_row(row)
             session = await self.sessions.lock_session(conn, proposal.session_id)
-            if session.closed_at is not None and job["parent_proposal_id"] is None:
+            if (
+                session.closed_at is not None
+                and job["parent_proposal_id"] is None
+                and job["inspection_review_id"] is None
+            ):
                 raise ActionError("session_closed", "会话已关闭")
             current = await _one(
                 conn,
@@ -319,6 +435,11 @@ class RemediationStore:
                 """,
                 (proposal.id,),
             )
+            inspection = (
+                job["inspection_review_id"] is not None and job["parent_proposal_id"] is None
+            )
+            if inspection:
+                await self._active_inspection(conn, proposal, job)
             now = await _now(conn)
             if (
                 current is None
@@ -332,14 +453,12 @@ class RemediationStore:
             if job["automated"]:
                 if current["actor"] != f"policy:{row['policy_version']}":
                     raise ActionError("no_approval", "缺少规则授权")
-                fault = await _one(
-                    conn,
-                    "SELECT * FROM remediation_faults WHERE id = %s FOR UPDATE",
-                    (job["fault_id"],),
-                )
+                fault = await lock_fault(conn, target, job["fault_id"])
                 if fault is None or fault["cleared_at"] is not None:
                     raise ActionError("fault_closed", "本次故障已恢复")
-                if job["parent_proposal_id"] is None:
+                if job["parent_proposal_id"] is None and await previous_uid_blocks(conn, target):
+                    raise ActionError("previous_uid_open", "同名旧目标的故障或写入仍待核实")
+                if job["parent_proposal_id"] is None and not inspection:
                     active = await _one(
                         conn,
                         """
@@ -398,8 +517,14 @@ class RemediationStore:
                 )
                 if linked is None:
                     raise ActionError("action_unbound", "调查账本尚未关联执行")
+            if inspection:
+                now = await self._verify_inspection(conn, proposal, job)
+            if current["expires_at"] <= await _now(conn):
+                raise ActionError("no_approval", "发送时批准已过期")
             authorize(proposal, job, now)
             await self.store._insert_attempt(conn, attempt)
+            if inspection:
+                now = await self._verify_inspection(conn, proposal, job)
             saved = await _one(
                 conn,
                 """
@@ -428,6 +553,7 @@ class RemediationStore:
                     "parent_id": job["parent_proposal_id"],
                 },
             )
+            await self._inspection_receipt(conn, row, job, "send_granted")
             return receipt
 
     async def applied(self, claim: JobClaim, result: dict) -> None:
@@ -440,16 +566,22 @@ class RemediationStore:
                 "UPDATE action_attempts SET result = %s WHERE id = %s RETURNING *",
                 (Jsonb({"stage": "applied", "written": True, **result}), attempt["id"]),
             )
+            applied_at = (
+                await self.inspections.now(conn)
+                if job["inspection_review_id"]
+                else await _now(conn)
+            )
             await conn.execute(
                 """
-                UPDATE remediation_jobs SET state = 'applying', applied_at = clock_timestamp(),
+                UPDATE remediation_jobs SET state = 'applying', applied_at = %s,
                     owner = NULL, generation = NULL, expires_at = NULL,
                     run_after = clock_timestamp()
                 WHERE proposal_id = %s
                 """,
-                (claim.proposal.id,),
+                (applied_at, claim.proposal.id),
             )
             await self.safety._emit_result(conn, row, _attempt_from_row(saved), status="executing")
+            await self._inspection_receipt(conn, row, job, "applied")
 
     async def reschedule(
         self,
@@ -494,7 +626,9 @@ class RemediationStore:
             row, job, attempt = await self._require_claim(conn, claim)
             if job["sent_at"] is not None:
                 raise ActionError("already_executed", "动作可能已发送")
-            await self.safety._end_unsent(conn, row, attempt, "failed", code=code, reason=reason)
+            status = "voided" if code == "inspection_expired" else "failed"
+            await self.safety._end_unsent(conn, row, attempt, status, code=code, reason=reason)
+            await self._inspection_receipt(conn, row, job, status, code=code)
 
     async def finish(
         self,
@@ -512,20 +646,27 @@ class RemediationStore:
             if outcome is AttemptOutcome.IMPROVED and claim.job["fault_id"] is not None:
                 await lock_workload_alerts(conn, target.cluster, target.namespace, target.name)
             row, job, attempt = await self._require_claim(conn, claim)
+            fault = None
+            inspection_fault = False
             if outcome is AttemptOutcome.IMPROVED and job["fault_id"] is not None:
-                if job["effective_at"] is None or await fault_is_not_clear(
-                    conn,
-                    fault_id=job["fault_id"],
-                    started_at=job["effective_at"],
+                fault = await lock_fault(conn, target, job["fault_id"])
+                if (
+                    fault is None
+                    or job["effective_at"] is None
+                    or await fault_is_not_clear(
+                        conn, fault_id=job["fault_id"], started_at=job["effective_at"]
+                    )
                 ):
                     outcome = AttemptOutcome.NO_IMPROVEMENT
                     reason = "观察期间出现同类告警或原告警仍未恢复，需人工处理"
                 else:
-                    await conn.execute(
-                        "UPDATE remediation_faults SET cleared_at = clock_timestamp() "
-                        "WHERE id = %s",
-                        (job["fault_id"],),
-                    )
+                    inspection_fault = await has_inspection_signal(conn, fault["id"])
+                    if not inspection_fault and fault["cleared_at"] is None:
+                        await conn.execute(
+                            "UPDATE remediation_faults SET cleared_at = clock_timestamp() "
+                            "WHERE id = %s",
+                            (job["fault_id"],),
+                        )
             compensated = result.get("compensated") is True
             completed = outcome is AttemptOutcome.IMPROVED or compensated
             status = (
@@ -564,6 +705,11 @@ class RemediationStore:
                 release_locks=compensation is None,
             )
             await self._done(conn, row["id"])
+            if outcome is AttemptOutcome.IMPROVED and inspection_fault:
+                await self._clear_after_observation(conn, fault, verification)
+            await self._inspection_receipt(
+                conn, row, job, proposal_status.value, outcome=outcome.value
+            )
             if compensation is not None:
                 proposal, risk, evidence = compensation
                 if (
@@ -572,7 +718,13 @@ class RemediationStore:
                 ):
                     raise ActionError("lock_corrupt", "补偿目标与原锁组不一致")
                 await self.create(
-                    conn, proposal, risk, evidence, fault_id=job["fault_id"], parent_id=row["id"]
+                    conn,
+                    proposal,
+                    risk,
+                    evidence,
+                    fault_id=job["fault_id"],
+                    parent_id=row["id"],
+                    inspection_review_id=job["inspection_review_id"],
                 )
                 await conn.execute(
                     """
@@ -593,7 +745,33 @@ class RemediationStore:
                     },
                 )
                 await self.publish_rule(conn, proposal)
+                await self._inspection_receipt(
+                    conn,
+                    {"id": proposal.id, "session_id": proposal.session_id},
+                    job,
+                    "compensation_ready",
+                    parent_id=row["id"],
+                )
         return outcome
+
+    async def _clear_after_observation(self, conn, fault: dict, verification: dict) -> None:
+        if (
+            verification.get("method") != "business_probe_window"
+            or not verification.get("started_at")
+            or verification.get("failed_slots") != 0
+            or verification.get("slots_collected") != verification.get("slots_required")
+        ):
+            return
+        start = datetime.fromisoformat(verification["started_at"])
+        end = start + timedelta(
+            seconds=verification["slot_seconds"] * verification["slots_required"]
+        )
+        now = await self.inspections.now(conn)
+        if await inspection_can_clear(conn, fault, window_start=start, window_end=end, now=now):
+            await conn.execute(
+                "UPDATE remediation_faults SET cleared_at = %s WHERE id = %s",
+                (now, fault["id"]),
+            )
 
     @staticmethod
     async def _done(conn: AsyncConnection, proposal_id: str) -> None:

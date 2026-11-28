@@ -1,0 +1,35 @@
+namespace: vigil-experiment
+kind: Deployment
+name: vigil-replica-fixture
+containers: [app]
+replicas: {min: 2, max: 3}
+probe:
+  promql: 'probe_success{job="vigil-replica-probe"}'
+rules:
+  - id: replica-capacity
+    alertname: VigilReplicaCapacityDegraded
+    labels: {source: capacity}
+    kind: scale_replicas
+    parameters: {replicas: 2}
+    max_evidence_age_seconds: 120
+    evidence:
+      - {key: replicas, source: current, value: 1}
+      - key: rejected_requests
+        value: 1
+        promql: 'vigil_replica_fixture_rejected{job="vigil-replica-state"}'
+      - key: ready_endpoints
+        value: 1
+        promql: 'vigil_replica_fixture_endpoints{job="vigil-replica-state"}'
+      - {key: business_failed, value: 0, promql: 'probe_success{job="vigil-replica-probe"}'}
+  - id: inspection-replica-capacity
+    type: inspection
+    check_id: workload-signal
+    priority: 100
+    kind: scale_replicas
+    parameters: {replicas: 2}
+    max_evidence_age_seconds: 60
+    evidence:
+      - {key: replicas, source: current, value: 1}
+    observations:
+      - {check_id: workload-signal, key: value, value: 0}
+      - {check_id: workload-readiness, key: ready_replicas, value: 1}

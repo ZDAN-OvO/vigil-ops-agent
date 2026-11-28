@@ -96,6 +96,7 @@ async def open_inspection(
     *,
     store: Store,
     on_observations: InspectionHook | None = None,
+    inspections: InspectionStore | None = None,
 ) -> AsyncIterator[InspectionScheduler | None]:
     if not settings.inspection_enabled:
         yield None
@@ -109,7 +110,7 @@ async def open_inspection(
         yield None
         return
     async with _open_read_clients(settings) as (kubernetes, prometheus):
-        inspections = InspectionStore(store)
+        inspections = inspections or InspectionStore(store)
         collector = InspectionCollector(
             kubernetes,
             prometheus,

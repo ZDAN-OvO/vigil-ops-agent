@@ -206,22 +206,20 @@ async def run_serve(settings: Settings, *, interactive: bool) -> None:
             web_url=settings.web_url,
             approval_ttl_seconds=settings.action_approval_ttl_seconds,
         )
-        async with (
-            open_remediation(settings, store) as remediation,
-            open_inspection(settings, store=store) as inspection,
-        ):
-            if remediation is None:
-                # 兼容只装配调查、不配置写入的本地服务。
-                async with open_conversation(settings=settings, store=store) as driver:
-                    await _listen(
-                        driver, safety, settings, interactive=interactive, inspection=inspection
-                    )
-            else:
-                async with open_conversation(
-                    settings=settings,
+        from aiops.inspection.remediation import InspectionRemediation
+
+        async with open_remediation(settings, store) as remediation:
+            driver_options = {"remediation": remediation} if remediation is not None else {}
+            async with open_conversation(
+                settings=settings, store=store, **driver_options
+            ) as driver:
+                handler = InspectionRemediation(driver, remediation)
+                async with open_inspection(
+                    settings,
                     store=store,
-                    remediation=remediation,
-                ) as driver:
+                    on_observations=handler.on_observations,
+                    inspections=remediation.ledger.inspections if remediation else None,
+                ) as inspection:
                     await _listen(
                         driver,
                         safety,
