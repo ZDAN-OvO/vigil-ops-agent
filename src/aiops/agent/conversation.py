@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -33,6 +33,8 @@ from aiops.investigation.toolbox import ToolboxProtocol
 from aiops.sessions.checkpoint import SessionCheckpointer
 from aiops.sessions.models import HEARTBEAT_SECONDS, Lease, LeaseLost, SessionEvent, Turn, TurnLane
 from aiops.sessions.store import SessionStore
+
+InspectionReviewRefresh = Callable[[], Awaitable[tuple[tuple[Observation, ...], list[dict]] | None]]
 
 
 class ExecutorFactory(Protocol):
@@ -77,6 +79,7 @@ class ConversationDriver:
         candidates: list[dict],
         *,
         timeout: float,
+        refresh: InspectionReviewRefresh | None = None,
     ) -> tuple[SubmitInspectionReview | None, Turn, str, str | None]:
         """调查只持有巡检主线租约，动作提交由独立的规则入口处理。"""
         turn = await scope.store.enqueue_investigation(scope.run, "核对本轮巡检异常及登记规则")
@@ -85,7 +88,9 @@ class ConversationDriver:
             raise LeaseLost(scope.run.id)
         heartbeat = asyncio.create_task(ConversationRun(self, lease).heartbeat())
         try:
-            return await self._review_inspection(scope, observations, candidates, timeout, lease)
+            return await self._review_inspection(
+                scope, observations, candidates, timeout, lease, refresh
+            )
         finally:
             heartbeat.cancel()
             with suppress(asyncio.CancelledError):
@@ -93,7 +98,13 @@ class ConversationDriver:
             await self.sessions.release_lease(lease)
 
     async def _review_inspection(
-        self, scope, observations, candidates, timeout: float, lease: Lease
+        self,
+        scope,
+        observations,
+        candidates,
+        timeout: float,
+        lease: Lease,
+        refresh: InspectionReviewRefresh | None,
     ) -> tuple[SubmitInspectionReview | None, Turn, str, str | None]:
         turn = await self.sessions.start_main_turn(lease)
         if turn is None:
@@ -148,12 +159,18 @@ class ConversationDriver:
                     model = self.model or LangChainInvestigation.build_model(settings)
                     reviewer = InspectionReviewer(model, scope, budget)
                     review = await reviewer.review(observations, candidates)
+                    if review and refresh and reviewer.model_calls < budget.max_model_calls:
+                        updated = await refresh()
+                        if updated is not None:
+                            review = await reviewer.review(*updated)
                 reason = None if review is not None else "invalid_review"
             except LeaseLost:
                 raise
             except TimeoutError:
+                review = None
                 reason = "investigation_budget_exhausted"
             except Exception:
+                review = None
                 reason = "investigation_failed"
         summary = self.project_text(review.explanation) if review else "巡检核对未完成，需人工核对"
         async with self.sessions.run(lease, turn.id) as tx:

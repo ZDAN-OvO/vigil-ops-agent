@@ -629,3 +629,35 @@ def test_updated_sample_requires_a_new_model_receipt(isolated_serve_dsn, monkeyp
             )
 
     asyncio.run(run())
+
+
+def test_stale_evidence_is_resampled_and_reviewed_in_same_main_turn(
+    isolated_serve_dsn, monkeypatch
+):
+    async def run():
+        async with _ledgers(isolated_serve_dsn) as (ledger, other):
+            state = Scenario(ledger, other)
+            await state.prepare()
+            invoke = state.model.ainvoke
+
+            async def age_first_receipt(messages):
+                result = await invoke(messages)
+                if len(state.model.calls) == 1:
+                    state.clock.advance(61)
+                return result
+
+            monkeypatch.setattr(state.model, "ainvoke", age_first_receipt)
+            finished = await state.execute()
+            assert len(state.kube.sent) == 1
+            first, second = state.model.calls
+            assert (
+                first["candidates"][0]["observation_ids"]
+                != second["candidates"][0]["observation_ids"]
+            )
+            assert finished.result["investigation"]["status"] == "reviewed"
+            assert await _rows(ledger, "SELECT used_model_calls FROM investigations") == [
+                {"used_model_calls": 2},
+            ]
+            assert len(await _rows(ledger, "SELECT * FROM session_turns")) == 1
+
+    asyncio.run(run())

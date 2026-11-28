@@ -1,13 +1,14 @@
 """把巡检观察、主线回执与既有处置账本衔接。"""
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from uuid import uuid4
 
 import httpx
 from psycopg.types.json import Jsonb
 
+from aiops.actions.kubernetes_write import WRITE_TIMEOUT_SECONDS
 from aiops.actions.policy import CurrentState, TrustedEvidence, decide
 from aiops.actions.remediation_alerts import lock_workload_alerts
 from aiops.actions.remediation_faults import (
@@ -129,13 +130,22 @@ class InspectionRemediation:
             results["remediation_reason"] = "write_identity_or_policy_unavailable"
         remaining = await scope.store.remaining(scope.run)
         # 留出准入、发送预检和回执落账的时间。
-        reserve = 2.0 + (4 * self.driver.settings.tool_timeout_seconds if candidates else 0)
+        reserve = 2.0
+        if candidates:
+            reserve += max(WRITE_TIMEOUT_SECONDS, 4 * self.driver.settings.tool_timeout_seconds)
+
+        async def refresh():
+            if await scope.store.remaining(scope.run) <= reserve:
+                return None
+            return await self._refresh_review(scope, candidates, latest, rules)
+
         timeout = min(self.driver.settings.investigation_budget_seconds, remaining - reserve)
         review, turn, investigation_id, reason = await self.driver.review_inspection(
             scope,
             tuple(latest.values()),
             [candidate.description() for candidate in candidates],
             timeout=timeout,
+            refresh=refresh if candidates else None,
         )
         receipts = {} if review is None else {item.candidate_id: item for item in review.receipts}
         if review is not None and (
@@ -182,6 +192,71 @@ class InspectionRemediation:
             scope.run, {"rules": rules, "manual_review_required": manual_required}
         )
         await self._await_dispatch(scope, proposal_ids)
+
+    async def _refresh_review(
+        self,
+        scope: InspectionRound,
+        candidates: list[Candidate],
+        latest: dict[int, Observation],
+        rules: list[dict],
+    ) -> tuple[tuple[Observation, ...], list[dict]] | None:
+        now = await scope.store.now()
+        changed = False
+        updated = []
+        for candidate in candidates:
+            target = candidate.target
+            rule = candidate.rule
+            key = {"namespace": target.namespace, "kind": target.kind, "name": target.name}
+            checks = {check.check_id: check for check in scope.run.checks if check.target == key}
+            if all(
+                fresh(item, checks[item.check_id], now, max_age=rule.max_evidence_age_seconds)
+                for item in candidate.observations
+            ):
+                updated.append(candidate)
+                continue
+            changed = True
+            async with self.runtime.ledger.store.transaction() as conn:
+                observed = await latest_target_observations(conn, scope.run.id, key)
+            for check_id in sorted(rule.required_checks):
+                check = checks[check_id]
+                item = observed.get(check_id)
+                if item is None or not fresh(
+                    item,
+                    check,
+                    await scope.store.now(),
+                    max_age=rule.max_evidence_age_seconds,
+                ):
+                    item = await scope.resample(check)
+                    observed[check_id] = item
+                latest[check.ordinal] = item
+            await self._track(scope, target)
+            now = await scope.store.now()
+            samples = review_samples(
+                scope.run,
+                observed,
+                uid=target.uid,
+                trigger=rule.check_id,
+                required=rule.required_checks,
+                max_age=rule.max_evidence_age_seconds,
+                now=now,
+            )
+            if samples and candidate.trusted(samples, self.runtime.policy.version).satisfies(
+                rule, now
+            ):
+                updated.append(replace(candidate, observations=samples))
+            else:
+                rules.append(
+                    {
+                        "candidate_id": candidate.id,
+                        "rule_id": rule.id,
+                        "target": target.name,
+                        "status": "refreshed_evidence_unverified",
+                    }
+                )
+        if not changed:
+            return None
+        candidates[:] = updated
+        return tuple(latest.values()), [candidate.description() for candidate in candidates]
 
     async def _workload(self, scope, identity, checks, latest, rules, faults) -> Candidate | None:
         runtime = self.runtime
@@ -379,7 +454,11 @@ class InspectionRemediation:
                     remediation_inspection_signals.abnormal_at, EXCLUDED.abnormal_at),
                 healthy_at = CASE WHEN COALESCE(remediation_inspection_signals.abnormal_at,
                     EXCLUDED.abnormal_at) IS NULL THEN EXCLUDED.healthy_at END,
-                observation_ids = EXCLUDED.observation_ids,
+                observation_ids = ARRAY(
+                    SELECT DISTINCT unnest(
+                        remediation_inspection_signals.observation_ids || EXCLUDED.observation_ids
+                    )
+                ),
                 required_checks = EXCLUDED.required_checks
             """,
             (
