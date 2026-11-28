@@ -15,6 +15,7 @@ from aiops.actions.safety import ActionSafety
 from aiops.agent.conversation import AwaitingActionReceipt, ConversationDriver
 from aiops.config import WEB_HOST, Settings
 from aiops.db import Store
+from aiops.inspection.runtime import InspectionScheduler
 from aiops.monitoring.snapshot import Monitoring
 from aiops.sessions.checkpoint import setup_checkpoints
 from aiops.sessions.models import LeaseLost, SessionClosed, TurnLane
@@ -78,6 +79,7 @@ async def drive_queue(
                     driver.sessions.list_runnable_side(),
                     safety.list_runnable_card_sessions(),
                 )
+                # 巡检专用主线只由轮次持有者驱动，已决卡片扫描也不能接手。
                 for lane, queued in (("main", [*decided, *main]), ("side", side)):
                     for session_id in queued:
                         key = (session_id, lane)
@@ -123,6 +125,7 @@ async def _listen(
     *,
     interactive: bool,
     remediation=None,
+    inspection: InspectionScheduler | None = None,
 ) -> None:
     stop = asyncio.Event()
     auth = BrowserAuth(interactive=interactive)
@@ -171,6 +174,8 @@ async def _listen(
             for server, sock in bindings:
                 tasks.create_task(serve(server, sock))
             tasks.create_task(drive_queue(driver, safety, stop))
+            if inspection is not None:
+                tasks.create_task(inspection.drive(stop))
             if remediation is not None:
                 tasks.create_task(drive_remediation(remediation, stop))
             try:
@@ -191,7 +196,7 @@ async def run_serve(settings: Settings, *, interactive: bool) -> None:
     settings.validate_webhook_listener()
     if not settings.database_url:
         raise ValueError("未配置 VIGIL_DATABASE_URL")
-    from aiops.investigation.factory import open_conversation
+    from aiops.investigation.factory import open_conversation, open_inspection
 
     async with Store.open(settings.database_url) as store:
         await store.migrate()
@@ -201,11 +206,16 @@ async def run_serve(settings: Settings, *, interactive: bool) -> None:
             web_url=settings.web_url,
             approval_ttl_seconds=settings.action_approval_ttl_seconds,
         )
-        async with open_remediation(settings, store) as remediation:
+        async with (
+            open_remediation(settings, store) as remediation,
+            open_inspection(settings, store=store) as inspection,
+        ):
             if remediation is None:
                 # 兼容只装配调查、不配置写入的本地服务。
                 async with open_conversation(settings=settings, store=store) as driver:
-                    await _listen(driver, safety, settings, interactive=interactive)
+                    await _listen(
+                        driver, safety, settings, interactive=interactive, inspection=inspection
+                    )
             else:
                 async with open_conversation(
                     settings=settings,
@@ -218,4 +228,5 @@ async def run_serve(settings: Settings, *, interactive: bool) -> None:
                         settings,
                         interactive=interactive,
                         remediation=remediation,
+                        inspection=inspection,
                     )

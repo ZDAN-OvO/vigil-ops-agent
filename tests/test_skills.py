@@ -39,6 +39,7 @@ def test_catalog_loads_builtin_skills():
         "oom",
         "dependency-latency",
         "pod-rebuild",
+        "proactive-inspection",
     }
     assert all(len(item.content_hash) == 64 for item in catalog)
 

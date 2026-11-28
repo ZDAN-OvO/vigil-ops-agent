@@ -111,8 +111,46 @@ class PrometheusClient:
         *,
         step_seconds: float,
     ) -> ToolResult:
+        return await self._query(
+            context,
+            time_range,
+            "/api/v1/query_range",
+            {"expression": expression, "step_seconds": step_seconds},
+            {
+                "query": expression,
+                "start": time_range.start.timestamp(),
+                "end": time_range.end.timestamp(),
+                "step": f"{step_seconds}s",
+            },
+        )
+
+    async def query_samples(
+        self,
+        context: ToolContext,
+        selector: str,
+        time_range: TimeRange,
+        *,
+        window_seconds: int,
+    ) -> ToolResult:
+        # 即时查询中的区间选择器返回原始采样点。query_range 的点时间是查询评估时点。
+        expression = f"{selector}[{window_seconds}s]"
+        return await self._query(
+            context,
+            time_range,
+            "/api/v1/query",
+            {"selector": selector, "window_seconds": window_seconds},
+            {"query": expression, "time": time_range.end.timestamp()},
+        )
+
+    async def _query(
+        self,
+        context: ToolContext,
+        time_range: TimeRange,
+        path: str,
+        query: dict[str, Any],
+        params: dict[str, str | float],
+    ) -> ToolResult:
         tool_call_id = uuid.uuid4().hex
-        query = {"expression": expression, "step_seconds": step_seconds}
         reason = context.abort_reason()
         if reason is not None:
             return _failure(
@@ -125,15 +163,9 @@ class PrometheusClient:
                 retryable=False,
             )
 
-        params = {
-            "query": expression,
-            "start": time_range.start.timestamp(),
-            "end": time_range.end.timestamp(),
-            "step": f"{step_seconds}s",
-        }
         try:
             response = await asyncio.wait_for(
-                self._client.get("/api/v1/query_range", params=params),
+                self._client.get(path, params=params),
                 timeout=context.remaining(),
             )
         except TimeoutError:
@@ -143,7 +175,7 @@ class PrometheusClient:
                 query=query,
                 time_range=time_range,
                 code="timeout",
-                message=f"查询超过截止时间：{expression}",
+                message=f"查询超过截止时间：{params['query']}",
                 retryable=True,
             )
         except httpx.HTTPError as exc:

@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     kubeconfig: Path | None = None
     kube_context: str | None = None
     remediation_config_dir: Path | None = None
+    inspection_enabled: bool = False
+    # 巡检装配时单独校验，配置错误时其他服务仍可启动。
+    inspection_interval_seconds: int | str = 900
+    inspection_timeout_seconds: int | str = 600
+    inspection_config: Path | None = None
     remediation_auto_enabled: bool = False
     action_kubeconfig: Path | None = None
     action_kube_context: str | None = None

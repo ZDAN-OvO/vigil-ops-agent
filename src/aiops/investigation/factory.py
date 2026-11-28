@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -14,11 +15,17 @@ from aiops.agent.engine import LangChainInvestigation
 from aiops.config import Settings
 from aiops.contracts import Incident, Investigation
 from aiops.db import Store
+from aiops.inspection.collector import InspectionCollector, plan_checks
+from aiops.inspection.config import InspectionConfigError, load_manifest, load_sop, validate_timing
+from aiops.inspection.runtime import InspectionHook, InspectionScheduler
+from aiops.inspection.store import InspectionStore
 from aiops.investigation.toolbox import Toolbox
 from aiops.sessions.models import Lease
 from aiops.sessions.projection import project_text
 from aiops.tools.kubernetes import KubernetesRead
 from aiops.tools.prometheus import PrometheusClient
+
+_LOG = logging.getLogger(__name__)
 
 
 def build_executor(
@@ -56,9 +63,9 @@ def build_executor(
 
 
 @asynccontextmanager
-async def _open_io(
-    settings: Settings, *, store: Store
-) -> AsyncIterator[tuple[Toolbox, PrometheusClient]]:
+async def _open_read_clients(
+    settings: Settings,
+) -> AsyncIterator[tuple[KubernetesRead, PrometheusClient]]:
     async with PrometheusClient.connect(
         settings.prometheus_url,
         timeout_seconds=settings.tool_timeout_seconds,
@@ -66,16 +73,60 @@ async def _open_io(
         max_series=settings.tool_max_series,
     ) as prometheus:
         yield (
-            Toolbox(
-                prometheus,
-                KubernetesRead(
-                    kubeconfig=settings.kubeconfig,
-                    context_name=settings.kube_context,
-                    max_items=settings.tool_max_items,
-                ),
-                store,
+            KubernetesRead(
+                kubeconfig=settings.kubeconfig,
+                context_name=settings.kube_context,
+                max_items=settings.tool_max_items,
             ),
             prometheus,
+        )
+
+
+@asynccontextmanager
+async def _open_io(
+    settings: Settings, *, store: Store
+) -> AsyncIterator[tuple[Toolbox, PrometheusClient]]:
+    async with _open_read_clients(settings) as (kubernetes, prometheus):
+        yield Toolbox(prometheus, kubernetes, store), prometheus
+
+
+@asynccontextmanager
+async def open_inspection(
+    settings: Settings,
+    *,
+    store: Store,
+    on_observations: InspectionHook | None = None,
+) -> AsyncIterator[InspectionScheduler | None]:
+    if not settings.inspection_enabled:
+        yield None
+        return
+    try:
+        interval, timeout = validate_timing(settings)
+        manifest = load_manifest(settings)
+        sop = load_sop(settings.skills_path)
+    except InspectionConfigError as exc:
+        _LOG.error("巡检无法启动：%s", exc)
+        yield None
+        return
+    async with _open_read_clients(settings) as (kubernetes, prometheus):
+        inspections = InspectionStore(store)
+        collector = InspectionCollector(
+            kubernetes,
+            prometheus,
+            cluster=manifest.cluster,
+            runtime_path=settings.runtime_path,
+            tool_timeout_seconds=settings.tool_timeout_seconds,
+            now=inspections.now,
+        )
+        yield InspectionScheduler(
+            inspections,
+            manifest.cluster,
+            interval,
+            timeout,
+            sop,
+            plan_checks(manifest, sop),
+            collector.sample,
+            on_observations,
         )
 
 
@@ -147,4 +198,5 @@ __all__ = [
     "open_agent",
     "open_conversation",
     "open_executor",
+    "open_inspection",
 ]
