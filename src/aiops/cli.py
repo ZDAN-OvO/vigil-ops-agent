@@ -767,7 +767,9 @@ async def _run(args: argparse.Namespace, terminal: bool, output: OnceOutput | No
             sessions = SessionStore(store)
             try:
                 entries = await sessions.list_sessions(
-                    limit=args.limit, source=args.source, before=args.before
+                    limit=args.limit,
+                    source=getattr(args, "source", None),
+                    before=getattr(args, "before", None),
                 )
             except ValueError as exc:
                 raise CLIError(str(exc)) from None
